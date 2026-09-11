@@ -1,0 +1,34 @@
+scenario,line_item,unit,quantity,unit_cost_usd,monthly_usd,notes
+dev,ecs_api,task-month (0.5vCPU/1GB),1,18,18,always-on
+dev,ecs_worker,task-month (0.25vCPU/0.5GB),1,9,9,always-on
+dev,rds,db.t4g.micro single-AZ 20GB,1,15,15,
+dev,redis,cache.t4g.micro,1,12,12,
+dev,alb,alb-month,1,18,18,
+dev,nat,nat-month,1,34,34,single NAT
+dev,cloudfront_s3,bundle,1,3,3,low traffic
+dev,secrets,secret-month,6,0.4,2,
+dev,cloudwatch,bundle,1,8,8,~5GB logs
+dev,ecr,repo-bundle,1,1,1,
+dev,route53,hosted-zone,1,1,1,
+dev,llm,1M-tokens,3,1.0,3,deterministic/light dev key
+prod-low,ecs_api,task-month (1vCPU/2GB),2,72.5,145,
+prod-low,ecs_worker,task-month (0.5vCPU/1GB),1,18,18,
+prod-low,rds_primary,db.t4g.medium Multi-AZ 100GB,1,190,190,
+prod-low,rds_replica,db.t4g.medium single-AZ,1,70,70,analytics
+prod-low,redis,cache.t4g.small primary+replica,1,55,55,
+prod-low,alb,alb-month + LCU,1,25,25,
+prod-low,nat,nat-month,2,37.5,75,one per AZ
+prod-low,cloudfront_s3_waf,bundle,1,25,25,~100GB egress + WAF
+prod-low,secrets,secret-month,6,0.5,3,
+prod-low,observability,cloudwatch+xray,1,45,45,~40GB logs
+prod-low,ecr,repo-bundle,1,3,3,
+prod-low,backups,rds pitr+snapshots ~150GB,1,15,15,
+prod-low,llm,1M-tokens,585,0.77,450,recommended mix (Haiku/4o-mini + Sonnet for orchestrator/analytics)
+prod-target,compute,ecs api avg4 + worker,1,650,650,
+prod-target,rds,r6g.large Multi-AZ + replica + storage/backups,1,750,750,
+prod-target,redis,r6g.large + replica,1,330,330,
+prod-target,network,alb+nat+transfer,1,220,220,
+prod-target,edge,cloudfront+waf+s3,1,90,90,
+prod-target,observability,cloudwatch+xray,1,140,140,
+prod-target,misc,secrets+ecr+route53,1,15,15,
+prod-target,llm,1M-tokens,2900,0.76,2200,recommended mix

@@ -1,0 +1,67 @@
+# ── Python ───────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+htmlcov/
+.venv/
+venv/
+env/
+
+# ── Node / frontend ──────────────────────────────────────
+node_modules/
+frontend/dist/
+frontend/.vite/
+*.tsbuildinfo
+
+# ── Secrets & env ────────────────────────────────────────
+.env
+*.env
+!.env.example
+!*.env.example
+*.pem
+*.key
+credentials.json
+service-account*.json
+
+# ── Databases & data ─────────────────────────────────────
+*.db
+*.sqlite
+*.sqlite3
+backend/data/raw/
+backend/data/processed/
+!backend/data/.gitkeep
+
+# ── Logs ─────────────────────────────────────────────────
+logs/
+*.log
+
+# ── Terraform ────────────────────────────────────────────
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfvars
+!*.tfvars.example
+crash.log
+
+# ── Build / misc ─────────────────────────────────────────
+*.backup
+*.bak
+.DS_Store
+Thumbs.db
+dist/
+build/
+eval/reports/
+
+# ── IDE ──────────────────────────────────────────────────
+.idea/
+.vscode/
+*.iml
+
+# ── Windows junk ─────────────────────────────────────────
+*.lnk
+desktop.ini

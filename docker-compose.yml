@@ -1,0 +1,115 @@
+name: commerceos
+
+services:
+  postgres:
+    image: postgres:15-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-commerceos}
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-commerceos}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--save", "60", "1", "--appendonly", "no"]
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  migrate:
+    build: { context: ./backend }
+    command: ["sh", "-c", "alembic upgrade head && python -m scripts.build_warehouse && python -m scripts.seed_users"]
+    environment:
+      ENVIRONMENT: development
+      DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-commerceos}
+      DATASET_DIR: /app/data/raw
+      SEED_ADMIN_PASSWORD: ${SEED_ADMIN_PASSWORD:-CommerceOS2024!}
+    volumes:
+      - ./backend/data:/app/data
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  backend:
+    build: { context: ./backend }
+    restart: unless-stopped
+    environment:
+      ENVIRONMENT: development
+      PORT: 8000
+      WORKERS: 2
+      DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-commerceos}
+      REDIS_URL: redis://redis:6379/0
+      REDIS_ENABLED: "true"
+      JWT_SECRET: ${JWT_SECRET:-dev-compose-secret-not-for-prod-0123456789}
+      SEED_ADMIN_PASSWORD: ${SEED_ADMIN_PASSWORD:-CommerceOS2024!}
+      LLM_PROVIDER: ${LLM_PROVIDER:-deterministic}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      CORS_ORIGINS: http://localhost:3000
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./backend/data:/app/data
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+
+  worker:
+    build: { context: ./backend }
+    restart: unless-stopped
+    command: ["python", "-m", "app.worker.main"]
+    environment:
+      ENVIRONMENT: development
+      DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-commerceos}
+      REDIS_URL: redis://redis:6379/0
+      REDIS_ENABLED: "true"
+      JWT_SECRET: ${JWT_SECRET:-dev-compose-secret-not-for-prod-0123456789}
+      LLM_PROVIDER: ${LLM_PROVIDER:-deterministic}
+    volumes:
+      - ./backend/data:/app/data
+    depends_on:
+      backend:
+        condition: service_healthy
+
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        VITE_API_BASE_URL: http://localhost:8000
+        VITE_WS_BASE_URL: ws://localhost:8000
+    restart: unless-stopped
+    ports:
+      - "3000:8080"
+    depends_on:
+      backend:
+        condition: service_healthy
+
+volumes:
+  postgres_data:
+  redis_data:

@@ -1,0 +1,49 @@
+[project]
+name = "commerceos-backend"
+version = "2.0.0"
+description = "CommerceOS / Nexus — autonomous multi-agent e-commerce operations platform (backend)"
+requires-python = ">=3.11,<3.13"
+
+[tool.ruff]
+line-length = 110
+target-version = "py311"
+extend-exclude = ["alembic/versions", ".venv"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "C4", "SIM", "PL", "RUF"]
+ignore = ["E501", "PLR0913", "PLR0912", "PLR0915", "PLR2004", "B008", "SIM108"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["PLR2004", "S101", "PLR0915"]
+"eval/*" = ["PLR2004"]
+
+[tool.black]
+line-length = 110
+target-version = ["py311"]
+extend-exclude = "alembic/versions"
+
+[tool.isort]
+profile = "black"
+line_length = 110
+skip = ["alembic/versions", ".venv"]
+
+[tool.mypy]
+python_version = "3.11"
+warn_unused_ignores = true
+warn_redundant_casts = true
+ignore_missing_imports = true
+disallow_untyped_defs = false
+exclude = ["alembic/", "tests/", "eval/"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q --strict-markers"
+filterwarnings = ["ignore::DeprecationWarning"]
+# asyncio_mode = "auto"  # enable once pytest-asyncio is installed (requirements-dev)
+
+[tool.coverage.run]
+source = ["app"]
+omit = ["app/worker/*", "*/__init__.py", "alembic/*"]
+
+[tool.coverage.report]
+exclude_lines = ["pragma: no cover", "if TYPE_CHECKING:", "raise NotImplementedError"]

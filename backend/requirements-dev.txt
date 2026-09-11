@@ -1,0 +1,28 @@
+# CommerceOS / Nexus — backend dev/test/tooling dependencies
+-r requirements.txt
+
+# --- Test ---
+pytest==9.1.1
+pytest-cov==6.0.0
+pytest-asyncio==0.25.2
+factory-boy==3.3.1
+freezegun==1.5.1
+testcontainers[postgres]==4.9.0
+
+# --- Lint / format / type ---
+ruff==0.9.2
+black==24.10.0
+isort==5.13.2
+mypy==1.14.1
+types-python-jose==3.3.4.20240106
+types-passlib==1.7.7.20240819
+
+# --- Contract / API testing ---
+schemathesis==3.39.5
+
+# --- Security scanning ---
+pip-audit==2.7.3
+detect-secrets==1.5.0
+
+# --- Docs ---
+eralchemy2==1.4.1

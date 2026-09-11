@@ -1,0 +1,134 @@
+import { API_BASE_URL } from "../config";
+
+const TOKEN_KEY = "commerceos_token";
+const REFRESH_KEY = "commerceos_refresh";
+const USER_KEY = "commerceos_user";
+
+export type AuthUser = { id: string; username: string; email: string; role: string };
+
+export function getToken(): string | null {
+  try {
+    return localStorage.getItem(TOKEN_KEY);
+  } catch {
+    return null;
+  }
+}
+
+export function getUser(): AuthUser | null {
+  try {
+    const raw = localStorage.getItem(USER_KEY);
+    return raw ? (JSON.parse(raw) as AuthUser) : null;
+  } catch {
+    return null;
+  }
+}
+
+export function setSession(access: string, refresh: string, user: AuthUser) {
+  try {
+    localStorage.setItem(TOKEN_KEY, access);
+    localStorage.setItem(REFRESH_KEY, refresh);
+    localStorage.setItem(USER_KEY, JSON.stringify(user));
+  } catch {
+    /* private mode */
+  }
+}
+
+export function clearSession() {
+  try {
+    localStorage.removeItem(TOKEN_KEY);
+    localStorage.removeItem(REFRESH_KEY);
+    localStorage.removeItem(USER_KEY);
+  } catch {
+    /* noop */
+  }
+}
+
+let onUnauthorized: (() => void) | null = null;
+export function setUnauthorizedHandler(fn: () => void) {
+  onUnauthorized = fn;
+}
+
+/**
+ * Global fetch interceptor: attaches the JWT to every same-API request and
+ * routes 401s through the unauthorized handler. This lets the existing view
+ * components (which call bare `fetch`) work unchanged once AUTH_ENFORCED=true.
+ * Idempotent — safe to call more than once.
+ */
+export function installFetchAuth() {
+  const w = window as unknown as { __commerceosFetchPatched?: boolean };
+  if (w.__commerceosFetchPatched) return;
+  w.__commerceosFetchPatched = true;
+
+  const original = window.fetch.bind(window);
+  window.fetch = async (input: RequestInfo | URL, init: RequestInit = {}) => {
+    const url =
+      typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+    const isApi = url.startsWith(API_BASE_URL) || url.startsWith("/api/");
+    if (!isApi) return original(input, init);
+
+    const token = getToken();
+    const headers = new Headers(
+      init.headers || (input instanceof Request ? input.headers : undefined),
+    );
+    if (token && !headers.has("Authorization")) {
+      headers.set("Authorization", `Bearer ${token}`);
+    }
+    const res = await original(input, { ...init, headers });
+    if (res.status === 401 && !url.includes("/auth/login")) {
+      onUnauthorized?.();
+    }
+    return res;
+  };
+}
+
+/** fetch wrapper: attaches the JWT, normalises errors, and signals 401s. */
+export async function apiFetch<T = unknown>(path: string, init: RequestInit = {}): Promise<T> {
+  const url = path.startsWith("http") ? path : `${API_BASE_URL}${path}`;
+  const headers = new Headers(init.headers);
+  headers.set("Content-Type", "application/json");
+  const token = getToken();
+  if (token) headers.set("Authorization", `Bearer ${token}`);
+
+  const res = await fetch(url, { ...init, headers });
+  if (res.status === 401) {
+    onUnauthorized?.();
+    throw new ApiError("Session expired — please sign in again.", 401);
+  }
+  const text = await res.text();
+  const body = text ? safeJson(text) : null;
+  if (!res.ok) {
+    const detail = (body && (body.detail || body.title || body.message)) || `Request failed (${res.status})`;
+    throw new ApiError(detail, res.status, body);
+  }
+  return body as T;
+}
+
+export class ApiError extends Error {
+  status: number;
+  body: unknown;
+  constructor(message: string, status: number, body?: unknown) {
+    super(message);
+    this.status = status;
+    this.body = body;
+  }
+}
+
+function safeJson(t: string): any {
+  try {
+    return JSON.parse(t);
+  } catch {
+    return { raw: t };
+  }
+}
+
+export async function login(username: string, password: string): Promise<AuthUser> {
+  const res = await fetch(`${API_BASE_URL}/api/v1/auth/login`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ username, password }),
+  });
+  const body = await res.json().catch(() => null);
+  if (!res.ok) throw new ApiError(body?.detail || "Invalid username or password", res.status, body);
+  setSession(body.access_token, body.refresh_token, body.user);
+  return body.user as AuthUser;
+}

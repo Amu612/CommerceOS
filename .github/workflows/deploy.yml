@@ -1,0 +1,90 @@
+name: Deploy
+
+on:
+  push:
+    branches: [main]        # -> dev
+    tags: ["v*"]            # -> prod (with approval)
+  workflow_dispatch:
+    inputs:
+      environment:
+        type: choice
+        options: [dev, prod]
+
+permissions:
+  id-token: write   # OIDC to AWS
+  contents: read
+
+env:
+  AWS_REGION: us-east-1
+  ECR_API: commerceos/api
+  ECR_FRONTEND: commerceos/frontend
+
+jobs:
+  build-push:
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.meta.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: meta
+        run: echo "tag=${GITHUB_SHA::12}" >> "$GITHUB_OUTPUT"
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+      - uses: aws-actions/amazon-ecr-login@v2
+        id: ecr
+      - name: Build & push API
+        uses: docker/build-push-action@v6
+        with:
+          context: ./backend
+          push: true
+          tags: ${{ steps.ecr.outputs.registry }}/${{ env.ECR_API }}:${{ steps.meta.outputs.tag }}
+      - name: Build & push frontend
+        uses: docker/build-push-action@v6
+        with:
+          context: ./frontend
+          push: true
+          build-args: |
+            VITE_API_BASE_URL=${{ vars.API_BASE_URL }}
+            VITE_WS_BASE_URL=${{ vars.WS_BASE_URL }}
+          tags: ${{ steps.ecr.outputs.registry }}/${{ env.ECR_FRONTEND }}:${{ steps.meta.outputs.tag }}
+
+  deploy:
+    needs: build-push
+    runs-on: ubuntu-latest
+    environment: ${{ (startsWith(github.ref, 'refs/tags/v') && 'prod') || 'dev' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+      - name: Run DB migrations (one-shot ECS task)
+        run: |
+          aws ecs run-task --cluster commerceos-${{ job.environment }} \
+            --task-definition commerceos-migrate-${{ job.environment }} \
+            --launch-type FARGATE --network-configuration "$(cat infra/aws/envs/${{ job.environment }}/netcfg.json)" \
+            --overrides '{"containerOverrides":[{"name":"migrate","environment":[{"name":"IMAGE_TAG","value":"${{ needs.build-push.outputs.tag }}"}]}]}'
+      - name: Update services
+        run: |
+          for svc in api worker frontend; do
+            aws ecs update-service --cluster commerceos-${{ job.environment }} \
+              --service commerceos-$svc-${{ job.environment }} --force-new-deployment
+          done
+          aws ecs wait services-stable --cluster commerceos-${{ job.environment }} \
+            --services commerceos-api-${{ job.environment }} commerceos-worker-${{ job.environment }}
+      - name: Smoke test
+        run: |
+          curl -fsS "${{ vars.PUBLIC_URL }}/health" || exit 1
+          curl -fsS "${{ vars.PUBLIC_URL }}/api/v1/health/ready" || exit 1
+      - name: Rollback on failure
+        if: failure()
+        run: |
+          for svc in api worker frontend; do
+            aws ecs update-service --cluster commerceos-${{ job.environment }} \
+              --service commerceos-$svc-${{ job.environment }} \
+              --task-definition "$(aws ecs describe-services --cluster commerceos-${{ job.environment }} \
+                --services commerceos-$svc-${{ job.environment }} \
+                --query 'services[0].deployments[1].taskDefinition' --output text)"
+          done
