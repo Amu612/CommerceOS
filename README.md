@@ -1,6 +1,6 @@
 <div align="center">
 
-# ⚡ CommerceOS / Nexus
+# ⚡ CommerceOS 
 ### Autonomous Multi-Agent Operating System for Intelligent E-Commerce Operations
 
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.110+-009688.svg?style=for-the-badge&logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com)
