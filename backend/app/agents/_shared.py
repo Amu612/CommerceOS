@@ -4,6 +4,7 @@ replay simulated clock and consistent about provenance tagging.
 """
 from __future__ import annotations
 
+import re
 from datetime import datetime, timezone
 from typing import Any, Optional
 
@@ -12,6 +13,41 @@ from sqlalchemy.orm import Session
 
 from app.models.dataco import DataCoOrder
 from app.models.olist import Order
+
+# 32-char Olist UUID, a "#1234" style id, or a bare 2-10 digit DataCo id
+_ORDER_ID_RE = re.compile(r"#?\b([0-9a-fA-F]{32}|\d{2,10})\b")
+
+
+def extract_order_id(message: str) -> str:
+    """Pulls the most likely order identifier out of a free-text message."""
+    if not message:
+        return ""
+    # Prefer an explicit "order <id>" / "order #<id>" / "invoice <id>" mention
+    m = re.search(
+        r"(?:order|invoice|rma|tracking|shipment)\s*(?:id|number|no\.?|#)?\s*[:#]?\s*([0-9a-fA-F]{4,32}|\d{1,10})",
+        message,
+        re.IGNORECASE,
+    )
+    if m:
+        return m.group(1)
+    m = _ORDER_ID_RE.search(message)
+    return m.group(1) if m else ""
+
+
+def extract_order_id_from_history(message: str, history: Optional[list] = None) -> str:
+    """
+    Resolves an order id for a follow-up question: prefer the current message,
+    else scan prior turns (most recent first) for the last one mentioned.
+    """
+    oid = extract_order_id(message)
+    if oid or not history:
+        return oid
+    for turn in reversed(history):
+        text = turn.get("text") if isinstance(turn, dict) else getattr(turn, "text", "")
+        oid = extract_order_id(text or "")
+        if oid:
+            return oid
+    return ""
 
 
 def tz(dt: Optional[datetime]) -> Optional[datetime]:
@@ -27,7 +63,19 @@ def simulated_clock(db: Optional[Session] = None) -> datetime:
     When the replay engine is idle (nothing streamed yet), fall back to the latest
     record timestamp in the database so a fresh dashboard load shows the full
     historical picture rather than an empty view pinned to the dataset start.
+
+    This is the historic-replay clock only. When the live Shopify data source
+    is active there is no replay to pace against — live orders are simply
+    "as of right now" — so that check short-circuits everything below it.
     """
+    try:
+        from app.services.data_source_service import data_source_service
+
+        if data_source_service.is_live():
+            return datetime.now(timezone.utc)
+    except Exception:
+        pass
+
     try:
         from app.services.replay_engine import replay_engine
         from app.services.state_service import state_service
@@ -80,9 +128,9 @@ def pct(n: float, d: float, digits: int = 2) -> float:
 
 def money(v: Any) -> str:
     try:
-        return f"${float(v):,.2f}"
+        return f"₹{float(v):,.2f}"
     except (TypeError, ValueError):
-        return "$0.00"
+        return "₹0.00"
 
 
 def deterministic_answer(message: str, out: Any, agent_label: str, topic_map: dict) -> str:
@@ -137,4 +185,17 @@ def deterministic_answer(message: str, out: Any, agent_label: str, topic_map: di
 
 
 def _hint() -> str:
-    return "*Deterministic answer. Set `LLM_PROVIDER=openai` (or point `OPENAI_API_BASE` at any OpenAI-compatible endpoint) + a key for full conversational answers.*"
+    return "*This is a data-grounded deterministic answer.*"
+
+
+def fmt_evidence(v: Any) -> str:
+    """
+    Human-readable rendering of a finding's supporting evidence — never a raw
+    Python dict/list repr (e.g. `{'carrier': 'X', ...}`) on screen, at any
+    nesting depth.
+    """
+    if isinstance(v, dict):
+        return "; ".join(f"{str(k).replace('_', ' ')}: {fmt_evidence(vv)}" for k, vv in v.items() if vv is not None)
+    if isinstance(v, list):
+        return " | ".join(fmt_evidence(x) for x in v[:4])
+    return str(v)

@@ -59,7 +59,7 @@ def query_inventory(
     if not msg.strip():
         return inventory_agent.run_monitor(db=db, threshold=payload.threshold)
 
-    return inventory_agent.query(message=msg.strip(), db=db)
+    return inventory_agent.query(message=msg.strip(), db=db, history=payload.history)
 
 
 @router.post("/reorder", response_model=InventoryAction)

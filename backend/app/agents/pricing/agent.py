@@ -6,7 +6,7 @@ from typing import Any, Optional
 from app.agents._shared import money
 from app.agents.common_schemas import MetricCard, Recommendation
 from app.agents.framework import DomainAgent
-from app.agents.pricing.tools import DETECTOR_TOOLS, METRIC_TOOLS
+from app.agents.pricing.tools import DETECTOR_TOOLS, LOOKUP_TOOLS, METRIC_TOOLS
 
 
 class PricingAgent(DomainAgent):
@@ -18,6 +18,7 @@ class PricingAgent(DomainAgent):
     )
     metric_tools = METRIC_TOOLS
     detector_tools = DETECTOR_TOOLS
+    lookup_tools = LOOKUP_TOOLS
     recommendation_playbook = [
         Recommendation(
             title="Set a minimum-margin floor in the pricing rules",

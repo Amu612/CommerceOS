@@ -1,19 +1,20 @@
 .orch {
   min-height: 100vh;
   padding: 28px 32px 60px;
-  background: #080d14;
-  color: #e2e8f0;
-  font-family: Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  background: var(--bg-app);
+  color: var(--text-primary);
+  font-family: var(--font-body), ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
 }
 .orch-header {
   display: flex;
   flex-wrap: wrap;
   gap: 16px;
   justify-content: space-between;
-  background: linear-gradient(135deg, #0f172a, #131a2e);
-  border: 1px solid #1e293b;
+  background: linear-gradient(135deg, var(--bg-surface), var(--bg-elevated));
+  border: 1px solid var(--border);
   border-radius: 16px;
   padding: 22px 24px;
+  box-shadow: var(--shadow-md);
 }
 .orch-header-right {
   display: flex;
@@ -27,26 +28,26 @@
   font-size: 11px;
   font-weight: 700;
   letter-spacing: 0.16em;
-  color: #f472b6;
+  color: var(--accent-gold);
 }
 .orch-dot {
   width: 9px;
   height: 9px;
   border-radius: 50%;
-  background: #f472b6;
-  box-shadow: 0 0 14px #f472b6;
+  background: var(--accent-gold);
+  box-shadow: 0 0 14px rgba(180, 83, 9, 0.4);
 }
 .orch-title {
   margin: 8px 0 4px;
   font-size: 26px;
-  font-weight: 800;
-  letter-spacing: -0.03em;
-  color: #fff;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  color: var(--text-primary);
 }
 .orch-sub {
   margin: 0;
   font-size: 13px;
-  color: #94a3b8;
+  color: var(--text-secondary);
   max-width: 680px;
   line-height: 1.55;
 }
@@ -59,12 +60,12 @@
 }
 .orch-conf {
   font-size: 10px;
-  color: #64748b;
+  color: var(--text-muted);
 }
 .orch-btn {
-  border: 1px solid #be185d;
-  background: #db2777;
-  color: #fff;
+  border: 1px solid var(--accent-primary-dark);
+  background: var(--accent-primary);
+  color: var(--text-on-accent);
   font-weight: 700;
   font-size: 13px;
   padding: 10px 18px;
@@ -72,7 +73,7 @@
   cursor: pointer;
 }
 .orch-btn:hover:not(:disabled) {
-  background: #ec4899;
+  background: var(--accent-primary-light);
 }
 .orch-btn:disabled {
   opacity: 0.5;
@@ -81,19 +82,19 @@
   margin-top: 16px;
   padding: 13px 16px;
   border-radius: 12px;
-  background: rgba(153, 27, 27, 0.18);
-  border: 1px solid rgba(248, 113, 113, 0.4);
-  color: #fca5a5;
+  background: var(--status-danger-bg);
+  border: 1px solid rgba(185, 28, 28, 0.35);
+  color: var(--status-danger);
   font-size: 13px;
 }
 .orch-summary {
   margin: 18px 2px 0;
   font-size: 14.5px;
   line-height: 1.65;
-  color: #e2e8f0;
-  background: #0f172a;
-  border: 1px solid #1e293b;
-  border-left: 3px solid #f472b6;
+  color: var(--text-primary);
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent-gold);
   border-radius: 10px;
   padding: 14px 16px;
 }
@@ -105,30 +106,31 @@
   margin-top: 18px;
 }
 .orch-kpi {
-  background: #0f172a;
-  border: 1px solid #1e293b;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
   border-radius: 14px;
   padding: 16px;
   display: flex;
   flex-direction: column;
   gap: 4px;
+  box-shadow: var(--shadow-sm);
 }
 .orch-kpi-value {
   font-size: 26px;
-  font-weight: 800;
-  color: #fff;
+  font-weight: 700;
+  color: var(--text-primary);
 }
 .orch-kpi-label {
   font-size: 11px;
   text-transform: uppercase;
   letter-spacing: 0.07em;
-  color: #64748b;
+  color: var(--text-muted);
 }
 .orch-kpi-crit .orch-kpi-value {
-  color: #f87171;
+  color: var(--status-danger);
 }
 .orch-kpi-warn .orch-kpi-value {
-  color: #fbbf24;
+  color: var(--status-warning);
 }
 
 .orch-grid {
@@ -139,11 +141,12 @@
 }
 .orch-domain {
   position: relative;
-  background: #0f172a;
-  border: 1px solid #1e293b;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
   border-top: 3px solid var(--a);
   border-radius: 14px;
   padding: 16px 18px 26px;
+  box-shadow: var(--shadow-sm);
 }
 .orch-domain-head {
   display: flex;
@@ -152,8 +155,8 @@
 }
 .orch-domain-name {
   font-size: 15px;
-  font-weight: 800;
-  color: #fff;
+  font-weight: 700;
+  color: var(--text-primary);
 }
 .orch-domain-health {
   font-size: 11px;
@@ -162,7 +165,7 @@
 .orch-domain-headline {
   margin: 8px 0 12px;
   font-size: 12px;
-  color: #94a3b8;
+  color: var(--text-secondary);
   line-height: 1.5;
   min-height: 34px;
 }
@@ -172,8 +175,8 @@
   gap: 8px;
 }
 .orch-mini {
-  background: #0b1220;
-  border: 1px solid #1e293b;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
   border-radius: 8px;
   padding: 8px 10px;
   display: flex;
@@ -183,12 +186,12 @@
   font-size: 9px;
   text-transform: uppercase;
   letter-spacing: 0.05em;
-  color: #64748b;
+  color: var(--text-muted);
 }
 .orch-mini-value {
   font-size: 14px;
   font-weight: 700;
-  color: #f1f5f9;
+  color: var(--text-primary);
 }
 .orch-domain-findings {
   margin-top: 12px;
@@ -198,7 +201,7 @@
 }
 .orch-df {
   font-size: 11.5px;
-  color: #cbd5e1;
+  color: var(--text-secondary);
   line-height: 1.4;
   display: flex;
   gap: 6px;
@@ -210,52 +213,53 @@
   padding: 1px 6px;
   border-radius: 5px;
   flex-shrink: 0;
-  color: #06121f;
+  color: var(--text-on-accent);
 }
 .orch-df-sev[data-sev="CRITICAL"] {
-  background: #f87171;
+  background: var(--status-danger);
 }
 .orch-df-sev[data-sev="HIGH"] {
-  background: #fb923c;
+  background: #c2410c;
 }
 .orch-df-sev[data-sev="MEDIUM"] {
-  background: #fbbf24;
+  background: var(--status-warning);
 }
 .orch-df-sev[data-sev="LOW"] {
-  background: #60a5fa;
+  background: #0369a1;
 }
 .orch-latency {
   position: absolute;
   right: 12px;
   bottom: 8px;
   font-size: 9px;
-  color: #475569;
+  color: var(--text-muted);
   font-family: ui-monospace, monospace;
 }
 
 .orch-section {
-  background: #0f172a;
-  border: 1px solid #1e293b;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
   border-radius: 16px;
   padding: 22px 24px;
   margin-top: 22px;
+  box-shadow: var(--shadow-sm);
 }
 .orch-section-title {
   margin: 0 0 14px;
   font-size: 16px;
   font-weight: 700;
-  color: #fff;
+  color: var(--text-primary);
 }
 .orch-systemic,
 .orch-conflict {
-  background: #0b1220;
-  border: 1px solid #1e293b;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
   border-radius: 12px;
   padding: 14px 16px;
   margin-bottom: 12px;
 }
 .orch-systemic {
-  border-left: 3px solid #f59e0b;
+  border-left: 3px solid var(--status-warning);
 }
 .orch-systemic-head {
   display: flex;
@@ -267,12 +271,12 @@
 .orch-systemic-title {
   font-size: 14px;
   font-weight: 700;
-  color: #fff;
+  color: var(--text-primary);
 }
 .orch-systemic-domains {
   font-size: 10px;
-  color: #64748b;
-  border: 1px solid #1e293b;
+  color: var(--text-muted);
+  border: 1px solid var(--border);
   border-radius: 6px;
   padding: 1px 7px;
 }
@@ -280,23 +284,23 @@
 .orch-conflict-desc {
   margin: 0 0 6px;
   font-size: 12.5px;
-  color: #94a3b8;
+  color: var(--text-secondary);
   line-height: 1.55;
 }
 .orch-systemic-act,
 .orch-conflict-res {
   margin: 0;
   font-size: 12.5px;
-  color: #cbd5e1;
+  color: var(--text-secondary);
   line-height: 1.55;
 }
 .orch-conflict {
-  border-left: 3px solid #60a5fa;
+  border-left: 3px solid #0369a1;
 }
 .orch-conflict-head {
   font-size: 13px;
   font-weight: 800;
-  color: #93c5fd;
+  color: #0369a1;
   margin-bottom: 6px;
 }
 .orch-actions {
@@ -308,6 +312,6 @@
 }
 .orch-actions li {
   font-size: 13px;
-  color: #cbd5e1;
+  color: var(--text-secondary);
   line-height: 1.5;
 }

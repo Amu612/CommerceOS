@@ -72,6 +72,7 @@ AGENT_MANIFEST: List[Dict[str, str]] = [
 class CustomerQueryRequest(BaseModel):
     query: Optional[str] = None
     message: Optional[str] = None
+    history: Optional[List[dict]] = None
 
 
 # ── Response models ───────────────────────────────────────────────

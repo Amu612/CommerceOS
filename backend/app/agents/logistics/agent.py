@@ -5,7 +5,7 @@ from typing import Any, Optional
 
 from app.agents.common_schemas import MetricCard, Recommendation
 from app.agents.framework import DomainAgent
-from app.agents.logistics.tools import DETECTOR_TOOLS, METRIC_TOOLS
+from app.agents.logistics.tools import DETECTOR_TOOLS, LOOKUP_TOOLS, METRIC_TOOLS
 
 
 class LogisticsAgent(DomainAgent):
@@ -17,6 +17,7 @@ class LogisticsAgent(DomainAgent):
     )
     metric_tools = METRIC_TOOLS
     detector_tools = DETECTOR_TOOLS
+    lookup_tools = LOOKUP_TOOLS
     recommendation_playbook = [
         Recommendation(
             title="Re-weight carrier routing by observed reliability",

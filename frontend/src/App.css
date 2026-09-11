@@ -1,0 +1,190 @@
+.app-shell {
+  min-height: 100vh;
+  background: var(--bg-app);
+}
+
+.app-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px;
+  padding: 14px 24px;
+  background: var(--bg-surface);
+  border-bottom: 1px solid var(--border);
+  position: sticky;
+  top: 0;
+  z-index: 50;
+  box-shadow: var(--shadow-sm);
+}
+
+.app-brand-row {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+.app-logo {
+  width: 36px;
+  height: 36px;
+  border-radius: 10px;
+  background: linear-gradient(135deg, var(--accent-primary) 0%, var(--accent-gold-light) 100%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 900;
+  font-size: 17px;
+  color: var(--text-on-accent);
+  box-shadow: 0 0 16px rgba(49, 46, 129, 0.25);
+}
+
+.app-title-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.app-title {
+  font-family: var(--font-display);
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--text-primary);
+  letter-spacing: -0.01em;
+}
+
+.app-badge {
+  font-size: 9px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  padding: 2px 8px;
+  border-radius: 9999px;
+  background: rgba(180, 83, 9, 0.12);
+  color: var(--accent-gold);
+  border: 1px solid rgba(180, 83, 9, 0.3);
+}
+
+.app-tagline {
+  margin: 0;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.app-llm-badge {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  padding: 3px 9px;
+  border-radius: 9999px;
+  white-space: nowrap;
+}
+.app-llm-badge.on {
+  background: var(--status-success-bg);
+  color: var(--status-success);
+  border: 1px solid rgba(15, 118, 110, 0.35);
+}
+.app-llm-badge.off {
+  background: var(--bg-elevated);
+  color: var(--text-muted);
+  border: 1px solid var(--border);
+}
+
+.app-nav {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-wrap: wrap;
+  background: var(--bg-elevated);
+  padding: 4px;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+}
+
+.app-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 7px 13px;
+  border-radius: 8px;
+  border: none;
+  font-size: 12.5px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  background: transparent;
+  color: var(--text-secondary);
+}
+.app-tab.active {
+  color: var(--text-on-accent);
+  box-shadow: var(--shadow-sm);
+}
+.app-tab-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  display: inline-block;
+}
+.app-tab-badge {
+  font-size: 9px;
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: rgba(30, 27, 46, 0.08);
+  color: inherit;
+}
+.app-tab.active .app-tab-badge {
+  background: rgba(255, 255, 255, 0.22);
+}
+
+.app-user-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.app-user-chip {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--text-secondary);
+  padding: 5px 10px;
+  border-radius: 9999px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  white-space: nowrap;
+}
+
+.app-logout-btn {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--status-danger);
+  padding: 5px 12px;
+  border-radius: 8px;
+  background: transparent;
+  border: 1px solid rgba(185, 28, 28, 0.35);
+  cursor: pointer;
+}
+
+.app-toast {
+  /* Bottom-right, not top-right: the header/nav can wrap to two rows at
+     narrower widths, and a top-anchored toast would then sit on top of
+     the nav buttons and silently swallow clicks meant for them. */
+  position: fixed;
+  bottom: 24px;
+  right: 24px;
+  z-index: 90;
+  padding: 10px 16px;
+  border-radius: 10px;
+  background: var(--status-success-bg);
+  border: 1px solid rgba(15, 118, 110, 0.35);
+  color: var(--status-success);
+  font-size: 12.5px;
+  font-weight: 700;
+  box-shadow: var(--shadow-lg);
+  pointer-events: none;
+}
+
+.app-ingestion-bar {
+  background: var(--bg-surface);
+  border-bottom: 1px solid var(--border);
+  padding: 10px 24px;
+}

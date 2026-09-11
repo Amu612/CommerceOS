@@ -48,6 +48,17 @@ export const API_ENDPOINTS = {
     status: `${API_BASE_URL}/api/simulation/status`,
     control: `${API_BASE_URL}/api/simulation/control`,
   },
+  dataSource: {
+    get: `${API_BASE_URL}/api/v1/data-source`,
+    select: `${API_BASE_URL}/api/v1/data-source/select`,
+  },
+  shopify: {
+    sync: `${API_BASE_URL}/api/v1/shopify/sync`,
+  },
+  pricingCompetitorFeed: {
+    status: `${API_BASE_URL}/api/v1/agents/pricing/competitor-feed`,
+    sync: `${API_BASE_URL}/api/v1/agents/pricing/competitor-feed/sync`,
+  },
 } as const;
 
 export { API_BASE_URL, WS_BASE_URL };

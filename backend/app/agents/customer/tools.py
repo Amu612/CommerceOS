@@ -17,14 +17,12 @@ from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from app.database.session import SessionLocal
-from app.models.olist import Order, OrderPayment
+from app.models.olist import Order, OrderPayment, OrderReview
 from app.models.dataco import DataCoOrder
 from app.agents.orders.tools import OrdersTools, get_simulated_clock
+from app.agents._shared import extract_order_id, money, simulated_clock
 
 logger = logging.getLogger(__name__)
-
-# 32-char Olist UUID, a "#1234" style id, or a bare 2-10 digit DataCo id
-_ORDER_ID_RE = re.compile(r"#?\b([0-9a-fA-F]{32}|\d{2,10})\b")
 
 _PRODUCT_STOPWORDS = {
     "do", "you", "have", "any", "a", "an", "the", "in", "stock", "for", "me", "is",
@@ -32,22 +30,6 @@ _PRODUCT_STOPWORDS = {
     "show", "find", "get", "whats", "what", "s", "your", "some", "can", "tell",
     "about", "price", "cost", "much", "how", "available", "availability",
 }
-
-
-def extract_order_id(message: str) -> str:
-    """Pulls the most likely order identifier out of a free-text message."""
-    if not message:
-        return ""
-    # Prefer an explicit "order <id>" / "order #<id>" / "invoice <id>" mention
-    m = re.search(
-        r"(?:order|invoice|rma|tracking)\s*(?:id|number|no\.?|#)?\s*[:#]?\s*([0-9a-fA-F]{4,32}|\d{1,10})",
-        message,
-        re.IGNORECASE,
-    )
-    if m:
-        return m.group(1)
-    m = _ORDER_ID_RE.search(message)
-    return m.group(1) if m else ""
 
 
 def clean_product_query(message: str) -> str:
@@ -93,6 +75,30 @@ def verify_order_id(order_id: str, db: Optional[Session] = None) -> bool:
             db.close()
 
 
+def _order_review(order_id: str, db: Optional[Session] = None) -> Optional[Dict[str, Any]]:
+    """Looks up the review left on an order — the `order_reviews` table, joined by order id."""
+    if not order_id:
+        return None
+    close = False
+    if db is None:
+        db = SessionLocal()
+        close = True
+    try:
+        clean = str(order_id).strip().replace("#", "")
+        rev = db.query(OrderReview).filter(OrderReview.order_id.ilike(f"{clean}%")).first()
+        if not rev:
+            return None
+        return {
+            "review_score": rev.review_score,
+            "review_comment": rev.review_comment_message,
+        }
+    except Exception:  # noqa: BLE001
+        return None
+    finally:
+        if close:
+            db.close()
+
+
 class CustomerSupportTools:
     """
     Stateless customer-facing toolset. Each method returns a (text, tool_records)
@@ -117,6 +123,7 @@ class CustomerSupportTools:
             rec["output"] = f"Order #{order_id} not found in transaction records."
             return (rec["output"], [rec], None)
 
+        review = _order_review(detail.order_id, db=db)
         ctx = {
             "order_id": detail.order_id,
             "status": detail.status,
@@ -128,12 +135,14 @@ class CustomerSupportTools:
             "estimated_delivery": (detail.estimated_delivery_date or "")[:10] or None,
             "tracking_number": detail.tracking_number,
             "item_count": len(detail.items),
+            "review_score": review.get("review_score") if review else None,
         }
         rec["output"] = ctx
+        review_str = f" | review {review['review_score']}/5" if review and review.get("review_score") else ""
         text = (
-            f"Order #{ctx['order_id']} | status={ctx['status']} | total=${ctx['total']:.2f} | "
+            f"Order #{ctx['order_id']} | status={ctx['status']} | total={money(ctx['total'])} | "
             f"placed {ctx['purchase_date']} | ships to {ctx['customer_city'] or '?'}, {ctx['customer_state'] or '?'} | "
-            f"{ctx['item_count']} item(s) | tracking {ctx['tracking_number']}"
+            f"{ctx['item_count']} item(s) | tracking {ctx['tracking_number']}{review_str}"
         )
         return (text, [rec], ctx)
 
@@ -177,7 +186,7 @@ class CustomerSupportTools:
         for p in res["products"][:3]:
             cat = p.get("category_english") or p.get("category", "General")
             price = p.get("avg_price", p.get("price", 0.0))
-            lines.append(f"{cat.title()} (ID {str(p.get('product_id'))[:8]}) ~ ${price:.2f}, {p.get('orders_count', 0)} sold")
+            lines.append(f"{cat.title()} (ID {str(p.get('product_id'))[:8]}) ~ {money(price)}, {p.get('orders_count', 0)} sold")
         return ("Catalog matches: " + " | ".join(lines), [rec])
 
     # ── Billing ───────────────────────────────────────────────────
@@ -209,7 +218,7 @@ class CustomerSupportTools:
                     "line_count": len(payments),
                 }
                 text = (
-                    f"Order #{clean}: charged ${total:.2f} via {methods}"
+                    f"Order #{clean}: charged {money(total)} via {methods}"
                     + (f" in {installments} installments" if installments > 1 else "")
                     + f" across {len(payments)} payment line(s)."
                 )
@@ -227,7 +236,7 @@ class CustomerSupportTools:
                     "status": dc.order_status,
                 }
                 return (
-                    f"Order #{dc.order_id}: billed ${float(dc.order_total or 0.0):.2f} "
+                    f"Order #{dc.order_id}: billed {money(dc.order_total or 0.0)} "
                     f"via {dc.payment_type or 'card'} (order status {dc.order_status}).",
                     [rec],
                 )
@@ -237,7 +246,7 @@ class CustomerSupportTools:
             if detail:
                 rec["output"] = {"charged_total": detail.total, "payment_methods": "on file", "source": "order_total"}
                 return (
-                    f"Order #{detail.order_id}: order value ${detail.total:.2f}. "
+                    f"Order #{detail.order_id}: order value {money(detail.total)}. "
                     f"Itemised payment breakdown is not on file for this order.",
                     [rec],
                 )
@@ -284,7 +293,7 @@ class CustomerSupportTools:
             })
             return (
                 f"Order #{order_id} is ELIGIBLE. RMA {rma.rma_number} created for a "
-                f"${rma.refund_amount:.2f} refund. {rma.instructions}",
+                f"{money(rma.refund_amount)} refund. {rma.instructions}",
                 records,
             )
         return (f"Order #{order_id} is ELIGIBLE for return ({elig.message}). Confirm with the customer before issuing an RMA.", records)
@@ -299,11 +308,14 @@ class CustomerSupportTools:
         if not detail:
             rec["output"] = "not found"
             return (f"Order #{order_id} was not found.", [rec])
-        rec["output"] = detail.model_dump()
+        review = _order_review(detail.order_id, db=db)
+        rec["output"] = {**detail.model_dump(), "review": review}
         items = ", ".join(it.product_name for it in detail.items[:3]) or "fulfillment package"
+        review_str = f" | review {review['review_score']}/5" if review and review.get("review_score") else ""
         return (
-            f"Order #{detail.order_id}: status {detail.status.upper()}, total ${detail.total:.2f}, "
-            f"placed {(detail.purchase_timestamp or '')[:10]}, tracking {detail.tracking_number}. Items: {items}.",
+            f"Order #{detail.order_id}: status {detail.status.upper()}, total {money(detail.total)}, "
+            f"placed {(detail.purchase_timestamp or '')[:10]}, tracking {detail.tracking_number}. "
+            f"Items: {items}.{review_str}",
             [rec],
         )
 
@@ -317,3 +329,142 @@ class CustomerSupportTools:
             f"{s.get('delay_rate_pct', 0):.1f}% delayed, SLA {s.get('sla_health', 'UNKNOWN')}."
         )
         return (text, [rec])
+
+    # ── Analytics: recent orders / follow-up candidates ────────────
+    @staticmethod
+    def recent_orders(limit: int = 5, db: Optional[Session] = None) -> Tuple[str, List[Dict[str, Any]]]:
+        """
+        Most recent orders in the store up to the simulated clock. There is no
+        login-linked customer session in this system, so 'my recent orders' /
+        'my previous order' resolve to the most recent store-wide activity.
+        """
+        close = False
+        if db is None:
+            db = SessionLocal()
+            close = True
+        try:
+            clock = simulated_clock(db)
+            rows = (
+                db.query(Order)
+                .filter(Order.order_purchase_timestamp <= clock)
+                .order_by(Order.order_purchase_timestamp.desc())
+                .limit(max(1, limit))
+                .all()
+            )
+            rec = {"tool": "recent_orders", "name": "recent_orders", "input": {"limit": limit}}
+            if not rows:
+                rec["output"] = []
+                return ("No orders found in the current data slice.", [rec])
+            lines = []
+            for o in rows:
+                total = float(sum((it.price or 0) for it in o.items)) if o.items else 0.0
+                lines.append(
+                    f"#{o.order_id[:8]} — {o.order_status} — {money(total)} — "
+                    f"placed {(o.order_purchase_timestamp.isoformat()[:10] if o.order_purchase_timestamp else '?')}"
+                )
+            rec["output"] = lines
+            return (
+                "No customer session is linked to this chat, so here are the most recent orders store-wide "
+                "(give me an Order ID for a specific one):\n- " + "\n- ".join(lines),
+                [rec],
+            )
+        finally:
+            if close:
+                db.close()
+
+    @staticmethod
+    def late_delivery_poor_review(limit: int = 10, db: Optional[Session] = None) -> Tuple[str, List[Dict[str, Any]]]:
+        """Orders delivered after their estimated date AND reviewed 2 stars or below."""
+        close = False
+        if db is None:
+            db = SessionLocal()
+            close = True
+        try:
+            clock = simulated_clock(db)
+            rows = (
+                db.query(Order, OrderReview)
+                .join(OrderReview, OrderReview.order_id == Order.order_id)
+                .filter(
+                    Order.order_purchase_timestamp <= clock,
+                    Order.order_delivered_customer_date.isnot(None),
+                    Order.order_estimated_delivery_date.isnot(None),
+                    Order.order_delivered_customer_date > Order.order_estimated_delivery_date,
+                    OrderReview.review_score <= 2,
+                )
+                .order_by(Order.order_delivered_customer_date.desc())
+                .limit(max(1, limit))
+                .all()
+            )
+            rec = {"tool": "late_delivery_poor_review", "name": "late_delivery_poor_review", "input": {"limit": limit}}
+            if not rows:
+                rec["output"] = []
+                return ("No orders found that were both delivered late and rated 2 stars or below.", [rec])
+            lines = []
+            for o, r in rows:
+                delay_days = (o.order_delivered_customer_date - o.order_estimated_delivery_date).days
+                lines.append(
+                    f"#{o.order_id[:8]} — customer {o.customer_id[:8]} — {delay_days}d late — review {r.review_score}/5"
+                )
+            rec["output"] = lines
+            return (
+                f"{len(rows)} order(s) delivered late AND rated ≤2 stars:\n- " + "\n- ".join(lines),
+                [rec],
+            )
+        finally:
+            if close:
+                db.close()
+
+    @staticmethod
+    def followup_candidates(limit: int = 10, db: Optional[Session] = None) -> Tuple[str, List[Dict[str, Any]]]:
+        """
+        Broader net than late+poor-review: any order that is late OR poorly
+        reviewed OR still pending well past its estimated delivery date.
+        """
+        close = False
+        if db is None:
+            db = SessionLocal()
+            close = True
+        try:
+            clock = simulated_clock(db)
+            late_or_poor = (
+                db.query(Order, OrderReview)
+                .outerjoin(OrderReview, OrderReview.order_id == Order.order_id)
+                .filter(
+                    Order.order_purchase_timestamp <= clock,
+                    or_(
+                        (Order.order_delivered_customer_date.isnot(None))
+                        & (Order.order_estimated_delivery_date.isnot(None))
+                        & (Order.order_delivered_customer_date > Order.order_estimated_delivery_date),
+                        OrderReview.review_score <= 2,
+                        (Order.order_delivered_customer_date.is_(None))
+                        & (Order.order_estimated_delivery_date.isnot(None))
+                        & (Order.order_estimated_delivery_date < clock)
+                        & (Order.order_status.notin_(["cancelled", "canceled"])),
+                    ),
+                )
+                .order_by(Order.order_purchase_timestamp.desc())
+                .limit(max(1, limit))
+                .all()
+            )
+            rec = {"tool": "followup_candidates", "name": "followup_candidates", "input": {"limit": limit}}
+            if not late_or_poor:
+                rec["output"] = []
+                return ("No orders currently flagged for customer-service follow-up.", [rec])
+            lines = []
+            for o, r in late_or_poor:
+                reasons = []
+                if o.order_delivered_customer_date and o.order_estimated_delivery_date and o.order_delivered_customer_date > o.order_estimated_delivery_date:
+                    reasons.append(f"{(o.order_delivered_customer_date - o.order_estimated_delivery_date).days}d late")
+                if r and r.review_score is not None and r.review_score <= 2:
+                    reasons.append(f"review {r.review_score}/5")
+                if not o.order_delivered_customer_date and o.order_estimated_delivery_date and o.order_estimated_delivery_date < clock:
+                    reasons.append("overdue / not yet delivered")
+                lines.append(f"#{o.order_id[:8]} — {o.order_status} — " + ", ".join(reasons))
+            rec["output"] = lines
+            return (
+                f"{len(late_or_poor)} order(s) may need customer-service follow-up:\n- " + "\n- ".join(lines),
+                [rec],
+            )
+        finally:
+            if close:
+                db.close()

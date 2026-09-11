@@ -1,8 +1,11 @@
 "use client";
 
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import "./InventoryAgentView.css";
+import "./DomainAgentView.css";
 import { API_ENDPOINTS } from "./config";
+import { renderMarkdown } from "./lib/markdown";
+import { humanizeToolName } from "./lib/format";
 
 type InventoryAgentViewProps = {
   monitorUrl?: string;
@@ -148,12 +151,12 @@ function formatCurrency(value: unknown): string {
   const number = toNumber(value);
 
   if (number === null) {
-    return "$0.00";
+    return "₹0.00";
   }
 
-  return new Intl.NumberFormat(undefined, {
+  return new Intl.NumberFormat("en-US", {
     style: "currency",
-    currency: "USD",
+    currency: "INR",
     maximumFractionDigits: 2,
   }).format(number);
 }
@@ -195,6 +198,13 @@ function getRecommendationQuantity(
   );
 }
 
+const INVENTORY_SUGGESTIONS = [
+  "Which products are below threshold?",
+  "What's the reorder point for the lowest-stock item?",
+  "Which products are selling fastest?",
+  "What are the top reorder recommendations?",
+];
+
 export default function InventoryAgentView({
   monitorUrl = API_ENDPOINTS.inventory.monitor,
   queryUrl = API_ENDPOINTS.inventory.query,
@@ -207,9 +217,14 @@ export default function InventoryAgentView({
   const [error, setError] = useState<string | null>(null);
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
 
-  const [query, setQuery] = useState("");
-  const [queryLoading, setQueryLoading] = useState(false);
-  const [queryResult, setQueryResult] = useState<string | null>(null);
+  // Chat — same shape/behavior as the other agent assistants so the
+  // interface is consistent across the whole dashboard: a running
+  // conversation log (not a single-shot query box), with the last few turns
+  // sent back on each ask so the agent can resolve follow-up questions.
+  const [input, setInput] = useState("");
+  const [chat, setChat] = useState<{ role: "user" | "agent"; text: string; llm?: boolean }[]>([]);
+  const [asking, setAsking] = useState(false);
+  const chatRef = useRef<HTMLDivElement | null>(null);
 
   const [selectedProduct, setSelectedProduct] = useState<
     string | number | null
@@ -254,49 +269,37 @@ export default function InventoryAgentView({
     await runMonitor();
   };
 
-  const runQuery = async () => {
-    const trimmed = query.trim();
-
-    if (!trimmed) {
-      return;
-    }
-
+  const ask = async (raw: string) => {
+    const q = raw.trim();
+    if (!q || asking) return;
+    const history = chat.slice(-6).map((m) => ({ role: m.role === "user" ? "user" : "assistant", text: m.text }));
+    setChat((c) => [...c, { role: "user", text: q }]);
+    setInput("");
+    setAsking(true);
     try {
-      setQueryLoading(true);
-      setError(null);
-
       const response = await fetch(queryUrl, {
         method: "POST",
         headers: getAuthHeaders(),
-        body: JSON.stringify({
-          query: trimmed,
-        }),
+        body: JSON.stringify({ query: q, history }),
       });
-
       if (!response.ok) {
         const message = await response.text();
-        throw new Error(
-          message || `Inventory query returned ${response.status}`
-        );
+        throw new Error(message || `Inventory query returned ${response.status}`);
       }
-
-      const result = (await response.json()) as AgentResponse;
-
-      setQueryResult(
-        typeof result.output === "string"
-          ? result.output
-          : JSON.stringify(result, null, 2)
-      );
+      const result = (await response.json()) as AgentResponse & { llm_backed?: boolean };
+      const outputText = typeof result.output === "string" ? result.output : JSON.stringify(result, null, 2);
+      setChat((c) => [...c, { role: "agent", text: outputText, llm: result.llm_backed }]);
     } catch (err) {
-      setError(
-        err instanceof Error
-          ? err.message
-          : "Inventory agent query failed."
-      );
+      const msg = err instanceof Error ? err.message : "Inventory agent query failed.";
+      setChat((c) => [...c, { role: "agent", text: `⚠️ ${msg}` }]);
     } finally {
-      setQueryLoading(false);
+      setAsking(false);
     }
   };
+
+  useEffect(() => {
+    chatRef.current?.scrollTo({ top: chatRef.current.scrollHeight, behavior: "smooth" });
+  }, [chat, asking]);
 
   useEffect(() => {
     runMonitor();
@@ -420,7 +423,7 @@ export default function InventoryAgentView({
 
         <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
           {lastUpdated && (
-            <span style={{ fontSize: "12px", color: "#64748b" }}>
+            <span style={{ fontSize: "12px", color: "var(--text-muted)" }}>
               Updated {lastUpdated.toLocaleTimeString()}
             </span>
           )}
@@ -437,7 +440,7 @@ export default function InventoryAgentView({
 
       {/* Error */}
       {error && (
-        <div style={{ marginTop: "16px", padding: "14px 18px", borderRadius: "12px", background: "rgba(153, 27, 27, 0.2)", border: "1px solid rgba(239, 68, 68, 0.4)", color: "#fca5a5", fontSize: "13px" }}>
+        <div style={{ marginTop: "16px", padding: "14px 18px", borderRadius: "12px", background: "var(--status-danger-bg)", border: "1px solid rgba(185, 28, 28, 0.35)", color: "var(--status-danger)", fontSize: "13px" }}>
           <strong>Inventory Agent note:</strong> {error}
         </div>
       )}
@@ -478,7 +481,7 @@ export default function InventoryAgentView({
           />
 
           <div className="inv-output-box">
-            {data.output}
+            {renderMarkdown(data.output) ?? data.output}
           </div>
         </div>
       )}
@@ -498,8 +501,8 @@ export default function InventoryAgentView({
               <div
                 key={String(alert.id ?? index)}
                 style={{
-                  background: "#090d16",
-                  border: "1px solid #1e293b",
+                  background: "var(--bg-elevated)",
+                  border: "1px solid var(--border)",
                   borderRadius: "12px",
                   padding: "16px",
                   display: "flex",
@@ -510,7 +513,7 @@ export default function InventoryAgentView({
               >
                 <div>
                   <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-                    <span style={{ fontWeight: 700, color: "#ffffff", fontSize: "14px" }}>
+                    <span style={{ fontWeight: 700, color: "var(--text-primary)", fontSize: "14px" }}>
                       {alert.name ?? alert.sku ?? `Product ${alert.product_id ?? ""}`}
                     </span>
 
@@ -521,9 +524,9 @@ export default function InventoryAgentView({
                           padding: "2px 8px",
                           fontSize: "11px",
                           fontWeight: 700,
-                          background: alert.severity === "CRITICAL" ? "rgba(239, 68, 68, 0.15)" : "rgba(245, 158, 11, 0.15)",
-                          color: alert.severity === "CRITICAL" ? "#fca5a5" : "#fde68a",
-                          border: alert.severity === "CRITICAL" ? "1px solid rgba(239, 68, 68, 0.3)" : "1px solid rgba(245, 158, 11, 0.3)",
+                          background: alert.severity === "CRITICAL" ? "var(--status-danger-bg)" : "var(--status-warning-bg)",
+                          color: alert.severity === "CRITICAL" ? "var(--status-danger)" : "var(--status-warning)",
+                          border: alert.severity === "CRITICAL" ? "1px solid rgba(185, 28, 28, 0.3)" : "1px solid rgba(180, 83, 9, 0.3)",
                         }}
                       >
                         {alert.severity}
@@ -531,12 +534,12 @@ export default function InventoryAgentView({
                     )}
                   </div>
 
-                  <p style={{ margin: "8px 0 0 0", fontSize: "13px", color: "#94a3b8" }}>
+                  <p style={{ margin: "8px 0 0 0", fontSize: "13px", color: "var(--text-secondary)" }}>
                     {alert.message ?? alert.reason ?? "Inventory alert"}
                   </p>
                 </div>
 
-                <span style={{ fontSize: "11px", color: "#64748b", whiteSpace: "nowrap" }}>
+                <span style={{ fontSize: "11px", color: "var(--text-muted)", whiteSpace: "nowrap" }}>
                   {alert.timestamp ?? alert.created_at ?? ""}
                 </span>
               </div>
@@ -590,7 +593,7 @@ export default function InventoryAgentView({
                             padding: 0,
                             cursor: "pointer",
                             fontWeight: 600,
-                            color: "#ffffff",
+                            color: "var(--text-primary)",
                             textAlign: "left",
                           }}
                         >
@@ -598,21 +601,21 @@ export default function InventoryAgentView({
                         </button>
                       </td>
 
-                      <td style={{ color: "#94a3b8" }}>
+                      <td style={{ color: "var(--text-secondary)" }}>
                         {product.sku ?? `SKU-${String(productId).slice(0, 8).toUpperCase()}`}
                       </td>
 
-                      <td style={{ color: "#94a3b8" }}>
+                      <td style={{ color: "var(--text-secondary)" }}>
                         {product.category ?? "General Merchandise"}
                       </td>
 
                       <td>
-                        <span style={{ fontWeight: 700, color: (stock ?? 0) < 50 ? "#fcd34d" : "#34d399" }}>
+                        <span style={{ fontWeight: 700, color: (stock ?? 0) < 50 ? "var(--status-warning)" : "var(--status-success)" }}>
                           {formatNumber(stock)}
                         </span>
                       </td>
 
-                      <td style={{ color: "#94a3b8" }}>
+                      <td style={{ color: "var(--text-secondary)" }}>
                         {formatCurrency(product.price)}
                       </td>
 
@@ -623,7 +626,7 @@ export default function InventoryAgentView({
                             Reorder Triggered
                           </span>
                         ) : (
-                          <span style={{ fontSize: "11px", color: "#34d399" }}>
+                          <span style={{ fontSize: "11px", color: "var(--status-success)" }}>
                             Optimal Stock
                           </span>
                         )}
@@ -665,39 +668,39 @@ export default function InventoryAgentView({
               <tbody>
                 {recommendations.map((item, index) => (
                   <tr key={`${item.product_id ?? item.sku ?? index}`}>
-                    <td style={{ color: "#ffffff", fontWeight: 600 }}>
+                    <td style={{ color: "var(--text-primary)", fontWeight: 600 }}>
                       {item.name ?? item.sku ?? `Product ${item.product_id ?? ""}`}
                     </td>
 
-                    <td style={{ color: "#94a3b8" }}>
+                    <td style={{ color: "var(--text-secondary)" }}>
                       {formatNumber(
                         item.current_stock ?? item.stock_quantity
                       )}
                     </td>
 
-                    <td style={{ color: "#94a3b8" }}>
+                    <td style={{ color: "var(--text-secondary)" }}>
                       {formatNumber(
                         item.daily_sales ?? item.average_daily_sales
                       )}
                     </td>
 
-                    <td style={{ color: "#94a3b8" }}>
+                    <td style={{ color: "var(--text-secondary)" }}>
                       {formatNumber(item.lead_time_days ?? 7)}d
                     </td>
 
-                    <td style={{ color: "#94a3b8" }}>
+                    <td style={{ color: "var(--text-secondary)" }}>
                       {formatNumber(item.safety_stock ?? 15)}
                     </td>
 
-                    <td style={{ fontWeight: 700, color: "#38bdf8" }}>
+                    <td style={{ fontWeight: 700, color: "var(--accent-primary)" }}>
                       {formatNumber(item.reorder_point ?? 35)}
                     </td>
 
-                    <td style={{ fontWeight: 700, color: "#34d399" }}>
+                    <td style={{ fontWeight: 700, color: "var(--status-success)" }}>
                       {formatNumber(getRecommendationQuantity(item) ?? 50)} units
                     </td>
 
-                    <td style={{ color: "#94a3b8" }}>
+                    <td style={{ color: "var(--text-secondary)" }}>
                       {formatCurrency(
                         item.estimated_cost ?? item.supplier_unit_cost
                       )}
@@ -725,13 +728,13 @@ export default function InventoryAgentView({
               <div
                 key={`${item.product_id ?? item.sku ?? index}`}
                 style={{
-                  background: "#090d16",
-                  border: "1px solid #1e293b",
+                  background: "var(--bg-elevated)",
+                  border: "1px solid var(--border)",
                   borderRadius: "12px",
                   padding: "16px",
                 }}
               >
-                <h4 style={{ margin: "0 0 12px 0", fontSize: "14px", fontWeight: 600, color: "#ffffff" }}>
+                <h4 style={{ margin: "0 0 12px 0", fontSize: "14px", fontWeight: 600, color: "var(--text-primary)" }}>
                   {item.name ??
                     item.sku ??
                     `Product ${item.product_id ?? ""}`}
@@ -784,25 +787,25 @@ export default function InventoryAgentView({
                   display: "flex",
                   alignItems: "center",
                   justifyContent: "space-between",
-                  background: "#090d16",
-                  border: "1px solid #1e293b",
+                  background: "var(--bg-elevated)",
+                  border: "1px solid var(--border)",
                   borderRadius: "12px",
                   padding: "14px 16px",
                 }}
               >
                 <div>
-                  <p style={{ margin: 0, fontSize: "13px", fontWeight: 600, color: "#ffffff" }}>
+                  <p style={{ margin: 0, fontSize: "13px", fontWeight: 600, color: "var(--text-primary)" }}>
                     {action.action ?? action.message ?? "Inventory action"}
                   </p>
 
                   {action.product_id !== undefined && (
-                    <p style={{ margin: "4px 0 0 0", fontSize: "11px", color: "#64748b" }}>
+                    <p style={{ margin: "4px 0 0 0", fontSize: "11px", color: "var(--text-muted)" }}>
                       Product: {String(action.product_id)}
                     </p>
                   )}
                 </div>
 
-                <span style={{ fontSize: "11px", fontWeight: 700, color: "#34d399" }}>
+                <span style={{ fontSize: "11px", fontWeight: 700, color: "var(--status-success)" }}>
                   {action.status ?? "EXECUTED"}
                 </span>
               </div>
@@ -811,40 +814,46 @@ export default function InventoryAgentView({
         )}
       </div>
 
-      {/* Interactive Agent */}
-      <div className="inv-section">
-        <SectionTitle
-          title="Inventory Agent Assistant"
-          subtitle="Ask the agent to inspect stock, calculate ROP, analyze demand velocity, or restock items"
-        />
-
-        <div className="inv-input-group" style={{ marginTop: "16px" }}>
+      {/* Interactive Agent — same chat layout as every other agent assistant */}
+      <div className="dav-section" style={{ ["--accent" as string]: "var(--agent-inventory)" }}>
+        <h3 className="dav-section-title">Ask the Inventory Agent</h3>
+        <div className="dav-chat" ref={chatRef}>
+          {chat.length === 0 && (
+            <div className="dav-chat-empty">
+              <p>Ask a question about stock, reorders, or demand.</p>
+              <div className="dav-suggestions">
+                {INVENTORY_SUGGESTIONS.map((s) => (
+                  <button key={s} className="dav-suggestion" onClick={() => setInput(s)}>
+                    {s}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+          {chat.map((m, i) => (
+            <div key={i} className={"dav-msg " + (m.role === "user" ? "dav-msg-user" : "dav-msg-agent")}>
+              {m.role === "agent" && (
+                <span className={"dav-msg-tag " + (m.llm ? "dav-tag-llm" : "dav-tag-det")}>
+                  {m.llm ? "LLM" : "deterministic"}
+                </span>
+              )}
+              <div className="dav-msg-body">{renderMarkdown(m.text) ?? m.text}</div>
+            </div>
+          ))}
+          {asking && <div className="dav-msg dav-msg-agent"><div className="dav-msg-body">…thinking</div></div>}
+        </div>
+        <div className="dav-input-row">
           <input
-            value={query}
-            onChange={(event) => setQuery(event.target.value)}
-            onKeyDown={(event) => {
-              if (event.key === "Enter") {
-                runQuery();
-              }
-            }}
-            placeholder="Ask the Inventory Agent (e.g. 'Which products are below threshold?', 'Stock for sku...', 'Reorder recommendations')..."
-            className="inv-input"
+            className="dav-input"
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && ask(input)}
+            placeholder="Ask the Inventory Agent…"
           />
-
-          <button
-            onClick={runQuery}
-            disabled={queryLoading || !query.trim()}
-            className="inv-btn-primary"
-          >
-            {queryLoading ? "Thinking..." : "Ask Agent"}
+          <button className="dav-btn dav-btn-primary" disabled={asking || !input.trim()} onClick={() => ask(input)}>
+            {asking ? "…" : "Send"}
           </button>
         </div>
-
-        {queryResult && (
-          <div className="inv-output-box">
-            {queryResult}
-          </div>
-        )}
       </div>
 
       {/* Tool Calls */}
@@ -860,27 +869,24 @@ export default function InventoryAgentView({
               <details
                 key={index}
                 style={{
-                  background: "#090d16",
-                  border: "1px solid #1e293b",
+                  background: "var(--bg-elevated)",
+                  border: "1px solid var(--border)",
                   borderRadius: "12px",
                   overflow: "hidden",
                 }}
               >
-                <summary style={{ padding: "12px 16px", cursor: "pointer", fontWeight: 600, fontSize: "13px", color: "#ffffff" }}>
-                  🔧 {call.tool ?? call.name ?? `Tool ${index + 1}`}
+                <summary style={{ padding: "12px 16px", cursor: "pointer", fontWeight: 600, fontSize: "13px", color: "var(--text-primary)" }}>
+                  🔧 {humanizeToolName(call.tool ?? call.name ?? `Step ${index + 1}`)}
                 </summary>
 
-                <div style={{ borderTop: "1px solid #1e293b", padding: "14px 16px", background: "rgba(0, 0, 0, 0.3)" }}>
-                  <pre style={{ margin: 0, fontSize: "11px", color: "#94a3b8", whiteSpace: "pre-wrap", overflowX: "auto" }}>
-                    {JSON.stringify(
-                      {
-                        input: call.input,
-                        output: call.output,
-                      },
-                      null,
-                      2
-                    )}
-                  </pre>
+                <div style={{ borderTop: "1px solid var(--border)", padding: "14px 16px", background: "var(--bg-sunken)", fontSize: "12.5px", color: "var(--text-secondary)", lineHeight: 1.6 }}>
+                  {typeof call.output === "string" ? (
+                    renderMarkdown(call.output) ?? call.output
+                  ) : (
+                    <pre style={{ margin: 0, fontSize: "11px", whiteSpace: "pre-wrap", overflowX: "auto" }}>
+                      {JSON.stringify(call.output, null, 2)}
+                    </pre>
+                  )}
                 </div>
               </details>
             ))}
@@ -925,12 +931,12 @@ function MiniMetric({
   value: string;
 }) {
   return (
-    <div style={{ background: "#0f172a", border: "1px solid #1e293b", borderRadius: "8px", padding: "10px" }}>
-      <p style={{ margin: 0, fontSize: "10px", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.08em", color: "#64748b" }}>
+    <div style={{ background: "var(--bg-surface)", border: "1px solid var(--border)", borderRadius: "8px", padding: "10px" }}>
+      <p style={{ margin: 0, fontSize: "10px", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.08em", color: "var(--text-muted)" }}>
         {label}
       </p>
 
-      <p style={{ margin: "4px 0 0 0", fontSize: "13px", fontWeight: 700, color: "#f1f5f9" }}>
+      <p style={{ margin: "4px 0 0 0", fontSize: "13px", fontWeight: 700, color: "var(--text-primary)" }}>
         {value}
       </p>
     </div>

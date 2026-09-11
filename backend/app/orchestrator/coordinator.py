@@ -142,7 +142,8 @@ class NexusOrchestrator:
             health = "CRITICAL" if any(a.severity == "CRITICAL" for a in (r.alerts or [])) else ("NEEDS_ATTENTION" if low else "HEALTHY")
             findings = [
                 DomainFinding(agent="inventory", category="STOCK", severity=a.severity or "MEDIUM",
-                              title=(a.message or "")[:120], recommended_action=a.reason or "Review reorder plan.", confidence=0.7)
+                              title=(a.message or "")[:120], recommended_action=a.reason or "Review reorder plan.", confidence=0.7,
+                              evidence=f"product_id={a.product_id} sku={a.sku} name={a.name}")
                 for a in (r.alerts or [])[:5]
             ]
             return DomainSnapshot(
@@ -153,7 +154,7 @@ class NexusOrchestrator:
                     {"label": "Products", "value": total},
                     {"label": "Low Stock", "value": low},
                     {"label": "Reorder Candidates", "value": len(r.recommendations or [])},
-                    {"label": "Inventory Value", "value": f"${(r.metrics.inventory_value if r.metrics else 0):,.0f}"},
+                    {"label": "Inventory Value", "value": f"₹{(r.metrics.inventory_value if r.metrics else 0):,.0f}"},
                 ],
                 findings=findings,
             )

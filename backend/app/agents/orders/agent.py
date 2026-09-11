@@ -106,6 +106,20 @@ class OrdersAgent:
 
         logger.info(f"Running Real Orders Agent analysis: {execution_id}")
 
+        try:
+            from app.services.data_source_service import data_source_service
+
+            if data_source_service.is_live():
+                # OrdersTools' full analysis pipeline (backlog aging, cancellation
+                # trend, fulfillment health, forecasting) only reads Olist/DataCo —
+                # report NOT_ESTIMABLE honestly rather than showing stale historic
+                # numbers while Live is selected. (The order-count summary itself
+                # is already live-aware in `OrdersDataLayer`, ready to extend the
+                # rest of this pipeline onto.)
+                return self._insufficient_data_output(now_str, execution_id, snapshot_id)
+        except Exception:  # noqa: BLE001
+            pass
+
         # ── PHASE 1: OBSERVE ──────────────────────────────────────────────────
         if db is None:
             return self._insufficient_data_output(now_str, execution_id, snapshot_id)
@@ -717,15 +731,37 @@ class OrdersAgent:
     # Internal helpers
     # ──────────────────────────────────────────────────────────────────────────
 
-    def query(self, message: str, db: Optional[Session] = None) -> OrdersQueryResponse:
+    def query(self, message: str, db: Optional[Session] = None, history: Optional[list] = None) -> OrdersQueryResponse:
         """
         Executes interactive order operations using the LangGraph ReAct workflow
         (lookup order, search product, track package, check return eligibility, initiate RMA, analytics).
+
+        `history` is the last few {role, text} turns from the chat widget — passed
+        through so the triage node can resolve a follow-up question ("what about
+        its status?") to an order id mentioned earlier in the conversation.
         """
+        try:
+            from app.services.data_source_service import data_source_service
+
+            if data_source_service.is_live():
+                msg = (
+                    "The live Shopify data source doesn't have order lookup/analytics wired up "
+                    "yet (this agent still only reads the historic Olist/DataCo dataset) — "
+                    "switch back to Historic to use it."
+                )
+                return OrdersQueryResponse(intent="not_estimable", result=msg, success=False)
+        except Exception:  # noqa: BLE001
+            pass
+
         from app.agents.orders.graph import orders_agent_graph
         try:
+            prior_messages = [
+                {"role": "user" if (t.get("role") == "user") else "assistant", "content": t.get("text", "")}
+                for t in (history or [])[-6:]
+                if t.get("text")
+            ]
             initial_state = {
-                "messages": [{"role": "user", "content": message}],
+                "messages": prior_messages + [{"role": "user", "content": message}],
                 "intent": "",
                 "order_id": "",
                 "product_id": "",

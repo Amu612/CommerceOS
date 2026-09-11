@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from typing import List, Dict, Any, Optional
 
 from sqlalchemy.orm import Session
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import AIMessage, HumanMessage
 
 from app.database.session import SessionLocal
 from app.agents.inventory.schemas import (
@@ -114,7 +114,7 @@ class InventoryWatchdogAgent:
                 f"- **Catalog Overview**: Evaluated **{metrics.total_products:,}** products; **{len(low_stock_prods)}** items require restocking attention.",
                 f"- **Critical Alerts**: Dispatched **{len(alerts)}** automated alerts to inventory controllers.",
                 f"- **Demand Velocity**: Sales velocity analysis completed for {len(sales_trends)} top-selling categories.",
-                f"- **Capital Requirement**: Estimated reorder investment is **${sum(r.estimated_cost or 0 for r in recs):,.2f}** across {len(recs)} purchase candidates.",
+                f"- **Capital Requirement**: Estimated reorder investment is **₹{sum(r.estimated_cost or 0 for r in recs):,.2f}** across {len(recs)} purchase candidates.",
                 f"- **Watchdog Status**: 🟢 Active continuous guardian mode.",
             ]
             output_text = "\n".join(summary_lines)
@@ -142,12 +142,19 @@ class InventoryWatchdogAgent:
             if close_db:
                 db.close()
 
-    def query(self, message: str, db: Optional[Session] = None) -> InventoryAgentResponse:
+    def query(self, message: str, db: Optional[Session] = None, history: Optional[list] = None) -> InventoryAgentResponse:
         """
         Interactive inquiry or chat with the Inventory Watchdog Agent.
         """
+        prior: list = []
+        for turn in (history or [])[-6:]:
+            role = turn.get("role", "user") if isinstance(turn, dict) else "user"
+            text = turn.get("text", "") if isinstance(turn, dict) else ""
+            if not text:
+                continue
+            prior.append(HumanMessage(content=text) if role == "user" else AIMessage(content=text))
         graph_input = {
-            "messages": [HumanMessage(content=message)],
+            "messages": prior + [HumanMessage(content=message)],
             "threshold": self.default_threshold,
         }
 

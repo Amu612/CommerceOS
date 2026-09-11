@@ -146,6 +146,51 @@ class LogisticsData:
         }
 
     @staticmethod
+    def shipment_lookup(db: Session, order_id: str) -> Dict[str, Any]:
+        """Resolves a single order/shipment id against DataCo (shipping-mode + transit data) then Olist."""
+        clean = str(order_id or "").strip().replace("#", "")
+        if not clean:
+            return {"status": "NOT_FOUND", "reason": "No order id provided."}
+
+        try:
+            dc = db.query(DataCoOrder).filter(DataCoOrder.order_id == int(clean)).first()
+        except ValueError:
+            dc = None
+        if dc is not None:
+            real = float(dc.days_for_shipping_real) if dc.days_for_shipping_real is not None else None
+            sched = float(dc.days_for_shipment_scheduled) if dc.days_for_shipment_scheduled is not None else None
+            return {
+                "status": "OK",
+                "order_id": dc.order_id,
+                "source": "DataCo",
+                "carrier": dc.shipping_mode or "Unknown",
+                "region": dc.order_region or "Unknown",
+                "scheduled_days": sched,
+                "actual_days": real,
+                "delay_days": round(real - sched, 2) if real is not None and sched is not None else None,
+                "late_delivery_risk": bool(dc.late_delivery_risk),
+                "order_status": dc.order_status,
+            }
+
+        order = db.query(Order).filter(Order.order_id.ilike(f"{clean}%")).first()
+        if order is not None:
+            delivered = tz(order.order_delivered_customer_date)
+            estimated = tz(order.order_estimated_delivery_date)
+            margin_days = round((delivered - estimated).total_seconds() / 86400.0, 2) if delivered and estimated else None
+            return {
+                "status": "OK",
+                "order_id": order.order_id,
+                "source": "Olist",
+                "order_status": order.order_status,
+                "estimated_delivery_date": estimated.isoformat()[:10] if estimated else None,
+                "delivered_date": delivered.isoformat()[:10] if delivered else None,
+                "delivery_margin_days": margin_days,
+                "late": bool(margin_days and margin_days > 0),
+            }
+
+        return {"status": "NOT_FOUND", "reason": f"No shipment found for order #{clean}."}
+
+    @staticmethod
     def late_risk_overview(db: Session) -> Dict[str, Any]:
         clock = simulated_clock(db)
         total = db.query(func.count(DataCoOrder.order_id)).filter(DataCoOrder.order_date <= clock).scalar() or 0

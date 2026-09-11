@@ -1,0 +1,76 @@
+/*
+ * CommerceOS design tokens — "Indigo & Gold on Ivory".
+ * Deep indigo primary + muted gold accent on a warm ivory ground, white card
+ * surfaces, jewel-tone status/agent accents. Every component should read
+ * these tokens rather than hardcoding colors.
+ */
+:root {
+  /* Surfaces */
+  --bg-app: #faf8f5;
+  --bg-surface: #ffffff;
+  --bg-elevated: #f4f1ea;
+  --bg-sunken: #efebe2;
+
+  /* Borders */
+  --border: #e4ddc9;
+  --border-strong: #d8cead;
+
+  /* Text */
+  --text-primary: #1e1b2e;
+  --text-secondary: #4b4560;
+  --text-muted: #857f93;
+  --text-on-accent: #fdfcf9;
+
+  /* Brand */
+  --accent-primary: #312e81;
+  --accent-primary-dark: #1e1b4b;
+  --accent-primary-light: #4338ca;
+  --accent-gold: #b45309;
+  --accent-gold-light: #d4af37;
+
+  /* Status */
+  --status-success: #0f766e;
+  --status-success-bg: rgba(15, 118, 110, 0.12);
+  --status-warning: #b45309;
+  --status-warning-bg: rgba(180, 83, 9, 0.12);
+  --status-danger: #b91c1c;
+  --status-danger-bg: rgba(185, 28, 28, 0.12);
+  --status-info: #3730a3;
+  --status-info-bg: rgba(55, 48, 163, 0.12);
+  --status-neutral: #857f93;
+  --status-neutral-bg: rgba(133, 127, 147, 0.12);
+
+  /* Agent accents — jewel tones drawn from the primary/gold family */
+  --agent-orchestrator: #b45309;
+  --agent-orders: #1d4ed8;
+  --agent-inventory: #0f766e;
+  --agent-logistics: #a16207;
+  --agent-pricing: #9d174d;
+  --agent-marketing: #6d28d9;
+  --agent-customer: #3730a3;
+  --agent-approvals: #92400e;
+
+  /* Elevation */
+  --shadow-sm: 0 1px 2px rgba(30, 27, 46, 0.06);
+  --shadow-md: 0 4px 14px rgba(30, 27, 46, 0.08);
+  --shadow-lg: 0 12px 32px rgba(30, 27, 46, 0.12);
+
+  /* Shape */
+  --radius-sm: 8px;
+  --radius-md: 12px;
+  --radius-lg: 16px;
+
+  /* Type */
+  --font-display: "Fraunces", "Playfair Display", Georgia, serif;
+  --font-body: "Inter", system-ui, -apple-system, sans-serif;
+}
+
+body {
+  background: var(--bg-app);
+  color: var(--text-primary);
+  font-family: var(--font-body);
+}
+
+h1, h2, h3, .dav-title, .cust-header-title, .apv-title, .orch-title {
+  font-family: var(--font-display);
+}

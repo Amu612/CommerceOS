@@ -12,6 +12,7 @@ class DomainFinding(BaseModel):
     title: str
     recommended_action: str
     confidence: float = 0.0
+    evidence: str | None = None
 
 
 class DomainSnapshot(BaseModel):

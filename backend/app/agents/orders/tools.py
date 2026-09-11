@@ -14,7 +14,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from sqlalchemy.orm import Session
 from sqlalchemy import func, asc, desc, and_, or_, text
 
-from app.models.olist import Order, OrderItem, Customer, Product, CategoryTranslation
+from app.models.olist import Order, OrderItem, Customer, Product, CategoryTranslation, OrderReview
 from app.models.dataco import DataCoOrder, DataCoOrderItem
 from app.intelligence.statistics.profiler import StatisticalProfiler
 from app.intelligence.anomaly.detector import AnomalyDetector
@@ -43,6 +43,29 @@ _OLIST_PENDING = {"created", "approved", "invoiced", "processing"}
 _DATACO_PENDING = {"PROCESSING", "PENDING", "PENDING_PAYMENT", "ON_HOLD", "PAYMENT_REVIEW"}
 # Cancelled
 _OLIST_CANCELLED = {"canceled", "unavailable"}
+
+
+def _lookup_order_review(order_id: str, db: Optional[Session] = None) -> Optional[Dict[str, Any]]:
+    """Order id queries must check other tables too — pulls the order_reviews row for this order, if any."""
+    if not order_id:
+        return None
+    close = False
+    if db is None:
+        from app.database.session import SessionLocal
+
+        db = SessionLocal()
+        close = True
+    try:
+        clean = str(order_id).strip().replace("#", "")
+        rev = db.query(OrderReview).filter(OrderReview.order_id.ilike(f"{clean}%")).first()
+        if not rev:
+            return None
+        return {"review_score": rev.review_score, "review_comment": rev.review_comment_message}
+    except Exception:  # noqa: BLE001
+        return None
+    finally:
+        if close:
+            db.close()
 _DATACO_CANCELLED = {"CANCELED", "SUSPECTED_FRAUD"}
 # Completed
 _OLIST_COMPLETED = {"delivered"}
@@ -55,37 +78,10 @@ def _tz(dt: Optional[datetime]) -> Optional[datetime]:
     return dt.replace(tzinfo=timezone.utc) if dt.tzinfo is None else dt
 
 
-def get_simulated_clock(db: Optional[Session] = None) -> datetime:
-    """
-    Returns the exact current simulated clock time T.
-    At time T, only records with timestamp <= T are observed.
-    """
-    from app.services.replay_engine import replay_engine
-    from app.services.state_service import state_service
-
-    streamed = getattr(replay_engine, "events_processed", 0) or 0
-    if streamed > 0 and replay_engine.current_simulated_date:
-        return _tz(replay_engine.current_simulated_date)
-    if state_service.sim_current_date and getattr(state_service, "total_orders", 0):
-        return _tz(state_service.sim_current_date)
-
-    own = None
-    if db is None:
-        from app.database.session import SessionLocal
-
-        own = db = SessionLocal()
-    try:
-        max_o = db.query(func.max(Order.order_purchase_timestamp)).scalar()
-        max_dc = db.query(func.max(DataCoOrder.order_date)).scalar()
-        candidates = [d for d in [max_o, max_dc] if d is not None]
-        if candidates:
-            return _tz(max(candidates))
-    except Exception:
-        pass
-    finally:
-        if own is not None:
-            own.close()
-    return datetime.now(timezone.utc)
+# The one canonical clock implementation now lives in `app.agents._shared`
+# (it also handles the live-Shopify-source case); kept as `get_simulated_clock`
+# here since that's the name every call site in this file already uses.
+from app.agents._shared import simulated_clock as get_simulated_clock  # noqa: E402
 
 
 def _percentile_from_profile(values: List[float], p: float) -> float:
@@ -1084,10 +1080,15 @@ class OrdersTools:
         try:
             clean_id = str(order_id).strip().replace("ORD-", "").replace("ord-", "").replace("#", "")
             sim_clock = get_simulated_clock(db)
+            # A >=6-char id is treated as a prefix match (order ids are 32-char hex,
+            # so any 6+ char prefix is effectively unique) — this lets a truncated id
+            # shown earlier in a conversation (e.g. "#7d09831e") still resolve on a
+            # follow-up question, not just the full id.
+            id_filter = Order.order_id.ilike(f"{clean_id}%") if len(clean_id) >= 6 else Order.order_id.ilike(clean_id)
 
             # 1. Try Olist (first with simulated clock, then without for maximum user helpfulness)
             for filter_clock in [True, False]:
-                q = db.query(Order).filter(Order.order_id.ilike(clean_id))
+                q = db.query(Order).filter(id_filter)
                 if filter_clock:
                     q = q.filter(Order.order_purchase_timestamp <= sim_clock)
                 o = q.first()
@@ -1629,16 +1630,19 @@ def tool_lookup_order(order_id: str) -> str:
         return f"❌ Order #{order_id} not found in database."
 
     items_str = "\n".join(
-        f"  • {it.product_name} x{it.quantity} — ${it.price:.2f}"
+        f"  • {it.product_name} x{it.quantity} — ₹{it.price:.2f}"
         for it in detail.items
     ) if detail.items else "  • 1x Order fulfillment package (itemized details pending in active batch)"
+    review = _lookup_order_review(detail.order_id)
+    review_line = f"⭐ Review: **{review['review_score']}/5**\n" if review and review.get("review_score") else ""
     return (
         f"📦 **Order #{detail.order_id}**\n"
         f"👤 Customer: `#{detail.customer_id[:16]}` ({detail.customer_city or 'City'}, {detail.customer_state or 'ST'})\n"
         f"📌 Status: **{detail.status.upper()}**\n"
-        f"💰 Total Value: **${detail.total:.2f}**\n"
+        f"💰 Total Value: **₹{detail.total:.2f}**\n"
         f"🚚 Tracking Number: `{detail.tracking_number}`\n"
         f"📅 Placed: {detail.purchase_timestamp[:10] if detail.purchase_timestamp else 'N/A'}\n"
+        f"{review_line}"
         f"🛒 Items ({len(detail.items)}):\n{items_str}"
     )
 
@@ -1663,7 +1667,7 @@ def tool_lookup_product(product_id_or_keyword: str) -> str:
     parts = [f"🔍 **Found {res['count']} matching product(s) for '{product_id_or_keyword}':**\n"]
     for i, p in enumerate(res["products"], 1):
         cat = p.get("category_english") or p.get("category", "General")
-        price_str = f"${p['avg_price']:.2f}" if "avg_price" in p else (f"${p.get('price', 0):.2f}")
+        price_str = f"₹{p['avg_price']:.2f}" if "avg_price" in p else (f"₹{p.get('price', 0):.2f}")
         orders_str = ", ".join(f"`{oid[:8]}...`" for oid in p.get("sample_orders", [])) if p.get("sample_orders") else "None in active stream"
         orders_cnt = p.get("orders_count", 0)
         sales_status = f"Units Sold: **{orders_cnt}**" if orders_cnt > 0 else "Status: **Active in Catalog** (In Stock)"
@@ -1692,7 +1696,7 @@ def tool_search_orders(query: str) -> str:
             f"   • Status: **{o['status'].upper()}**\n"
             f"   • Date: {o.get('purchase_date', 'N/A')}\n"
             + (f"   • Product: `{o['product_id']}`\n" if "product_id" in o else "")
-            + (f"   • Total/Price: ${o.get('price') or o.get('total', 0):.2f}\n" if "price" in o or "total" in o else "")
+            + (f"   • Total/Price: ₹{o.get('price') or o.get('total', 0):.2f}\n" if "price" in o or "total" in o else "")
         )
     return "\n".join(parts)
 
@@ -1764,7 +1768,7 @@ def tool_initiate_return(order_id: str, reason: str) -> str:
             f"✅ **Return Request Authorized!**\n\n"
             f"📦 Order: `#{ret.order_id}`\n"
             f"🔢 RMA Number: **{ret.rma_number}**\n"
-            f"💰 Refund Amount: **${ret.refund_amount:.2f}**\n"
+            f"💰 Refund Amount: **₹{ret.refund_amount:.2f}**\n"
             f"📋 Reason: {ret.reason}\n"
             f"📌 Status: **{ret.status}**\n\n"
             f"ℹ️ {ret.instructions}"

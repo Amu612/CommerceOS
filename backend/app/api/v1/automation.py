@@ -8,7 +8,7 @@ from pydantic import BaseModel
 from sqlalchemy import desc
 from sqlalchemy.orm import Session
 
-from app.api.v1.deps import get_current_user
+from app.api.v1.deps import auth_dependency
 from app.automation import decide
 from app.core.security import decode_token
 from app.database.session import get_db
@@ -52,7 +52,7 @@ def list_actions(
     status: Optional[str] = Query(None),
     agent: Optional[str] = Query(None),
     limit: int = Query(100, ge=1, le=500),
-    _: User = Depends(get_current_user),
+    _: Optional[User] = Depends(auth_dependency()),
     db: Session = Depends(get_db),
 ):
     q = db.query(AutomationAction)
@@ -75,11 +75,13 @@ def list_actions(
 @router.get("/approvals")
 def list_approvals(
     status: str = Query("PENDING"),
-    current: User = Depends(get_current_user),
+    current: Optional[User] = Depends(auth_dependency()),
     db: Session = Depends(get_db),
 ):
     q = db.query(Approval).filter(Approval.status == status)
-    if current.role != UserRole.SUPER_ADMIN:
+    # No session (auth not enforced in this environment) sees everything, same
+    # as a super admin would — there's no per-role identity to filter by.
+    if current is not None and current.role != UserRole.SUPER_ADMIN:
         q = q.filter(Approval.required_role == current.role.value)
     approvals = q.order_by(desc(Approval.requested_at)).limit(200).all()
     actions = {
@@ -99,23 +101,27 @@ class DecisionBody(BaseModel):
     reason: str | None = None
 
 
-def _actor(current: User) -> dict:
+def _actor(current: Optional[User]) -> dict:
+    if current is None:
+        # Auth isn't enforced in this environment — attribute the decision to
+        # a generic console actor rather than blocking the demo dashboard.
+        return {"sub": None, "username": "console", "role": UserRole.SUPER_ADMIN.value}
     return {"sub": current.id, "username": current.username, "role": current.role.value}
 
 
-def _check_can_decide(db: Session, approval_id: str, current: User) -> Approval:
+def _check_can_decide(db: Session, approval_id: str, current: Optional[User]) -> Approval:
     ap = db.query(Approval).filter(Approval.id == approval_id).first()
     if not ap:
         from app.exceptions.base import NotFoundException
 
         raise NotFoundException("Approval not found.")
-    if current.role != UserRole.SUPER_ADMIN and current.role.value != ap.required_role:
+    if current is not None and current.role != UserRole.SUPER_ADMIN and current.role.value != ap.required_role:
         raise AuthorizationException(f"This approval requires the {ap.required_role} role.")
     return ap
 
 
 @router.post("/approvals/{approval_id}/approve")
-def approve(approval_id: str, body: DecisionBody, current: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def approve(approval_id: str, body: DecisionBody, current: Optional[User] = Depends(auth_dependency()), db: Session = Depends(get_db)):
     ap = _check_can_decide(db, approval_id, current)
     ap.reason = body.reason
     action = decide(db, approval_id, approved=True, actor=_actor(current))
@@ -123,7 +129,7 @@ def approve(approval_id: str, body: DecisionBody, current: User = Depends(get_cu
 
 
 @router.post("/approvals/{approval_id}/reject")
-def reject(approval_id: str, body: DecisionBody, current: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def reject(approval_id: str, body: DecisionBody, current: Optional[User] = Depends(auth_dependency()), db: Session = Depends(get_db)):
     ap = _check_can_decide(db, approval_id, current)
     ap.reason = body.reason
     action = decide(db, approval_id, approved=False, actor=_actor(current))

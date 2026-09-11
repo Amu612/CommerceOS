@@ -107,6 +107,7 @@ class InventoryQueryRequest(BaseModel):
     message: Optional[str] = None
     product_id: Optional[str] = None
     threshold: Optional[int] = 50
+    history: Optional[List[dict]] = None
 
 
 class InventoryReorderRequest(BaseModel):

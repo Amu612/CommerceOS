@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from langchain_core.tools import tool
 
-from app.agents._shared import money
+from app.agents._shared import fmt_evidence, money
 from app.agents.marketing.data_layer import MarketingData
 from app.database.session import SessionLocal
 
@@ -70,7 +70,7 @@ def detect_low_retention() -> dict:
             "what_happened": f"Only {r['repeat_rate_pct']}% of {r['total_customers']:,} customers have made a second purchase (AOV {money(r['avg_order_value'])}).",
             "why_it_matters": "Acquisition is far more expensive than retention; a low repeat rate caps LTV and CAC payback.",
             "recommended_action": "Launch a second-purchase program for 'Promising' + 'New' segments with a time-boxed incentive inside the observed inter-purchase window.",
-            "evidence": str({k: r[k] for k in ("repeat_customers", "repeat_rate_pct", "total_customers")}),
+            "evidence": fmt_evidence({k: r[k] for k in ("repeat_customers", "repeat_rate_pct", "total_customers")}),
             "confidence": 0.8, "data_status": "CALCULATED", "sample_count": r["total_customers"],
         }}
     finally:
@@ -96,7 +96,7 @@ def detect_churn_risk() -> dict:
             "what_happened": f"'At Risk' ({by.get('At Risk', {}).get('share_pct', 0)}%) + 'Hibernating' ({by.get('Hibernating', {}).get('share_pct', 0)}%) = {round(lapsed, 1)}% of customers.",
             "why_it_matters": "These customers already converted once; reactivation is cheaper than net-new acquisition.",
             "recommended_action": "Run a staged win-back (reminder → best-sellers → modest incentive). Suppress paid retargeting for 'Hibernating' to protect ROAS.",
-            "evidence": str({"at_risk": by.get("At Risk"), "hibernating": by.get("Hibernating")}),
+            "evidence": fmt_evidence({"at_risk": by.get("At Risk"), "hibernating": by.get("Hibernating")}),
             "confidence": 0.78, "data_status": "CALCULATED", "sample_count": r["total_customers"],
         }}
     finally:
@@ -122,7 +122,7 @@ def detect_demand_concentration() -> dict:
             "what_happened": f"'{top['category']}' is {share}% of units in the top-{len(cats)} categories ({top['units']:,} units, {money(top['revenue'])}).",
             "why_it_matters": "Concentration is a growth lever (double down) and a risk (exposure to that category's supply/seasonality).",
             "recommended_action": f"Feature '{top['category']}' in acquisition creative; test cross-sell bundles into the #2–#4 categories to broaden the basket.",
-            "evidence": str(cats[:4]), "confidence": 0.75, "data_status": "CALCULATED",
+            "evidence": fmt_evidence(cats[:4]), "confidence": 0.75, "data_status": "CALCULATED",
         }}
     finally:
         db.close()

@@ -1,6 +1,16 @@
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import IngestionControlBar, { IngestionStatus } from "./IngestionControlBar";
 import "./OrdersAgentDashboard.css";
+import "./DomainAgentView.css";
+import { renderMarkdown } from "./lib/markdown";
+import { humanizeToolName } from "./lib/format";
+
+const ORDERS_SUGGESTIONS = [
+  "What is the delay rate?",
+  "Show me the fulfillment health",
+  "Search orders by status",
+  "Track a shipment",
+];
 
 type Severity = "LOW" | "MEDIUM" | "HIGH" | "CRITICAL";
 
@@ -431,9 +441,13 @@ export default function OrdersAgentDashboard({
 
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
 
+  // Chat — same running conversation log as every other agent assistant.
   const [query, setQuery] = useState("");
   const [queryLoading, setQueryLoading] = useState(false);
-  const [queryResult, setQueryResult] = useState<QueryResponse | null>(null);
+  const [chat, setChat] = useState<
+    { role: "user" | "agent"; text: string; intent?: string; order_id?: string | null; raw_data?: unknown; success?: boolean }[]
+  >([]);
+  const chatRef = useRef<HTMLDivElement | null>(null);
 
   const effectiveIngestionUrl = useMemo(() => {
     if (ingestionUrl) return ingestionUrl;
@@ -579,12 +593,15 @@ export default function OrdersAgentDashboard({
   }, [refreshKey, loadAnalysis]);
 
   const runQuery = async () => {
-    if (!query.trim() || !queryUrl) {
+    const q = query.trim();
+    if (!q || !queryUrl || queryLoading) {
       return;
     }
 
+    const history = chat.slice(-6).map((m) => ({ role: m.role === "user" ? "user" : "assistant", text: m.text }));
+    setChat((c) => [...c, { role: "user", text: q }]);
+    setQuery("");
     setQueryLoading(true);
-    setQueryResult(null);
 
     try {
       const response = await fetch(queryUrl, {
@@ -592,9 +609,7 @@ export default function OrdersAgentDashboard({
         headers: {
           "Content-Type": "application/json",
         },
-        body: JSON.stringify({
-          message: query.trim(),
-        }),
+        body: JSON.stringify({ message: q, history }),
       });
 
       if (!response.ok) {
@@ -602,19 +617,21 @@ export default function OrdersAgentDashboard({
       }
 
       const result: QueryResponse = await response.json();
-
-      setQueryResult(result);
+      setChat((c) => [
+        ...c,
+        { role: "agent", text: result.result || "No answer.", intent: result.intent, order_id: result.order_id, raw_data: result.raw_data, success: result.success },
+      ]);
     } catch (err) {
-      setQueryResult({
-        intent: "error",
-        result:
-          err instanceof Error ? err.message : "Unable to execute order query.",
-        success: false,
-      });
+      const msg = err instanceof Error ? err.message : "Unable to execute order query.";
+      setChat((c) => [...c, { role: "agent", text: `⚠️ ${msg}`, success: false }]);
     } finally {
       setQueryLoading(false);
     }
   };
+
+  useEffect(() => {
+    chatRef.current?.scrollTo({ top: chatRef.current.scrollHeight, behavior: "smooth" });
+  }, [chat, queryLoading]);
 
   const maxAgeBucket = useMemo(() => {
     if (!data?.pending_queue.age_distribution?.length) {
@@ -1473,7 +1490,7 @@ export default function OrdersAgentDashboard({
 
               <div className="tool-list">
                 {investigation_summary.tools_executed.map((tool) => (
-                  <code key={tool}>{tool}</code>
+                  <span key={tool}>{humanizeToolName(tool)}</span>
                 ))}
               </div>
             </div>
@@ -1490,9 +1507,47 @@ export default function OrdersAgentDashboard({
           title="Ask the Orders Agent"
           subtitle="Interactive order lookup, tracking and order operations"
         >
-          <div className="agent-chat">
-            <div className="chat-input-row">
+          {/* Same chat layout as every other agent assistant */}
+          <div className="dav-section" style={{ ["--accent" as string]: "var(--agent-orders)", padding: 0, border: "none", boxShadow: "none" }}>
+            <div className="dav-chat" ref={chatRef}>
+              {chat.length === 0 && (
+                <div className="dav-chat-empty">
+                  <p>Ask about an order, a product, or pipeline performance.</p>
+                  <div className="dav-suggestions">
+                    {ORDERS_SUGGESTIONS.map((s) => (
+                      <button key={s} className="dav-suggestion" onClick={() => setQuery(s)}>
+                        {s}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+              {chat.map((m, i) => (
+                <div key={i} className={"dav-msg " + (m.role === "user" ? "dav-msg-user" : "dav-msg-agent")}>
+                  {m.role === "agent" && (
+                    <span className={"dav-msg-tag " + (m.success === false ? "dav-tag-det" : "dav-tag-llm")}>
+                      {m.intent ?? (m.success === false ? "error" : "answer")}
+                    </span>
+                  )}
+                  <div className="dav-msg-body">{renderMarkdown(m.text) ?? m.text}</div>
+                  {m.order_id && (
+                    <div className="order-reference">
+                      Order ID: <strong>{m.order_id}</strong>
+                    </div>
+                  )}
+                  {Boolean(m.raw_data) && (
+                    <details>
+                      <summary>Raw tool data</summary>
+                      <pre>{JSON.stringify(m.raw_data, null, 2)}</pre>
+                    </details>
+                  )}
+                </div>
+              ))}
+              {queryLoading && <div className="dav-msg dav-msg-agent"><div className="dav-msg-body">…thinking</div></div>}
+            </div>
+            <div className="dav-input-row">
               <input
+                className="dav-input"
                 value={query}
                 onChange={(event) => setQuery(event.target.value)}
                 onKeyDown={(event) => {
@@ -1500,62 +1555,13 @@ export default function OrdersAgentDashboard({
                     runQuery();
                   }
                 }}
-                placeholder="e.g. Order #58, product id 1e9e8ef..., what is the delay rate?, track package…"
+                placeholder="Ask the Orders Agent…"
                 disabled={queryLoading}
               />
-
-              <button
-                className="primary-button"
-                onClick={runQuery}
-                disabled={queryLoading || !query.trim()}
-              >
-                {queryLoading ? "Processing…" : "Ask Agent"}
+              <button className="dav-btn dav-btn-primary" onClick={runQuery} disabled={queryLoading || !query.trim()}>
+                {queryLoading ? "…" : "Send"}
               </button>
             </div>
-
-            {queryResult && (
-              <div
-                className={`query-result ${
-                  queryResult.success ? "query-success" : "query-error"
-                }`}
-              >
-                <div className="query-result-header">
-                  <span>
-                    {queryResult.success ? "Agent Response" : "Agent Error"}
-                  </span>
-
-                  {queryResult.intent && (
-                    <span className="intent-tag">{queryResult.intent}</span>
-                  )}
-                </div>
-
-                <div
-                  className="query-result-body"
-                  style={{
-                    whiteSpace: "pre-wrap",
-                    lineHeight: 1.65,
-                    fontSize: "0.95rem",
-                    margin: "0.5rem 0",
-                  }}
-                >
-                  {queryResult.result}
-                </div>
-
-                {queryResult.order_id && (
-                  <div className="order-reference">
-                    Order ID: <strong>{queryResult.order_id}</strong>
-                  </div>
-                )}
-
-                {Boolean(queryResult.raw_data) && (
-                  <details>
-                    <summary>Raw tool data</summary>
-
-                    <pre>{JSON.stringify(queryResult.raw_data, null, 2)}</pre>
-                  </details>
-                )}
-              </div>
-            )}
           </div>
         </Section>
       )}

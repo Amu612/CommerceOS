@@ -32,7 +32,7 @@ class CustomerSupportAgent:
     def manifest(self):
         return AGENT_MANIFEST
 
-    def _react(self, message: str) -> Optional[CustomerAgentResponse]:
+    def _react(self, message: str, history: Optional[list] = None) -> Optional[CustomerAgentResponse]:
         """LangGraph ReAct agent over the customer tools. Returns None if no chat model."""
         from app.services.llm import get_chat_model
 
@@ -57,7 +57,14 @@ class CustomerSupportAgent:
                     "eligibility first and only create an RMA if eligible."
                 ),
             )
-            result = agent.invoke({"messages": [HumanMessage(content=message)]}, config={"recursion_limit": 10})
+            prior: list = []
+            for turn in (history or [])[-6:]:
+                role = turn.get("role", "user") if isinstance(turn, dict) else "user"
+                txt = turn.get("text", "") if isinstance(turn, dict) else ""
+                if not txt:
+                    continue
+                prior.append(HumanMessage(content=txt) if role == "user" else AIMessage(content=txt))
+            result = agent.invoke({"messages": prior + [HumanMessage(content=message)]}, config={"recursion_limit": 10})
             msgs = result.get("messages", [])
             answer = ""
             tools_used: list[str] = []
@@ -82,13 +89,15 @@ class CustomerSupportAgent:
             logger.warning(f"[customer] react agent failed, falling back: {e}")
             return None
 
-    def query(self, message: str, db: Optional[Session] = None) -> CustomerAgentResponse:
+    def query(self, message: str, db: Optional[Session] = None, history: Optional[list] = None) -> CustomerAgentResponse:
         """
         Runs one full pass of the customer support pipeline.
 
         `db` is accepted for API/test symmetry with the other agents; the graph
         nodes open their own short-lived sessions (like the Orders/Inventory
-        LangChain tools) so the pipeline stays stateless.
+        LangChain tools) so the pipeline stays stateless. `history` (the last
+        few {role, text} turns) lets the triage node resolve a follow-up
+        question to an order id mentioned earlier in the conversation.
         """
         text = (message or "").strip()
         if not text:
@@ -98,6 +107,21 @@ class CustomerSupportAgent:
                 category="general",
                 status="EMPTY",
             )
+
+        try:
+            from app.services.data_source_service import data_source_service
+
+            if data_source_service.is_live():
+                # This agent's tools only know Olist/DataCo — don't silently
+                # answer from historic data while Live is selected.
+                msg = (
+                    "The live Shopify data source doesn't have customer-support data yet "
+                    "(this agent still only reads the historic Olist/DataCo dataset) — "
+                    "switch back to Historic to use it."
+                )
+                return CustomerAgentResponse(response=msg, final_response=msg, category="general", status="NOT_ESTIMABLE")
+        except Exception:  # noqa: BLE001
+            pass
 
         if text.lower() in _EXIT_PHRASES:
             farewell = "Thank you for contacting support. Have a great day!"
@@ -109,13 +133,14 @@ class CustomerSupportAgent:
             )
 
         # Preferred path: a real LangGraph ReAct agent over the customer tools.
-        react = self._react(text)
+        react = self._react(text, history=history)
         if react is not None:
             return react
 
         try:
             result = customer_graph.invoke({
                 "user_input": text,
+                "history": history or [],
                 "intermediate_results": {},
                 "traces": [],
                 "tool_calls": [],

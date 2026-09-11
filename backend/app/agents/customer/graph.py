@@ -23,6 +23,7 @@ from typing_extensions import TypedDict
 
 from langgraph.graph import END, StateGraph
 
+from app.agents._shared import extract_order_id_from_history
 from app.agents.customer.tools import CustomerSupportTools, extract_order_id, verify_order_id
 from app.services.llm_service import llm_service
 
@@ -61,6 +62,7 @@ SPECIALIST_PERSONAS = {
 
 class CustomerAgentState(TypedDict, total=False):
     user_input: str
+    history: List[Dict[str, Any]]
     category: str
     order_id: str
     product_query: str
@@ -129,6 +131,10 @@ def triage_node(state: CustomerAgentState) -> Dict[str, Any]:
 
     if not order_id:
         order_id = extract_order_id(msg)
+    if not order_id:
+        # follow-up: "what about its status?" — reuse the last order id
+        # mentioned earlier in this conversation.
+        order_id = extract_order_id_from_history(msg, state.get("history"))
     if order_id and not verify_order_id(order_id):
         # keep the raw token but note it is unverified downstream
         pass
@@ -179,10 +185,42 @@ def _fallback_route(category: str, has_order: bool, message: str = "") -> List[s
     return agents
 
 
+def _analytics_context(low: str, order_id: str) -> Optional[tuple[str, List[Dict[str, Any]], Optional[Dict[str, Any]]]]:
+    """
+    Cross-order analytics queries — "find customers whose orders were late and
+    poorly reviewed", "identify orders needing follow-up", "show my recent
+    orders" — that are never about a single order id, so must be checked
+    before per-specialist routing sends them somewhere order-id-shaped.
+    """
+    wants_late = any(k in low for k in ("late", "delay", "delayed"))
+    wants_poor_review = any(k in low for k in ("poor review", "bad review", "low review", "review score", "poorly reviewed"))
+    wants_followup = any(k in low for k in ("follow-up", "follow up", "followup", "need attention", "needs attention", "escalat"))
+    wants_multi_order = any(k in low for k in (
+        "find customers", "which customers", "identify orders", "which orders",
+        "list orders", "list customers", "customers whose orders",
+    ))
+    if wants_multi_order and wants_late and wants_poor_review:
+        text, recs = CustomerSupportTools.late_delivery_poor_review()
+        return text, recs, None
+    if wants_followup or (wants_multi_order and (wants_late or wants_poor_review)):
+        text, recs = CustomerSupportTools.followup_candidates()
+        return text, recs, None
+    if not order_id and any(k in low for k in ("my recent order", "my previous order", "my orders", "my order history", "recent orders", "past orders")):
+        text, recs = CustomerSupportTools.recent_orders()
+        return text, recs, None
+    return None
+
+
 def _tool_context_for(agent: str, state: CustomerAgentState) -> tuple[str, List[Dict[str, Any]], Optional[Dict[str, Any]]]:
     """Returns (tool_context_text, tool_records, order_context_or_None)."""
     msg = state.get("user_input", "")
     order_id = state.get("order_id", "")
+    low = (msg or "").lower().strip()
+
+    analytics = _analytics_context(low, order_id)
+    if analytics is not None:
+        return analytics
+
     if agent == "context":
         return CustomerSupportTools.order_context(msg)
     if agent == "support":
@@ -201,7 +239,6 @@ def _tool_context_for(agent: str, state: CustomerAgentState) -> tuple[str, List[
         text, recs = CustomerSupportTools.refund_flow(order_id, msg)
         return text, recs, None
     # general
-    low = (msg or "").lower().strip()
     if not order_id and (len(low) <= 4 or any(low.startswith(g) for g in ("hi", "hey", "hello", "yo", "good morning", "good afternoon", "good evening"))):
         return (
             "Greet the customer warmly and offer help with orders, shipping, billing, refunds/returns, and products. "

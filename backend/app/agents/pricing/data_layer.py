@@ -108,6 +108,47 @@ class PricingData:
         return {"categories": cats, "available": bool(cats)}
 
     @staticmethod
+    def order_margin_lookup(db: Session, order_id: str) -> Dict[str, Any]:
+        """Resolves margin/price/freight for ONE specific order id — DataCo (has profit) first, then Olist item prices."""
+        clean = str(order_id or "").strip().replace("#", "")
+        if not clean:
+            return {"status": "NOT_FOUND", "reason": "No order id provided."}
+
+        try:
+            dc = db.query(DataCoOrder).filter(DataCoOrder.order_id == int(clean)).first()
+        except ValueError:
+            dc = None
+        if dc is not None:
+            total = float(dc.order_total or 0.0)
+            profit = float(dc.order_profit or 0.0)
+            return {
+                "status": "OK",
+                "order_id": dc.order_id,
+                "source": "DataCo",
+                "revenue": round(total, 2),
+                "profit": round(profit, 2),
+                "margin_pct": pct(profit, total),
+                "market": dc.market,
+                "region": dc.order_region,
+            }
+
+        items = db.query(OrderItem).filter(OrderItem.order_id.ilike(f"{clean}%")).all()
+        if items:
+            price = sum(float(i.price or 0) for i in items)
+            freight = sum(float(i.freight_value or 0) for i in items)
+            return {
+                "status": "OK",
+                "order_id": clean,
+                "source": "Olist",
+                "item_price_total": round(price, 2),
+                "freight_total": round(freight, 2),
+                "freight_pct_of_price": pct(freight, price),
+                "note": "Olist has no per-order profit figure; margin is not computable for this order, only price/freight.",
+            }
+
+        return {"status": "NOT_FOUND", "reason": f"No order/pricing record found for #{clean}."}
+
+    @staticmethod
     def olist_category_prices(db: Session, limit: int = 15) -> Dict[str, Any]:
         rows = (
             db.query(

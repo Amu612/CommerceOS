@@ -10,6 +10,9 @@ import { useAuth } from "./auth/AuthContext";
 import { subscribeEvents } from "./lib/ws";
 import IngestionControlBar, { IngestionStatus } from "./IngestionControlBar";
 import "./IngestionControlBar.css";
+import DataSourceSwitch from "./DataSourceSwitch";
+import CompetitorFeedControl from "./CompetitorFeedControl";
+import "./App.css";
 import { API_ENDPOINTS } from "./config";
 
 type ActiveTab =
@@ -23,15 +26,22 @@ type ActiveTab =
   | "approvals";
 
 const TABS: { key: ActiveTab; label: string; badge: string; accent: string }[] = [
-  { key: "orchestrator", label: "Orchestrator", badge: "All Agents", accent: "#ec4899" },
-  { key: "orders", label: "Orders", badge: "Operations", accent: "#3b82f6" },
-  { key: "inventory", label: "Inventory", badge: "Watchdog", accent: "#10b981" },
-  { key: "logistics", label: "Logistics", badge: "Delivery", accent: "#f59e0b" },
-  { key: "pricing", label: "Pricing", badge: "Margin", accent: "#ec4899" },
-  { key: "marketing", label: "Marketing", badge: "Growth", accent: "#8b5cf6" },
-  { key: "customer", label: "Customer", badge: "Support", accent: "#6366f1" },
-  { key: "approvals", label: "Approvals", badge: "HITL", accent: "#fbbf24" },
+  { key: "orchestrator", label: "Orchestrator", badge: "All Agents", accent: "var(--agent-orchestrator)" },
+  { key: "orders", label: "Orders", badge: "Operations", accent: "var(--agent-orders)" },
+  { key: "inventory", label: "Inventory", badge: "Watchdog", accent: "var(--agent-inventory)" },
+  { key: "logistics", label: "Logistics", badge: "Delivery", accent: "var(--agent-logistics)" },
+  { key: "pricing", label: "Pricing", badge: "Margin", accent: "var(--agent-pricing)" },
+  { key: "marketing", label: "Marketing", badge: "Growth", accent: "var(--agent-marketing)" },
+  { key: "customer", label: "Customer", badge: "Support", accent: "var(--agent-customer)" },
+  { key: "approvals", label: "Approvals", badge: "HITL", accent: "var(--agent-approvals)" },
 ];
+
+/** Mounts its children once `mounted` first goes true, then keeps them mounted
+ * (hidden via CSS when not `show`) instead of unmounting on every tab switch. */
+function TabSlot({ show, mounted, children }: { show: boolean; mounted: boolean; children: React.ReactNode }) {
+  if (!mounted) return null;
+  return <div style={{ display: show ? undefined : "none" }}>{children}</div>;
+}
 
 function LlmBadge() {
   const [s, setS] = React.useState<{ resolved_provider?: string; chat_model_available?: boolean; reachable?: boolean | null; model?: string | null } | null>(null);
@@ -48,40 +58,34 @@ function LlmBadge() {
   const on = s?.chat_model_available && s?.reachable !== false;
   return (
     <span
+      className={"app-llm-badge " + (on ? "on" : "off")}
       title={s ? `${s.resolved_provider} · ${s.model ?? "—"} · reachable: ${s.reachable}` : "checking…"}
-      style={{
-        fontSize: "10px",
-        fontWeight: 700,
-        textTransform: "uppercase",
-        letterSpacing: "0.06em",
-        padding: "3px 9px",
-        borderRadius: "9999px",
-        background: on ? "rgba(16,185,129,0.15)" : "rgba(148,163,184,0.12)",
-        color: on ? "#6ee7b7" : "#94a3b8",
-        border: on ? "1px solid rgba(16,185,129,0.35)" : "1px solid #334155",
-        whiteSpace: "nowrap",
-      }}
     >
       LLM: {on ? (s?.resolved_provider ?? "on") : "deterministic"}
     </span>
   );
 }
 
-const DARK_BG: Record<string, string> = {
-  orchestrator: "#080d14",
-  inventory: "#090d16",
-  customer: "#0a0f1a",
-  logistics: "#0a0f1a",
-  pricing: "#0a0f1a",
-  marketing: "#0a0f1a",
-  approvals: "#0a0f1a",
-};
-
 export default function App() {
   const { user, authRequired, ready, logout } = useAuth();
   const [activeTab, setActiveTab] = useState<ActiveTab>("orchestrator");
+  // Tabs render lazily on first visit, then stay mounted (just hidden) rather
+  // than unmounting on every switch — otherwise each view's chat history and
+  // already-fetched analysis were thrown away every time you left the tab,
+  // which read as "the previous agent's data got wiped".
+  const [visitedTabs, setVisitedTabs] = useState<Set<ActiveTab>>(() => new Set(["orchestrator"]));
   const [toast, setToast] = useState<string | null>(null);
   const toastTimer = useRef<number | null>(null);
+
+  const goToTab = (key: ActiveTab) => {
+    setActiveTab(key);
+    setVisitedTabs((prev) => (prev.has(key) ? prev : new Set(prev).add(key)));
+  };
+
+  // Which order data source every agent is reading — "historic" (Olist/DataCo
+  // replay) or "live_shopify". Drives whether the replay IngestionControlBar
+  // or the live Sync-Now control is shown, in the same visual slot.
+  const [activeDataSource, setActiveDataSource] = useState<"historic" | "live_shopify">("historic");
 
   const [ingestion, setIngestion] = useState<IngestionStatus>({
     status: "stopped",
@@ -175,159 +179,50 @@ export default function App() {
   }
 
   return (
-    <div style={{ minHeight: "100vh", background: DARK_BG[activeTab] ?? "#f5f7fb" }}>
-      <header
-        style={{
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "space-between",
-          flexWrap: "wrap",
-          gap: "12px",
-          padding: "12px 24px",
-          background: "#0b0f19",
-          borderBottom: "1px solid #1e293b",
-          position: "sticky",
-          top: 0,
-          zIndex: 50,
-          boxShadow: "0 4px 12px rgba(0,0,0,0.25)",
-        }}
-      >
-        <div style={{ display: "flex", alignItems: "center", gap: "14px" }}>
-          <div
-            style={{
-              width: "34px",
-              height: "34px",
-              borderRadius: "10px",
-              background: "linear-gradient(135deg, #3b82f6 0%, #ec4899 100%)",
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              fontWeight: 900,
-              fontSize: "17px",
-              color: "#fff",
-              boxShadow: "0 0 16px rgba(59,130,246,0.4)",
-            }}
-          >
-            ⚡
-          </div>
+    <div className="app-shell">
+      <header className="app-header">
+        <div className="app-brand-row">
+          <div className="app-logo">⚡</div>
           <div>
-            <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-              <span style={{ fontSize: "15px", fontWeight: 800, color: "#fff", letterSpacing: "-0.02em" }}>
-                CommerceOS / Nexus
-              </span>
-              <span
-                style={{
-                  fontSize: "9px",
-                  fontWeight: 700,
-                  textTransform: "uppercase",
-                  letterSpacing: "0.1em",
-                  padding: "2px 7px",
-                  borderRadius: "9999px",
-                  background: "rgba(236,72,153,0.15)",
-                  color: "#f9a8d4",
-                  border: "1px solid rgba(236,72,153,0.3)",
-                }}
-              >
-                Multi-Agent OS
-              </span>
+            <div className="app-title-row">
+              <span className="app-title">CommerceOS / Nexus</span>
+              <span className="app-badge">Multi-Agent OS</span>
             </div>
-            <p style={{ margin: 0, fontSize: "11px", color: "#64748b" }}>
+            <p className="app-tagline">
               Autonomous e-commerce operations — 6 domain agents + orchestrator
             </p>
           </div>
           <LlmBadge />
         </div>
 
-        <nav
-          style={{
-            display: "flex",
-            alignItems: "center",
-            gap: "4px",
-            flexWrap: "wrap",
-            background: "#060910",
-            padding: "4px",
-            borderRadius: "12px",
-            border: "1px solid #1e293b",
-          }}
-        >
+        <nav className="app-nav">
           {TABS.map((t) => {
             const active = activeTab === t.key;
             return (
               <button
                 key={t.key}
-                onClick={() => setActiveTab(t.key)}
-                style={{
-                  display: "inline-flex",
-                  alignItems: "center",
-                  gap: "7px",
-                  padding: "7px 13px",
-                  borderRadius: "8px",
-                  border: "none",
-                  fontSize: "12.5px",
-                  fontWeight: 700,
-                  cursor: "pointer",
-                  transition: "all 0.15s ease",
-                  background: active ? t.accent : "transparent",
-                  color: active ? "#06121f" : "#94a3b8",
-                  boxShadow: active ? `0 2px 10px ${t.accent}55` : "none",
-                }}
+                onClick={() => goToTab(t.key)}
+                className={"app-tab" + (active ? " active" : "")}
+                style={active ? { background: t.accent, boxShadow: `0 2px 10px ${t.accent}55` } : undefined}
               >
                 <span
-                  style={{
-                    width: "7px",
-                    height: "7px",
-                    borderRadius: "50%",
-                    background: active ? "#06121f" : t.accent,
-                    display: "inline-block",
-                  }}
+                  className="app-tab-dot"
+                  style={{ background: active ? "var(--text-on-accent)" : t.accent }}
                 />
                 {t.label}
-                <span
-                  style={{
-                    fontSize: "9px",
-                    padding: "1px 5px",
-                    borderRadius: "4px",
-                    background: active ? "rgba(6,18,31,0.2)" : "#1e293b",
-                    color: active ? "#06121f" : "#cbd5e1",
-                  }}
-                >
-                  {t.badge}
-                </span>
+                <span className="app-tab-badge">{t.badge}</span>
               </button>
             );
           })}
         </nav>
 
         {(user || authRequired) && (
-          <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
-            <span
-              style={{
-                fontSize: "11px",
-                fontWeight: 700,
-                color: "#cbd5e1",
-                padding: "5px 10px",
-                borderRadius: "9999px",
-                background: "#0f172a",
-                border: "1px solid #1e293b",
-                whiteSpace: "nowrap",
-              }}
-            >
+          <div className="app-user-row">
+            <span className="app-user-chip">
               {user ? `${user.username}${user.role ? ` · ${user.role}` : ""}` : "guest"}
             </span>
             {user && (
-              <button
-                onClick={logout}
-                style={{
-                  fontSize: "11px",
-                  fontWeight: 700,
-                  color: "#fca5a5",
-                  padding: "5px 12px",
-                  borderRadius: "8px",
-                  background: "transparent",
-                  border: "1px solid #7f1d1d",
-                  cursor: "pointer",
-                }}
-              >
+              <button onClick={logout} className="app-logout-btn">
                 Log out
               </button>
             )}
@@ -335,37 +230,33 @@ export default function App() {
         )}
       </header>
 
-      {toast && (
-        <div
-          style={{
-            position: "fixed",
-            top: "76px",
-            right: "24px",
-            zIndex: 90,
-            padding: "10px 16px",
-            borderRadius: "10px",
-            background: "rgba(16,185,129,0.16)",
-            border: "1px solid rgba(16,185,129,0.4)",
-            color: "#6ee7b7",
-            fontSize: "12.5px",
-            fontWeight: 700,
-            boxShadow: "0 8px 24px rgba(0,0,0,0.35)",
-          }}
-        >
-          ⟳ {toast}
-        </div>
-      )}
+      {toast && <div className="app-toast">⟳ {toast}</div>}
 
-      <div style={{ background: "#0b0f19", borderBottom: "1px solid #1e293b", padding: "10px 24px" }}>
-        <IngestionControlBar status={ingestion} loading={ingestionLoading} onControl={sendIngestionControl} />
+      <div className="app-ingestion-bar">
+        <div style={{ marginBottom: activeDataSource === "historic" ? "10px" : 0 }}>
+          <DataSourceSwitch
+            onStatusChange={setActiveDataSource}
+            onChanged={() => setRefreshKey((k) => k + 1)}
+          />
+        </div>
+        {activeDataSource === "historic" && (
+          <IngestionControlBar status={ingestion} loading={ingestionLoading} onControl={sendIngestionControl} />
+        )}
       </div>
 
       <main>
-        {activeTab === "orchestrator" && <OrchestratorView refreshKey={refreshKey + liveKey} />}
+        {/* Each tab mounts the first time it's visited, then stays mounted
+            (hidden, not destroyed) so its chat history and already-fetched
+            analysis survive switching to another tab and back. */}
+        <TabSlot show={activeTab === "orchestrator"} mounted={visitedTabs.has("orchestrator")}>
+          <OrchestratorView refreshKey={refreshKey + liveKey} />
+        </TabSlot>
 
-        {activeTab === "approvals" && <ApprovalsView refreshKey={refreshKey + liveKey} />}
+        <TabSlot show={activeTab === "approvals"} mounted={visitedTabs.has("approvals")}>
+          <ApprovalsView refreshKey={refreshKey + liveKey} />
+        </TabSlot>
 
-        {activeTab === "orders" && (
+        <TabSlot show={activeTab === "orders"} mounted={visitedTabs.has("orders")}>
           <OrdersAgentDashboard
             analysisUrl={API_ENDPOINTS.orders.analyze}
             queryUrl={API_ENDPOINTS.orders.query}
@@ -374,31 +265,31 @@ export default function App() {
             hideIngestionBar={true}
             refreshKey={refreshKey}
           />
-        )}
+        </TabSlot>
 
-        {activeTab === "inventory" && (
+        <TabSlot show={activeTab === "inventory"} mounted={visitedTabs.has("inventory")}>
           <InventoryAgentView
             monitorUrl={API_ENDPOINTS.inventory.monitor}
             queryUrl={API_ENDPOINTS.inventory.query}
             refreshIntervalMs={60000}
             refreshKey={refreshKey}
           />
-        )}
+        </TabSlot>
 
-        {activeTab === "customer" && (
+        <TabSlot show={activeTab === "customer"} mounted={visitedTabs.has("customer")}>
           <CustomerAgentView
             agentsUrl={API_ENDPOINTS.customer.agents}
             queryUrl={API_ENDPOINTS.customer.query}
             refreshKey={refreshKey}
           />
-        )}
+        </TabSlot>
 
-        {activeTab === "logistics" && (
+        <TabSlot show={activeTab === "logistics"} mounted={visitedTabs.has("logistics")}>
           <DomainAgentView
             agentKey="logistics"
             title="Logistics Intelligence"
             subtitle="Carrier & lane performance, transit-time distributions, delivery SLA, and late-delivery risk — grounded on the same live Olist / DataCo shipment data."
-            accent="#f59e0b"
+            accent="var(--agent-logistics)"
             analyzeUrl={API_ENDPOINTS.logistics.analyze}
             queryUrl={API_ENDPOINTS.logistics.query}
             refreshKey={refreshKey}
@@ -409,14 +300,14 @@ export default function App() {
               "How bad is late-delivery risk?",
             ]}
           />
-        )}
+        </TabSlot>
 
-        {activeTab === "pricing" && (
+        <TabSlot show={activeTab === "pricing"} mounted={visitedTabs.has("pricing")}>
           <DomainAgentView
             agentKey="pricing"
             title="Pricing & Margin Intelligence"
             subtitle="Blended & order-level margin, loss-making order detection, discount leakage, and category price/freight positioning."
-            accent="#ec4899"
+            accent="var(--agent-pricing)"
             analyzeUrl={API_ENDPOINTS.pricing.analyze}
             queryUrl={API_ENDPOINTS.pricing.query}
             refreshKey={refreshKey}
@@ -426,15 +317,16 @@ export default function App() {
               "Where is discount leaking?",
               "Which category has the highest freight drag?",
             ]}
+            headerExtra={<CompetitorFeedControl />}
           />
-        )}
+        </TabSlot>
 
-        {activeTab === "marketing" && (
+        <TabSlot show={activeTab === "marketing"} mounted={visitedTabs.has("marketing")}>
           <DomainAgentView
             agentKey="marketing"
             title="Marketing Intelligence"
             subtitle="RFM customer segmentation, repeat-purchase rate, category demand trends, and next-best-campaign recommendations."
-            accent="#8b5cf6"
+            accent="var(--agent-marketing)"
             analyzeUrl={API_ENDPOINTS.marketing.analyze}
             queryUrl={API_ENDPOINTS.marketing.query}
             refreshKey={refreshKey}
@@ -445,7 +337,7 @@ export default function App() {
               "What campaign should I run next?",
             ]}
           />
-        )}
+        </TabSlot>
       </main>
     </div>
   );

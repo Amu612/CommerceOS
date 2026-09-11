@@ -40,7 +40,7 @@ def get_agent_manifest():
 def query_customer_agent(payload: CustomerQueryRequest, db: Session = Depends(get_db)):
     """Runs the full multi-agent pipeline and returns the structured result."""
     msg = (payload.query or payload.message or "").strip()
-    return customer_support_agent.query(message=msg, db=db)
+    return customer_support_agent.query(message=msg, db=db, history=payload.history)
 
 
 async def _sse_stream(query: str):

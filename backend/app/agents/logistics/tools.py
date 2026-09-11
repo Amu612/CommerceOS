@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from langchain_core.tools import tool
 
-from app.agents._shared import severity_from_fraction
+from app.agents._shared import fmt_evidence, severity_from_fraction
 from app.agents.logistics.data_layer import LogisticsData
 from app.database.session import SessionLocal
 
@@ -110,7 +110,7 @@ def detect_slow_carrier() -> dict:
             "what_happened": f"'{worst['carrier']}' averages {worst['avg_transit_days']}d transit vs {worst['avg_scheduled_days']}d scheduled (+{worst['avg_delay_days']}d) over {worst['shipments']:,} shipments, {worst['late_risk_rate_pct']}% flagged.",
             "why_it_matters": "A structurally slow carrier degrades SLA on every order routed through it.",
             "recommended_action": f"Re-weight routing away from '{worst['carrier']}' for time-sensitive orders; open a carrier performance review; adjust its promised-date model by +{worst['avg_delay_days']}d.",
-            "evidence": str(worst), "confidence": 0.85, "data_status": "CALCULATED", "sample_count": worst["shipments"],
+            "evidence": fmt_evidence(worst), "confidence": 0.85, "data_status": "CALCULATED", "sample_count": worst["shipments"],
         }}
     finally:
         db.close()
@@ -132,7 +132,7 @@ def detect_lane_bottleneck() -> dict:
             "what_happened": f"'{worst['lane']}' delivers in {worst['avg_transit_days']}d, {worst['sla_gap_days']}d over its scheduled window, {worst['late_risk_rate_pct']}% flagged ({worst['shipments']:,} shipments).",
             "why_it_matters": "Concentrated lane delay points to a hub or customs bottleneck that compounds across every carrier on that lane.",
             "recommended_action": f"Audit the '{worst['lane']}' distribution hub and customs clearance; consider an alternate hub or expedited tier for that region.",
-            "evidence": str(worst), "confidence": 0.85, "data_status": "CALCULATED", "sample_count": worst["shipments"],
+            "evidence": fmt_evidence(worst), "confidence": 0.85, "data_status": "CALCULATED", "sample_count": worst["shipments"],
         }}
     finally:
         db.close()
@@ -153,12 +153,23 @@ def detect_sla_degradation() -> dict:
             "what_happened": f"{s['late_deliveries']:,} of {s['sample_count']:,} delivered orders arrived after the promised date (median margin {s['median_margin_days']}d, P90 {s['p90_margin_days']}d).",
             "why_it_matters": "Systematic overshoot of promised dates erodes trust and inflates 'where is my order' contacts.",
             "recommended_action": "Recalibrate the estimated-delivery-date model per region using the observed margin distribution; add a buffer equal to the P75 margin.",
-            "evidence": str({k: s[k] for k in ("on_time_rate_pct", "median_margin_days", "p90_margin_days")}),
+            "evidence": fmt_evidence({k: s[k] for k in ("on_time_rate_pct", "median_margin_days", "p90_margin_days")}),
             "confidence": 0.85, "data_status": "CALCULATED", "sample_count": s["sample_count"],
         }}
     finally:
         db.close()
 
 
+@tool
+def shipment_lookup(order_id: str) -> dict:
+    """Look up shipping mode/carrier, scheduled vs actual transit days, and late-delivery-risk for ONE specific order id. Use this whenever the question names a specific order/shipment."""
+    db = _db()
+    try:
+        return LogisticsData.shipment_lookup(db, order_id)
+    finally:
+        db.close()
+
+
 METRIC_TOOLS = [logistics_overview, carrier_scorecard, lane_scorecard, transit_time_distribution, olist_delivery_sla]
 DETECTOR_TOOLS = [detect_late_delivery_risk, detect_slow_carrier, detect_lane_bottleneck, detect_sla_degradation]
+LOOKUP_TOOLS = [shipment_lookup]

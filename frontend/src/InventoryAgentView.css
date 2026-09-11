@@ -1,22 +1,22 @@
-/* InventoryAgentView styles matching dark dashboard theme */
+/* InventoryAgentView — Indigo & Gold on Ivory theme (emerald accent) */
 
 .inventory-view-container {
   min-height: 100vh;
   padding: 32px;
-  background: #090d16;
-  color: #f1f5f9;
-  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  background: var(--bg-app);
+  color: var(--text-primary);
+  font-family: var(--font-body), ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
 }
 
 .inv-header {
   display: flex;
   flex-direction: column;
   gap: 16px;
-  background: #0f172a;
-  border: 1px solid #1e293b;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
   border-radius: 16px;
   padding: 24px;
-  box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.4);
+  box-shadow: var(--shadow-md);
 }
 
 @media (min-width: 768px) {
@@ -35,29 +35,29 @@
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.15em;
-  color: #34d399;
+  color: var(--agent-inventory);
 }
 
 .inv-badge-dot {
   width: 10px;
   height: 10px;
   border-radius: 50%;
-  background: #34d399;
-  box-shadow: 0 0 12px rgba(52, 211, 153, 0.8);
+  background: var(--agent-inventory);
+  box-shadow: 0 0 12px rgba(15, 118, 110, 0.4);
 }
 
 .inv-header-title {
   margin: 8px 0 4px 0;
   font-size: 26px;
-  font-weight: 800;
-  letter-spacing: -0.03em;
-  color: #ffffff;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  color: var(--text-primary);
 }
 
 .inv-header-desc {
   margin: 0;
   font-size: 14px;
-  color: #94a3b8;
+  color: var(--text-secondary);
 }
 
 .inv-btn-primary {
@@ -66,8 +66,8 @@
   justify-content: center;
   gap: 8px;
   border-radius: 12px;
-  background: #10b981;
-  color: #022c22;
+  background: var(--agent-inventory);
+  color: var(--text-on-accent);
   font-weight: 700;
   font-size: 14px;
   padding: 10px 20px;
@@ -77,7 +77,7 @@
 }
 
 .inv-btn-primary:hover:not(:disabled) {
-  background: #34d399;
+  background: #115e59;
   transform: translateY(-1px);
 }
 
@@ -92,18 +92,18 @@
   justify-content: center;
   gap: 8px;
   border-radius: 12px;
-  background: #1e293b;
-  color: #f1f5f9;
+  background: var(--bg-elevated);
+  color: var(--text-primary);
   font-weight: 600;
   font-size: 14px;
   padding: 10px 18px;
-  border: 1px solid #334155;
+  border: 1px solid var(--border-strong);
   cursor: pointer;
   transition: background 0.15s ease;
 }
 
 .inv-btn-secondary:hover:not(:disabled) {
-  background: #334155;
+  background: var(--bg-sunken);
 }
 
 .inv-btn-secondary:disabled {
@@ -131,11 +131,11 @@
 }
 
 .inv-card {
-  background: #0f172a;
-  border: 1px solid #1e293b;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
   border-radius: 16px;
   padding: 20px;
-  box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.2);
+  box-shadow: var(--shadow-sm);
 }
 
 .inv-card-title {
@@ -144,29 +144,30 @@
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.1em;
-  color: #64748b;
+  color: var(--text-muted);
 }
 
 .inv-card-value {
   margin: 12px 0 4px 0;
   font-size: 28px;
-  font-weight: 800;
-  letter-spacing: -0.03em;
-  color: #ffffff;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  color: var(--text-primary);
 }
 
 .inv-card-desc {
   margin: 0;
   font-size: 12px;
-  color: #64748b;
+  color: var(--text-muted);
 }
 
 .inv-section {
-  background: #0f172a;
-  border: 1px solid #1e293b;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
   border-radius: 16px;
   padding: 24px;
   margin-top: 24px;
+  box-shadow: var(--shadow-sm);
 }
 
 .inv-section-header {
@@ -177,13 +178,13 @@
   margin: 0;
   font-size: 18px;
   font-weight: 700;
-  color: #ffffff;
+  color: var(--text-primary);
 }
 
 .inv-section-subtitle {
   margin: 4px 0 0 0;
   font-size: 13px;
-  color: #64748b;
+  color: var(--text-muted);
 }
 
 .inv-table-wrapper {
@@ -199,23 +200,23 @@
 
 .inv-table th {
   padding: 12px 16px;
-  border-bottom: 1px solid #1e293b;
+  border-bottom: 1px solid var(--border);
   font-size: 11px;
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.08em;
-  color: #64748b;
-  background: rgba(15, 23, 42, 0.6);
+  color: var(--text-muted);
+  background: var(--bg-elevated);
 }
 
 .inv-table td {
   padding: 14px 16px;
-  border-bottom: 1px solid #1e293b;
-  color: #cbd5e1;
+  border-bottom: 1px solid var(--border);
+  color: var(--text-secondary);
 }
 
 .inv-table tbody tr:hover {
-  background: rgba(30, 41, 59, 0.4);
+  background: var(--bg-elevated);
 }
 
 .inv-badge-reorder {
@@ -224,9 +225,9 @@
   border-radius: 9999px;
   font-size: 11px;
   font-weight: 700;
-  background: rgba(245, 158, 11, 0.15);
-  color: #fcd34d;
-  border: 1px solid rgba(245, 158, 11, 0.3);
+  background: var(--status-warning-bg);
+  color: var(--status-warning);
+  border: 1px solid rgba(180, 83, 9, 0.3);
 }
 
 .inv-input-group {
@@ -243,39 +244,50 @@
 
 .inv-input {
   flex: 1;
-  background: #090d16;
-  border: 1px solid #334155;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-strong);
   border-radius: 12px;
   padding: 12px 16px;
-  color: #ffffff;
+  color: var(--text-primary);
   font-size: 14px;
   outline: none;
   transition: border-color 0.15s ease;
 }
 
 .inv-input:focus {
-  border-color: #10b981;
+  border-color: var(--agent-inventory);
 }
 
 .inv-output-box {
-  background: #090d16;
-  border: 1px solid #1e293b;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
   border-radius: 12px;
   padding: 20px;
   margin-top: 16px;
   white-space: pre-wrap;
   font-size: 14px;
   line-height: 1.7;
-  color: #e2e8f0;
+  color: var(--text-primary);
+}
+.inv-output-box p {
+  margin: 0 0 10px;
+}
+.inv-output-box p:last-child {
+  margin-bottom: 0;
+}
+.inv-output-box ul,
+.inv-output-box ol {
+  margin: 6px 0 10px;
+  padding-left: 22px;
 }
 
 .inv-empty {
-  border: 1px dashed #334155;
-  background: rgba(15, 23, 42, 0.4);
+  border: 1px dashed var(--border-strong);
+  background: var(--bg-elevated);
   border-radius: 12px;
   padding: 32px;
   text-align: center;
   font-size: 13px;
-  color: #64748b;
+  color: var(--text-muted);
   margin-top: 16px;
 }

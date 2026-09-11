@@ -17,9 +17,9 @@ def lookup_order(order_id: str) -> str:
     detail = OrdersTools.lookup_order(order_id)
     if not detail:
         return f"Order '{order_id}' was not found."
-    items = "; ".join(f"{it.product_name} x{it.quantity} (${it.price:.2f})" for it in detail.items) or "fulfilment package"
+    items = "; ".join(f"{it.product_name} x{it.quantity} (₹{it.price:.2f})" for it in detail.items) or "fulfilment package"
     return (
-        f"Order {detail.order_id}: status {detail.status.upper()}, total ${detail.total:.2f}, "
+        f"Order {detail.order_id}: status {detail.status.upper()}, total ₹{detail.total:.2f}, "
         f"placed {(detail.purchase_timestamp or '')[:10]}, delivered {(detail.delivered_customer_date or 'not yet')[:10]}, "
         f"tracking {detail.tracking_number}, ships to {detail.customer_city or '?'}, {detail.customer_state or '?'}. Items: {items}."
     )
@@ -55,7 +55,7 @@ def initiate_return(order_id: str, reason: str) -> str:
     if not elig.is_eligible:
         return f"Cannot create an RMA — order {order_id} is {elig.status}: {elig.message}"
     rma = OrdersTools.initiate_return(order_id, reason=reason or "Customer requested return")
-    return f"RMA {rma.rma_number} created for order {order_id}: ${rma.refund_amount:.2f} refund. {rma.instructions}"
+    return f"RMA {rma.rma_number} created for order {order_id}: ₹{rma.refund_amount:.2f} refund. {rma.instructions}"
 
 
 @tool

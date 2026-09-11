@@ -22,6 +22,7 @@ class AnalysisRequest(BaseModel):
 class QueryRequest(BaseModel):
     message: Optional[str] = None
     query: Optional[str] = None
+    history: Optional[list] = None
 
 
 @router.post("/analyze", response_model=OrdersAgentOutput)
@@ -67,7 +68,7 @@ def query_orders(
             success=False,
         )
 
-    res = orders_agent.query(message=user_msg.strip(), db=db)
+    res = orders_agent.query(message=user_msg.strip(), db=db, history=payload.history)
     return res
 
 

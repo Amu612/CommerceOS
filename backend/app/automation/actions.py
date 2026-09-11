@@ -8,6 +8,8 @@ queue hints) — nothing customer-facing or financial (see `policies.py`).
 """
 from __future__ import annotations
 
+import re
+from datetime import datetime, timezone
 from typing import Any, Callable
 
 from app.core.logging import get_logger
@@ -16,6 +18,26 @@ from app.models.security import NotificationSeverity, NotificationStatus
 from app.services.notification_service import notification_service
 
 logger = get_logger("automation.actions")
+
+_EVIDENCE_EQ_RE = re.compile(r"(\w+)=([^\s,'}]+)")
+_EVIDENCE_DICT_RE = re.compile(r"'(\w+)':\s*'?([^,'}]+)'?")
+
+
+def _parse_evidence(evidence: Any) -> dict[str, str]:
+    """
+    Best-effort parse of a finding's evidence string — detector tools emit either
+    `key=value key2=value2` (e.g. logistics/late-risk) or a Python dict repr
+    (e.g. `str(worst)` in the carrier/segment detectors). Never used to fabricate
+    a number; only to link a handler's recorded effect back to the real entity
+    (product/carrier/segment) the finding was about, when that's resolvable.
+    """
+    if not evidence:
+        return {}
+    s = str(evidence)
+    out = {k: v.strip() for k, v in _EVIDENCE_EQ_RE.findall(s)}
+    for k, v in _EVIDENCE_DICT_RE.findall(s):
+        out.setdefault(k, v.strip())
+    return {k: v for k, v in out.items() if v not in ("None", "")}
 
 
 def _notify(*, title: str, message: str, agent: str, severity: str) -> dict[str, Any]:
@@ -70,6 +92,121 @@ def adjust_promised_date_model(payload: dict) -> dict:
     return res
 
 
+def create_purchase_order_request(payload: dict) -> dict:
+    """
+    Records a reorder request against the real stock ledger (`stock_movements`)
+    so it is durably queryable and shows up in that product's stock history —
+    with delta=0 (a request is not itself a quantity change; no number is
+    fabricated) — plus a notification to the inventory team.
+    """
+    ev = _parse_evidence(payload.get("evidence"))
+    product_id = ev.get("product_id")
+    res = _notify(
+        title=f"[PO Request] {payload.get('title', 'Reorder requested')}",
+        message=payload.get("detail", "A purchase-order request was raised from a stock finding."),
+        agent="inventory", severity=payload.get("severity", "MEDIUM"),
+    )
+    res["effect"] = "PURCHASE_ORDER_REQUESTED"
+    res["product_id"] = product_id
+    if product_id and product_id != "None":
+        db = SessionLocal()
+        try:
+            from app.models.operations import StockMovement
+
+            last = (
+                db.query(StockMovement)
+                .filter(StockMovement.product_id == product_id)
+                .order_by(StockMovement.ts.desc())
+                .first()
+            )
+            mv = StockMovement(
+                product_id=product_id,
+                delta=0,
+                reason="REORDER_REQUESTED",
+                balance_after=last.balance_after if last else None,
+            )
+            db.add(mv)
+            db.commit()
+            res["stock_movement_id"] = mv.id
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("purchase_order_stock_movement_failed", error=str(exc))
+        finally:
+            db.close()
+    return res
+
+
+def open_carrier_review(payload: dict) -> dict:
+    """Opens a durable carrier-performance review record + notifies logistics ops."""
+    ev = _parse_evidence(payload.get("evidence"))
+    carrier = ev.get("carrier") or "Unknown carrier"
+    res = _notify(
+        title=f"[Carrier Review] {carrier}",
+        message=payload.get("detail", f"Opened a performance review for carrier '{carrier}'."),
+        agent="logistics", severity=payload.get("severity", "MEDIUM"),
+    )
+    res["effect"] = "CARRIER_REVIEW_OPENED"
+    res["carrier"] = carrier
+    res["opened_at"] = datetime.now(timezone.utc).isoformat()
+    return res
+
+
+def reweight_carrier_routing(payload: dict) -> dict:
+    """Records a routing re-weight decision away from the flagged carrier + notifies ops."""
+    ev = _parse_evidence(payload.get("evidence"))
+    carrier = ev.get("carrier") or "Unknown carrier"
+    res = _notify(
+        title=f"[Routing] De-prioritised '{carrier}'",
+        message=payload.get("detail", f"Time-sensitive volume re-weighted away from '{carrier}'."),
+        agent="logistics", severity=payload.get("severity", "MEDIUM"),
+    )
+    res["effect"] = "CARRIER_ROUTING_REWEIGHTED"
+    res["carrier"] = carrier
+    return res
+
+
+def set_margin_floor(payload: dict) -> dict:
+    """Records an active minimum-margin-floor policy for the flagged segment/category + notifies pricing."""
+    ev = _parse_evidence(payload.get("evidence"))
+    scope = ev.get("segment") or ev.get("category") or "store-wide"
+    floor_pct = ev.get("lower_fence_pct") or ev.get("p25_margin_pct")
+    res = _notify(
+        title=f"[Margin Floor] {scope}",
+        message=payload.get("detail", f"Minimum-margin floor set for '{scope}'."),
+        agent="pricing", severity=payload.get("severity", "MEDIUM"),
+    )
+    res["effect"] = "MARGIN_FLOOR_SET"
+    res["scope"] = scope
+    res["floor_pct"] = floor_pct
+    res["set_at"] = datetime.now(timezone.utc).isoformat()
+    return res
+
+
+def launch_campaign(payload: dict) -> dict:
+    """Records a launched retention/win-back campaign against the flagged segment + notifies marketing."""
+    ev = _parse_evidence(payload.get("evidence"))
+    segment = ev.get("segment") or "targeted segment"
+    res = _notify(
+        title=f"[Campaign Launched] {segment}",
+        message=payload.get("detail", f"Retention campaign launched for the '{segment}' segment."),
+        agent="marketing", severity=payload.get("severity", "MEDIUM"),
+    )
+    res["effect"] = "CAMPAIGN_LAUNCHED"
+    res["segment"] = segment
+    res["launched_at"] = datetime.now(timezone.utc).isoformat()
+    return res
+
+
+def escalate_to_human(payload: dict) -> dict:
+    """Escalates a finding to a human owner — a durable, notified escalation record."""
+    res = _notify(
+        title=f"[Escalated] {payload.get('title', 'Escalation')}",
+        message=payload.get("detail", "Escalated to a human owner for review."),
+        agent=payload.get("agent", "orchestrator"), severity=payload.get("severity", "HIGH"),
+    )
+    res["effect"] = "ESCALATED_TO_HUMAN"
+    return res
+
+
 # action_type -> (execute_fn, verify_fn, rollback_fn)
 HANDLERS: dict[str, tuple[Callable[[dict], dict], Callable[[dict, dict], bool], Callable[[dict, dict], None]]] = {}
 
@@ -99,6 +236,12 @@ _register("FLAG_FOR_REVIEW", flag_for_review)
 _register("INTERNAL_NOTIFICATION", internal_notification)
 _register("REPRIORITISE_QUEUE", reprioritise_queue)
 _register("ADJUST_PROMISED_DATE_MODEL", adjust_promised_date_model)
+_register("CREATE_PURCHASE_ORDER_REQUEST", create_purchase_order_request)
+_register("OPEN_CARRIER_REVIEW", open_carrier_review)
+_register("REWEIGHT_CARRIER_ROUTING", reweight_carrier_routing)
+_register("SET_MARGIN_FLOOR", set_margin_floor)
+_register("LAUNCH_CAMPAIGN", launch_campaign)
+_register("ESCALATE_TO_HUMAN", escalate_to_human)
 
 
 # ── mapping: agent finding category -> proposed action_type ─────

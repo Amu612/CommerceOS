@@ -1,9 +1,9 @@
 .dav {
   min-height: 100vh;
   padding: 28px 32px 60px;
-  background: #0a0f1a;
-  color: #e2e8f0;
-  font-family: Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  background: var(--bg-app);
+  color: var(--text-primary);
+  font-family: var(--font-body), ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
 }
 
 .dav-header {
@@ -12,10 +12,11 @@
   gap: 16px;
   justify-content: space-between;
   align-items: flex-start;
-  background: #0f172a;
-  border: 1px solid #1e293b;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
   border-radius: 16px;
   padding: 22px 24px;
+  box-shadow: var(--shadow-sm);
 }
 .dav-header-right {
   display: flex;
@@ -41,14 +42,14 @@
 .dav-title {
   margin: 8px 0 4px;
   font-size: 25px;
-  font-weight: 800;
-  letter-spacing: -0.03em;
-  color: #fff;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  color: var(--text-primary);
 }
 .dav-sub {
   margin: 0;
   font-size: 13px;
-  color: #94a3b8;
+  color: var(--text-secondary);
   max-width: 640px;
   line-height: 1.55;
 }
@@ -62,13 +63,13 @@
 }
 .dav-conf {
   font-size: 10px;
-  color: #64748b;
+  color: var(--text-muted);
   font-weight: 600;
 }
 .dav-btn {
-  border: 1px solid #334155;
-  background: #1e293b;
-  color: #f1f5f9;
+  border: 1px solid var(--border-strong);
+  background: var(--bg-elevated);
+  color: var(--text-primary);
   font-weight: 600;
   font-size: 13px;
   padding: 9px 16px;
@@ -76,7 +77,7 @@
   cursor: pointer;
 }
 .dav-btn:hover:not(:disabled) {
-  background: #334155;
+  background: var(--bg-sunken);
 }
 .dav-btn:disabled {
   opacity: 0.5;
@@ -85,22 +86,62 @@
 .dav-btn-primary {
   background: var(--accent);
   border-color: var(--accent);
-  color: #06121f;
+  color: var(--text-on-accent);
+}
+.dav-header-extra {
+  margin-top: 14px;
+}
+.cfc {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+.cfc-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--status-neutral);
+  flex-shrink: 0;
+}
+.cfc-dot.on {
+  background: var(--status-success);
+}
+.cfc-btn {
+  border: 1px solid var(--border-strong);
+  background: var(--bg-elevated);
+  color: var(--text-primary);
+  font-size: 11px;
+  font-weight: 600;
+  padding: 4px 10px;
+  border-radius: 7px;
+  cursor: pointer;
+}
+.cfc-btn:hover:not(:disabled) {
+  background: var(--bg-sunken);
+}
+.cfc-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.cfc-result {
+  color: var(--text-secondary);
 }
 .dav-error {
   margin-top: 16px;
   padding: 13px 16px;
   border-radius: 12px;
-  background: rgba(153, 27, 27, 0.18);
-  border: 1px solid rgba(248, 113, 113, 0.4);
-  color: #fca5a5;
+  background: var(--status-danger-bg);
+  border: 1px solid rgba(185, 28, 28, 0.35);
+  color: var(--status-danger);
   font-size: 13px;
 }
 .dav-summary {
   margin: 18px 2px 0;
   font-size: 14px;
   line-height: 1.6;
-  color: #cbd5e1;
+  color: var(--text-secondary);
 }
 
 .dav-metrics {
@@ -110,10 +151,11 @@
   margin-top: 18px;
 }
 .dav-card {
-  background: #0f172a;
-  border: 1px solid #1e293b;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
   border-radius: 14px;
   padding: 16px 18px;
+  box-shadow: var(--shadow-sm);
 }
 .dav-card-label {
   margin: 0;
@@ -121,45 +163,46 @@
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.08em;
-  color: #64748b;
+  color: var(--text-muted);
 }
 .dav-card-value {
   margin: 10px 0 4px;
   font-size: 24px;
-  font-weight: 800;
-  color: #fff;
+  font-weight: 700;
+  color: var(--text-primary);
 }
 .dav-card-unit {
   font-size: 13px;
-  color: #94a3b8;
+  color: var(--text-secondary);
 }
 .dav-card-desc {
   margin: 0;
   font-size: 11.5px;
-  color: #64748b;
+  color: var(--text-muted);
 }
 
 .dav-section {
-  background: #0f172a;
-  border: 1px solid #1e293b;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
   border-radius: 16px;
   padding: 22px 24px;
   margin-top: 22px;
+  box-shadow: var(--shadow-sm);
 }
 .dav-section-title {
   margin: 0 0 14px;
   font-size: 16px;
   font-weight: 700;
-  color: #fff;
+  color: var(--text-primary);
   text-transform: capitalize;
 }
 .dav-empty {
-  border: 1px dashed #334155;
+  border: 1px dashed var(--border-strong);
   border-radius: 12px;
   padding: 22px;
   text-align: center;
   font-size: 13px;
-  color: #64748b;
+  color: var(--text-muted);
   margin-top: 14px;
 }
 
@@ -170,8 +213,8 @@
   gap: 12px;
 }
 .dav-finding {
-  background: #0b1220;
-  border: 1px solid #1e293b;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
   border-left: 3px solid var(--accent);
   border-radius: 12px;
   padding: 14px 16px;
@@ -186,48 +229,48 @@
 .dav-sev {
   font-size: 10px;
   font-weight: 800;
-  color: #06121f;
+  color: var(--text-on-accent);
   padding: 2px 8px;
   border-radius: 6px;
 }
 .dav-finding-title {
   font-size: 14px;
   font-weight: 700;
-  color: #fff;
+  color: var(--text-primary);
 }
 .dav-finding-cat {
   font-size: 10px;
-  color: #64748b;
-  border: 1px solid #1e293b;
+  color: var(--text-muted);
+  border: 1px solid var(--border);
   border-radius: 6px;
   padding: 1px 6px;
 }
 .dav-finding-what {
   margin: 0 0 6px;
   font-size: 13px;
-  color: #cbd5e1;
+  color: var(--text-secondary);
   line-height: 1.55;
 }
 .dav-finding-why,
 .dav-finding-action {
   margin: 4px 0;
   font-size: 12.5px;
-  color: #94a3b8;
+  color: var(--text-muted);
   line-height: 1.5;
 }
 .dav-finding-action {
-  color: #cbd5e1;
+  color: var(--text-secondary);
 }
 .dav-finding-evidence {
   margin: 8px 0 0;
   font-size: 11px;
-  color: #64748b;
+  color: var(--text-muted);
   font-family: ui-monospace, monospace;
   word-break: break-word;
 }
 .dav-rec {
-  background: #0b1220;
-  border: 1px solid #1e293b;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
   border-radius: 12px;
   padding: 14px 16px;
 }
@@ -239,7 +282,7 @@
 .dav-rec-title {
   font-size: 13.5px;
   font-weight: 700;
-  color: #fff;
+  color: var(--text-primary);
 }
 .dav-rec-prio {
   font-size: 10px;
@@ -253,13 +296,13 @@
 .dav-rec-detail {
   margin: 8px 0 4px;
   font-size: 12.5px;
-  color: #cbd5e1;
+  color: var(--text-secondary);
   line-height: 1.55;
 }
 .dav-rec-impact {
   margin: 0;
   font-size: 11.5px;
-  color: #64748b;
+  color: var(--text-muted);
 }
 
 .dav-table-wrap {
@@ -273,24 +316,24 @@
 .dav-table th {
   text-align: left;
   padding: 10px 12px;
-  border-bottom: 1px solid #1e293b;
+  border-bottom: 1px solid var(--border);
   font-size: 10px;
   text-transform: uppercase;
   letter-spacing: 0.06em;
-  color: #64748b;
+  color: var(--text-muted);
 }
 .dav-table td {
   padding: 10px 12px;
-  border-bottom: 1px solid #131c2e;
-  color: #cbd5e1;
+  border-bottom: 1px solid var(--border);
+  color: var(--text-secondary);
 }
 .dav-table tbody tr:hover {
-  background: rgba(30, 41, 59, 0.35);
+  background: var(--bg-elevated);
 }
 
 .dav-chat {
-  background: #090d16;
-  border: 1px solid #1e293b;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
   border-radius: 12px;
   padding: 16px;
   max-height: 380px;
@@ -301,7 +344,7 @@
 }
 .dav-chat-empty {
   text-align: center;
-  color: #64748b;
+  color: var(--text-muted);
   font-size: 13px;
   padding: 16px 4px;
 }
@@ -313,9 +356,9 @@
   margin-top: 12px;
 }
 .dav-suggestion {
-  background: #0b1220;
-  border: 1px solid #1e293b;
-  color: #cbd5e1;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  color: var(--text-secondary);
   border-radius: 999px;
   padding: 6px 12px;
   font-size: 12px;
@@ -323,7 +366,7 @@
 }
 .dav-suggestion:hover {
   border-color: var(--accent);
-  color: #fff;
+  color: var(--text-primary);
 }
 .dav-msg {
   max-width: 82%;
@@ -346,15 +389,26 @@
   white-space: pre-wrap;
   word-break: break-word;
 }
+.dav-msg-body p {
+  margin: 0 0 8px;
+}
+.dav-msg-body p:last-child {
+  margin-bottom: 0;
+}
+.dav-msg-body ul,
+.dav-msg-body ol {
+  margin: 4px 0 8px;
+  padding-left: 20px;
+}
 .dav-msg-user .dav-msg-body {
   background: var(--accent);
-  color: #06121f;
+  color: var(--text-on-accent);
   border-bottom-right-radius: 4px;
 }
 .dav-msg-agent .dav-msg-body {
-  background: #0f172a;
-  border: 1px solid #1e293b;
-  color: #e2e8f0;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  color: var(--text-primary);
   border-bottom-left-radius: 4px;
 }
 .dav-msg-tag {
@@ -367,12 +421,12 @@
   width: fit-content;
 }
 .dav-tag-llm {
-  background: rgba(16, 185, 129, 0.15);
-  color: #6ee7b7;
+  background: var(--status-success-bg);
+  color: var(--status-success);
 }
 .dav-tag-det {
-  background: rgba(148, 163, 184, 0.12);
-  color: #94a3b8;
+  background: var(--status-neutral-bg);
+  color: var(--status-neutral);
 }
 .dav-input-row {
   display: flex;
@@ -381,14 +435,33 @@
 }
 .dav-input {
   flex: 1;
-  background: #090d16;
-  border: 1px solid #334155;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-strong);
   border-radius: 11px;
   padding: 11px 15px;
-  color: #fff;
+  color: var(--text-primary);
   font-size: 14px;
   outline: none;
 }
 .dav-input:focus {
   border-color: var(--accent);
+}
+
+/* Optional per-message extras (e.g. Orders' order-id reference / raw tool data) */
+.dav-msg details {
+  margin-top: 6px;
+  font-size: 11px;
+}
+.dav-msg details summary {
+  cursor: pointer;
+  color: var(--text-muted);
+}
+.dav-msg details pre {
+  margin-top: 6px;
+  padding: 10px;
+  background: var(--bg-sunken);
+  border-radius: 8px;
+  overflow: auto;
+  font-size: 10px;
+  color: var(--text-secondary);
 }

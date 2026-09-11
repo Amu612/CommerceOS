@@ -2,6 +2,7 @@
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import "./DomainAgentView.css";
+import { renderMarkdown } from "./lib/markdown";
 
 type MetricCard = { label: string; value: unknown; unit?: string; description?: string; data_status?: string };
 type Finding = {
@@ -41,19 +42,22 @@ export type DomainAgentViewProps = {
   queryUrl: string;
   refreshKey?: number;
   suggestions?: string[];
+  /** Optional extra control rendered under the header — e.g. Pricing's
+   * competitor-price-feed toggle. Independent of the data-source switch. */
+  headerExtra?: React.ReactNode;
 };
 
 const HEALTH_COLOR: Record<string, string> = {
-  HEALTHY: "#34d399",
-  NEEDS_ATTENTION: "#fbbf24",
-  CRITICAL: "#f87171",
-  NOT_ESTIMABLE: "#94a3b8",
+  HEALTHY: "var(--status-success)",
+  NEEDS_ATTENTION: "var(--status-warning)",
+  CRITICAL: "var(--status-danger)",
+  NOT_ESTIMABLE: "var(--status-neutral)",
 };
 const SEV_COLOR: Record<string, string> = {
-  CRITICAL: "#f87171",
-  HIGH: "#fb923c",
-  MEDIUM: "#fbbf24",
-  LOW: "#60a5fa",
+  CRITICAL: "var(--status-danger)",
+  HIGH: "#c2410c",
+  MEDIUM: "var(--status-warning)",
+  LOW: "#0369a1",
 };
 
 function fmt(v: unknown): string {
@@ -70,6 +74,7 @@ export default function DomainAgentView({
   queryUrl,
   refreshKey,
   suggestions = [],
+  headerExtra,
 }: DomainAgentViewProps) {
   const [data, setData] = useState<AnalysisOutput | null>(null);
   const [loading, setLoading] = useState(true);
@@ -105,6 +110,9 @@ export default function DomainAgentView({
   const ask = async (raw: string) => {
     const q = raw.trim();
     if (!q || asking) return;
+    // Last few turns, sent so the agent can resolve follow-up questions
+    // ("what about its status?") to something mentioned earlier.
+    const history = chat.slice(-6).map((m) => ({ role: m.role === "user" ? "user" : "assistant", text: m.text }));
     setChat((c) => [...c, { role: "user", text: q }]);
     setInput("");
     setAsking(true);
@@ -112,7 +120,7 @@ export default function DomainAgentView({
       const r = await fetch(queryUrl, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ query: q }),
+        body: JSON.stringify({ query: q, history }),
       });
       const j = await r.json();
       setChat((c) => [...c, { role: "agent", text: j.answer || "No answer.", llm: j.llm_backed }]);
@@ -154,6 +162,8 @@ export default function DomainAgentView({
           </button>
         </div>
       </div>
+
+      {headerExtra && <div className="dav-header-extra">{headerExtra}</div>}
 
       {error && (
         <div className="dav-error">
@@ -284,7 +294,7 @@ export default function DomainAgentView({
                   {m.llm ? "LLM" : "deterministic"}
                 </span>
               )}
-              <div className="dav-msg-body">{m.text}</div>
+              <div className="dav-msg-body">{renderMarkdown(m.text) ?? m.text}</div>
             </div>
           ))}
           {asking && <div className="dav-msg dav-msg-agent"><div className="dav-msg-body">…thinking</div></div>}

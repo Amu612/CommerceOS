@@ -11,10 +11,10 @@ from __future__ import annotations
 
 import os
 from functools import lru_cache
-from typing import List, Literal, Optional
+from typing import Annotated, List, Literal, Optional
 
 from pydantic import Field, field_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 
 def _backend_dir() -> str:
@@ -37,6 +37,11 @@ class BaseAppSettings(BaseSettings):
         env_file_encoding="utf-8",
         extra="ignore",
         case_sensitive=False,
+        # `.env.example` (and a copy of it as `.env`) ships every key blank as
+        # a template — without this, a blank value overrides a field's real
+        # default with an empty string (e.g. DATABASE_URL="") instead of
+        # falling through to it.
+        env_ignore_empty=True,
     )
 
     # ── Identity ───────────────────────────────────────────────────
@@ -75,8 +80,11 @@ class BaseAppSettings(BaseSettings):
     # When False, read/query agent routes are open (dev convenience). Always True in prod.
     AUTH_ENFORCED: bool = False
 
-    CORS_ORIGINS: List[str] = Field(default_factory=lambda: ["http://localhost:3000", "http://localhost:5173"])
-    TRUSTED_HOSTS: List[str] = Field(default_factory=lambda: ["*"])
+    # NoDecode: these come from a plain comma-separated env string, not JSON —
+    # without it pydantic-settings tries to json.loads() the raw value before
+    # our _split_csv validator ever runs, and blows up on a real .env file.
+    CORS_ORIGINS: Annotated[List[str], NoDecode] = Field(default_factory=lambda: ["http://localhost:3000", "http://localhost:5173"])
+    TRUSTED_HOSTS: Annotated[List[str], NoDecode] = Field(default_factory=lambda: ["*"])
     MAX_REQUEST_BYTES: int = 2 * 1024 * 1024
     RATE_LIMIT_PER_MINUTE: int = 240
     LOGIN_RATE_LIMIT_PER_MINUTE: int = 10
@@ -114,6 +122,31 @@ class BaseAppSettings(BaseSettings):
     DATASET_DIR: Optional[str] = None  # local dir OR s3://bucket/prefix
     REPLAY_MAX_ORDERS: int = 15000
 
+    # historic | live_shopify. "historic" always works (the seeded Olist/DataCo
+    # dataset); "live_shopify" is only actually selectable once Shopify
+    # credentials below are configured — see resolve_data_source().
+    DATA_SOURCE: Literal["historic", "live_shopify"] = "historic"
+
+    # ── Shopify (live data source) ──────────────────────────────────
+    SHOPIFY_STORE_DOMAIN: Optional[str] = None  # e.g. "your-store.myshopify.com"
+    SHOPIFY_API_VERSION: str = "2024-10"
+    SHOPIFY_WEBHOOK_SECRET: Optional[str] = None
+    # Preferred: Dev Dashboard apps use the client-credentials grant — the
+    # backend exchanges these for a 24h Admin API access token itself and
+    # refreshes it automatically (see app.services.shopify_service). No token
+    # is ever pasted manually.
+    SHOPIFY_CLIENT_ID: Optional[str] = None
+    SHOPIFY_CLIENT_SECRET: Optional[str] = None
+    # Legacy fallback: a manually-generated static token from an admin-created
+    # custom app's "API credentials" tab. Used only if the client id/secret
+    # above aren't set.
+    SHOPIFY_ADMIN_TOKEN: Optional[str] = None
+
+    # ── Apify (competitor price feed — Pricing agent only) ──────────
+    APIFY_TOKEN: Optional[str] = None
+    APIFY_ACTOR_ID: Optional[str] = None
+    PRICING_COMPETITOR_FEED_ENABLED: bool = False
+
     # ── Observability ──────────────────────────────────────────────
     LOG_LEVEL: str = "INFO"
     LOG_JSON: bool = True
@@ -137,6 +170,23 @@ class BaseAppSettings(BaseSettings):
     @property
     def db_is_sqlite(self) -> bool:
         return self.DATABASE_URL.startswith("sqlite")
+
+    @property
+    def shopify_configured(self) -> bool:
+        if not self.SHOPIFY_STORE_DOMAIN:
+            return False
+        return bool((self.SHOPIFY_CLIENT_ID and self.SHOPIFY_CLIENT_SECRET) or self.SHOPIFY_ADMIN_TOKEN)
+
+    @property
+    def apify_configured(self) -> bool:
+        return bool(self.APIFY_TOKEN and self.APIFY_ACTOR_ID)
+
+    def resolve_data_source(self) -> str:
+        """`live_shopify` only if it's actually configured — otherwise fall back
+        to `historic` rather than leaving the app pointed at an empty source."""
+        if self.DATA_SOURCE == "live_shopify" and not self.shopify_configured:
+            return "historic"
+        return self.DATA_SOURCE
 
     def resolve_llm(self) -> tuple[str, str]:
         """Return (provider, model) — resolving 'auto' to whatever has credentials."""

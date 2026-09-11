@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useCallback, useEffect, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import "./OrchestratorView.css";
 import { API_ENDPOINTS } from "./config";
 
@@ -33,19 +33,19 @@ type OrchResult = {
 };
 
 const HEALTH_COLOR: Record<string, string> = {
-  HEALTHY: "#34d399",
-  NEEDS_ATTENTION: "#fbbf24",
-  CRITICAL: "#f87171",
-  NOT_ESTIMABLE: "#94a3b8",
-  ERROR: "#f87171",
+  HEALTHY: "#0f766e",
+  NEEDS_ATTENTION: "#b45309",
+  CRITICAL: "#b91c1c",
+  NOT_ESTIMABLE: "#857f93",
+  ERROR: "#b91c1c",
 };
 const AGENT_ACCENT: Record<string, string> = {
-  orders: "#3b82f6",
-  inventory: "#10b981",
-  customer: "#6366f1",
-  logistics: "#f59e0b",
-  pricing: "#ec4899",
-  marketing: "#8b5cf6",
+  orders: "#1d4ed8",
+  inventory: "#0f766e",
+  customer: "#3730a3",
+  logistics: "#a16207",
+  pricing: "#9d174d",
+  marketing: "#6d28d9",
 };
 
 export default function OrchestratorView({ refreshKey }: { refreshKey?: number }) {
@@ -54,6 +54,10 @@ export default function OrchestratorView({ refreshKey }: { refreshKey?: number }
   const [error, setError] = useState<string | null>(null);
 
   const [stale, setStale] = useState(false);
+  // Guards the one-time auto-sweep below so it never fires more than once per
+  // mount — repeatedly auto-triggering the expensive sweep would reintroduce
+  // the WS-event -> refresh -> re-sweep loop this view deliberately avoids.
+  const autoSweptRef = useRef(false);
 
   // Cheap: read the last persisted sweep. Used on mount and on every refresh tick.
   const loadLatest = useCallback(async () => {
@@ -64,14 +68,25 @@ export default function OrchestratorView({ refreshKey }: { refreshKey?: number }
       const d = (await r.json()) as OrchResult & { stale?: boolean };
       setData(d);
       setStale(Boolean(d.stale));
+      // If the persisted sweep is stale (or nothing has ever run) and we
+      // haven't already tried, run one fresh sweep automatically so the page
+      // doesn't look "stuck" after new data shows up — a manual "Re-run
+      // Sweep" click should never be required just to see current numbers.
+      const looksEmpty = !d || d.overall_health === "NOT_ESTIMABLE" || !d.domains?.length;
+      if (!autoSweptRef.current && (d?.stale || looksEmpty)) {
+        autoSweptRef.current = true;
+        runSweep();
+      }
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to load orchestrator");
     } finally {
       setLoading(false);
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Expensive: trigger a fresh cross-domain sweep. Explicit user action only.
+  // Expensive: trigger a fresh cross-domain sweep. Explicit user action, or
+  // the one-time auto-refresh above when the cached sweep looks stale/empty.
   const runSweep = useCallback(async () => {
     setLoading(true);
     setError(null);
@@ -106,7 +121,7 @@ export default function OrchestratorView({ refreshKey }: { refreshKey?: number }
         </div>
         <div className="orch-header-right">
           {data && (
-            <span className="orch-health" style={{ color: HEALTH_COLOR[data.overall_health] ?? "#94a3b8" }}>
+            <span className="orch-health" style={{ color: HEALTH_COLOR[data.overall_health] ?? "#857f93" }}>
               ● {data.overall_health.replace(/_/g, " ")}
               <span className="orch-conf">{Math.round((data.overall_confidence ?? 0) * 100)}% conf</span>
             </span>
@@ -120,6 +135,12 @@ export default function OrchestratorView({ refreshKey }: { refreshKey?: number }
       {error && (
         <div className="orch-error">
           <strong>Orchestrator note:</strong> {error}
+        </div>
+      )}
+
+      {stale && !loading && (
+        <div className="orch-error">
+          <strong>Refreshing:</strong> the numbers below are from an earlier sweep and are being updated now — they'll refresh in a moment without needing a click.
         </div>
       )}
 
@@ -140,10 +161,10 @@ export default function OrchestratorView({ refreshKey }: { refreshKey?: number }
       {data && (
         <div className="orch-grid">
           {data.domains.map((d) => (
-            <div key={d.agent} className="orch-domain" style={{ ["--a" as string]: AGENT_ACCENT[d.agent] ?? "#64748b" }}>
+            <div key={d.agent} className="orch-domain" style={{ ["--a" as string]: AGENT_ACCENT[d.agent] ?? "#857f93" }}>
               <div className="orch-domain-head">
                 <span className="orch-domain-name">{d.display_name}</span>
-                <span className="orch-domain-health" style={{ color: HEALTH_COLOR[d.health] ?? "#94a3b8" }}>
+                <span className="orch-domain-health" style={{ color: HEALTH_COLOR[d.health] ?? "#857f93" }}>
                   ● {d.health.replace(/_/g, " ")}
                 </span>
               </div>

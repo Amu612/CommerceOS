@@ -113,8 +113,10 @@ app.include_router(v1_audit.router, prefix=settings.API_V1_PREFIX, dependencies=
 _agent_auth = [Depends(auth_dependency())]
 
 from app.api.v1 import automation as v1_automation  # noqa: E402
+from app.api.v1 import data_source as v1_data_source  # noqa: E402
 from app.api.v1 import orchestrator as v1_orchestrator  # noqa: E402
 from app.api.v1 import runs as v1_runs  # noqa: E402
+from app.api.v1 import shopify as v1_shopify  # noqa: E402
 from app.api.v1 import stream as v1_stream  # noqa: E402
 from app.api.v1 import system as v1_system  # noqa: E402
 from app.api.v1.agents import (  # noqa: E402
@@ -137,8 +139,14 @@ for r in (
     v1_orchestrator.router,
     v1_automation.router,
     v1_runs.router,
+    v1_data_source.router,
+    v1_shopify.router,
 ):
     app.include_router(r, dependencies=_agent_auth)
+
+# Shopify webhook — Shopify calls this directly and can never carry our JWT;
+# its security is the HMAC signature check inside the route itself, not auth.
+app.include_router(v1_shopify.webhook_router)
 
 # System status / LLM health — public so the frontend can discover auth mode
 # and provider health before a session exists.

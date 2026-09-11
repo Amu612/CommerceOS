@@ -21,14 +21,14 @@ type Approval = {
   approval?: { id: string; required_role: string; status: string; decided_by?: string; reason?: string };
 };
 
-const SEV_COLOR: Record<string, string> = { CRITICAL: "#f87171", HIGH: "#fb923c", MEDIUM: "#fbbf24", LOW: "#60a5fa" };
+const SEV_COLOR: Record<string, string> = { CRITICAL: "#b91c1c", HIGH: "#c2410c", MEDIUM: "#b45309", LOW: "#0369a1" };
 const STATUS_COLOR: Record<string, string> = {
-  VERIFIED: "#34d399",
-  EXECUTED: "#34d399",
-  PROPOSED: "#fbbf24",
-  BLOCKED: "#f87171",
-  REJECTED: "#94a3b8",
-  FAILED: "#f87171",
+  VERIFIED: "#0f766e",
+  EXECUTED: "#0f766e",
+  PROPOSED: "#b45309",
+  BLOCKED: "#b91c1c",
+  REJECTED: "#857f93",
+  FAILED: "#b91c1c",
 };
 
 export default function ApprovalsView({ refreshKey }: { refreshKey?: number }) {
@@ -162,6 +162,7 @@ export default function ApprovalsView({ refreshKey }: { refreshKey?: number }) {
                 <th>Action</th>
                 <th>Title</th>
                 <th>Verified</th>
+                <th>Recorded effect</th>
               </tr>
             </thead>
             <tbody>
@@ -175,6 +176,7 @@ export default function ApprovalsView({ refreshKey }: { refreshKey?: number }) {
                   <td className="apv-mono">{a.action_type}</td>
                   <td>{a.title}</td>
                   <td>{a.verification?.verified ? "✓" : a.status === "BLOCKED" ? "—" : ""}</td>
+                  <td className="apv-effect">{describeEffect(a.result)}</td>
                 </tr>
               ))}
             </tbody>
@@ -183,6 +185,21 @@ export default function ApprovalsView({ refreshKey }: { refreshKey?: number }) {
       </div>
     </section>
   );
+}
+
+function describeEffect(result?: Record<string, unknown> | null): string {
+  if (!result) return "—";
+  const effect = result.effect;
+  if (typeof effect === "string") {
+    const label = effect.replace(/_/g, " ").toLowerCase();
+    const bits = ["carrier", "scope", "segment", "product_id", "floor_pct", "notification_id"]
+      .map((k) => (result[k] != null && result[k] !== "" ? `${k.replace(/_/g, " ")}: ${result[k]}` : null))
+      .filter(Boolean);
+    return bits.length ? `${label} (${bits.join(", ")})` : label;
+  }
+  if (result.notification_id) return "Notification recorded";
+  if (result.error) return `Failed: ${String(result.error)}`;
+  return "—";
 }
 
 function Kpi({ label, value, tone }: { label: string; value: number; tone: "ok" | "warn" | "crit" }) {

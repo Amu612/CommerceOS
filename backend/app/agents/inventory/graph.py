@@ -108,10 +108,33 @@ def inventory_triage_node(state: InventoryAgentState) -> Dict[str, Any]:
     extracted_id = hex_m.group(1) if hex_m else (sku_m.group(1) if sku_m else None)
     extracted_thresh = int(thresh_m.group(1)) if thresh_m else 50
 
+    # Follow-up fallback: "what about its stock?" — if this message names no
+    # product, check earlier turns (most recent first) for the last one mentioned.
+    if not extracted_id and len(messages) > 1:
+        for m in reversed(messages[:-1]):
+            prior = m.content if isinstance(m, HumanMessage) else (m.get("content", "") if isinstance(m, dict) else "")
+            if not prior:
+                continue
+            ph = re.search(r"\b([0-9a-f]{32})\b", prior, re.IGNORECASE)
+            ps = re.search(r"\b(sku-[0-9a-f]{8}|dc-\d+|\d{1,8})\b", prior, re.IGNORECASE)
+            if ph or ps:
+                extracted_id = ph.group(1) if ph else ps.group(1)
+                break
+
     if any(k in lower for k in ["reorder", "purchase order", "restock", "buy", "place order"]):
-        if any(k in lower for k in ["recommend", "suggest", "candidate", "what should", "which"]):
+        # Informational phrasing ("what's the reorder point", "ROP", "how many
+        # should I order") stays read-only even when a product id is resolved
+        # (including one resolved from a follow-up's history) — only explicit
+        # action/confirmation language executes a real purchase order.
+        if any(k in lower for k in (
+            "recommend", "suggest", "candidate", "what should", "which",
+            "point", "rop", "how much", "how many", "calculate", "what is", "what's",
+        )):
             return {"intent": "reorder_suggestions", "threshold": extracted_thresh}
-        if extracted_id:
+        wants_action = any(k in lower for k in (
+            "place", "create", "execute", "confirm", "approve", "go ahead", "yes order", "order now",
+        ))
+        if extracted_id and wants_action:
             return {"intent": "reorder_action", "product_id": extracted_id}
         return {"intent": "reorder_suggestions", "threshold": extracted_thresh}
 

@@ -29,29 +29,10 @@ def _normalize_dt(dt: Optional[datetime]) -> Optional[datetime]:
     return dt
 
 
-def get_simulated_clock(db: Optional[Session] = None) -> datetime:
-    """
-    Returns the exact current simulated clock time T.
-    At time T, only records with timestamp <= T are observed.
-    """
-    from app.services.replay_engine import replay_engine
-    from app.services.state_service import state_service
-
-    streamed = getattr(replay_engine, "events_processed", 0) or 0
-    if streamed > 0 and replay_engine.current_simulated_date:
-        return _normalize_dt(replay_engine.current_simulated_date)
-    if state_service.sim_current_date and getattr(state_service, "total_orders", 0):
-        return _normalize_dt(state_service.sim_current_date)
-    if db is not None:
-        try:
-            max_o = db.query(func.max(Order.order_purchase_timestamp)).scalar()
-            max_dc = db.query(func.max(DataCoOrder.order_date)).scalar()
-            candidates = [d for d in [max_o, max_dc] if d is not None]
-            if candidates:
-                return _normalize_dt(max(candidates))
-        except Exception:
-            pass
-    return datetime.now(timezone.utc)
+# The one canonical clock implementation now lives in `app.agents._shared`
+# (it also handles the live-Shopify-source case); kept as `get_simulated_clock`
+# here since that's the name every call site in this file already uses.
+from app.agents._shared import simulated_clock as get_simulated_clock  # noqa: E402
 
 
 class OrdersDataLayer:
@@ -85,6 +66,11 @@ class OrdersDataLayer:
             return cls._empty_summary("DATABASE_UNAVAILABLE")
 
         try:
+            from app.services.data_source_service import data_source_service
+
+            if data_source_service.is_live():
+                return cls._get_shopify_order_summary(session)
+
             sim_clock = get_simulated_clock(session)
             o_total = o_completed = o_cancelled = o_pending = o_delayed = 0
 
@@ -180,6 +166,53 @@ class OrdersDataLayer:
         finally:
             if close:
                 session.close()
+
+    @classmethod
+    def _get_shopify_order_summary(cls, session: Session) -> Dict[str, Any]:
+        """Live-source counterpart of `get_order_summary` — real Shopify orders,
+        no simulated clock (live orders are simply 'as of right now')."""
+        from app.models.shopify import ShopifyOrder
+
+        try:
+            rows = session.query(ShopifyOrder.fulfillment_status, ShopifyOrder.cancelled_at, func.count(ShopifyOrder.order_id)).group_by(
+                ShopifyOrder.fulfillment_status, ShopifyOrder.cancelled_at.isnot(None)
+            ).all()
+        except Exception as e:
+            logger.warning(f"Shopify order summary query failed: {e}")
+            return cls._empty_summary("DATABASE_UNAVAILABLE")
+
+        total = completed = cancelled = pending = 0
+        for fulfillment_status, cancelled_at, count in rows:
+            total += count
+            if cancelled_at is not None:
+                cancelled += count
+            elif fulfillment_status == "fulfilled":
+                completed += count
+            else:
+                pending += count
+
+        if total == 0:
+            return cls._empty_summary("NO_OBSERVED_RECORDS")
+
+        fulfillment_rate = round((completed / total) * 100.0, 2)
+        cancellation_rate = round((cancelled / total) * 100.0, 2)
+        return {
+            "total_orders": total,
+            "pending_orders": pending,
+            "completed_orders": completed,
+            "cancelled_orders": cancelled,
+            # Shopify's base order feed has no promised-delivery-date field, so
+            # "delayed" isn't computable from it the way it is for Olist's
+            # estimated-vs-actual delivery dates — reported honestly as 0/NOT
+            # a fabricated figure, not "no delays occurred."
+            "delayed_orders": 0,
+            "fulfillment_rate_pct": fulfillment_rate,
+            "cancellation_rate_pct": cancellation_rate,
+            "data_source": "SHOPIFY",
+            "data_status": "OBSERVED",
+            "sample_count": total,
+            "simulated_clock": datetime.now(timezone.utc).isoformat(),
+        }
 
     @classmethod
     def _empty_summary(cls, reason: str = "NO_RECORDS") -> Dict[str, Any]:

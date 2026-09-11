@@ -15,6 +15,7 @@ from app.database.session import get_db
 class _Query(BaseModel):
     query: str | None = None
     message: str | None = None
+    history: list[dict] | None = None
 
 
 def _make_router(prefix: str, agent, tag: str) -> APIRouter:
@@ -55,7 +56,7 @@ def _make_router(prefix: str, agent, tag: str) -> APIRouter:
         msg = (payload.query or payload.message or "").strip()
         if not msg:
             return AgentQueryResponse(agent=agent.agent_name, answer="Please enter a question.", success=False)
-        return agent.query(message=msg, db=db)
+        return agent.query(message=msg, db=db, history=payload.history)
 
     return r
 
@@ -63,5 +64,22 @@ def _make_router(prefix: str, agent, tag: str) -> APIRouter:
 logistics_router = _make_router("/api/v1/agents/logistics", logistics_agent, "Logistics Agent")
 pricing_router = _make_router("/api/v1/agents/pricing", pricing_agent, "Pricing Agent")
 marketing_router = _make_router("/api/v1/agents/marketing", marketing_agent, "Marketing Agent")
+
+
+# Pricing-only: the Apify competitor-price feed. Additive — works the same
+# regardless of which order data source (historic/live) is active.
+@pricing_router.get("/competitor-feed")
+def competitor_feed_status():
+    from app.core.settings import settings
+
+    return {"enabled": settings.PRICING_COMPETITOR_FEED_ENABLED, "configured": settings.apify_configured}
+
+
+@pricing_router.post("/competitor-feed/sync")
+def competitor_feed_sync(category: str | None = None):
+    from app.services.apify_service import sync_competitor_prices
+
+    return sync_competitor_prices(category=category)
+
 
 __all__ = ["logistics_router", "pricing_router", "marketing_router"]

@@ -9,6 +9,8 @@ import React, {
 } from "react";
 import "./CustomerAgentView.css";
 import { API_ENDPOINTS } from "./config";
+import { renderMarkdown } from "./lib/markdown";
+import { humanizeToolName } from "./lib/format";
 
 type CustomerAgentViewProps = {
   agentsUrl?: string;
@@ -163,6 +165,9 @@ export default function CustomerAgentView({
 
       const userId = `u-${Date.now()}`;
       const aiId = `a-${Date.now()}`;
+      // Last few turns, sent so the agent can resolve follow-up questions
+      // ("what about its status?") to an order mentioned earlier.
+      const history = messages.slice(-6).map((m) => ({ role: m.role === "user" ? "user" : "assistant", text: m.text }));
       setMessages((prev) => [
         ...prev,
         { id: userId, role: "user", text },
@@ -184,7 +189,7 @@ export default function CustomerAgentView({
         const res = await fetch(queryUrl, {
           method: "POST",
           headers: getAuthHeaders(),
-          body: JSON.stringify({ query: text }),
+          body: JSON.stringify({ query: text, history }),
         });
         window.clearInterval(stageTimer);
         if (!res.ok) throw new Error(`Customer agent returned ${res.status}`);
@@ -263,10 +268,7 @@ export default function CustomerAgentView({
       <div className="cust-section">
         <div className="cust-section-header">
           <h3 className="cust-section-title">Agent Registry</h3>
-          <p className="cust-section-subtitle">
-            Specialist agents the router can dispatch. Loaded live from{" "}
-            <code>/api/customer/agents</code>.
-          </p>
+          <p className="cust-section-subtitle">Specialist agents the router can dispatch, loaded live.</p>
         </div>
         <div className="cust-agent-grid">
           {agents.length === 0 ? (
@@ -359,7 +361,7 @@ export default function CustomerAgentView({
               )}
 
               <div className="cust-msg-body">
-                {m.text}
+                {m.streaming ? m.text : renderMarkdown(m.text) ?? m.text}
                 {m.streaming && <span className="cust-caret">▋</span>}
               </div>
 
@@ -383,24 +385,22 @@ export default function CustomerAgentView({
                           <span className="cust-trace-label">
                             {t.name} ({t.role})
                             {t.used_tools?.length
-                              ? ` · tools: ${t.used_tools.join(", ")}`
+                              ? ` · checked: ${t.used_tools.map(humanizeToolName).join(", ")}`
                               : ""}
                           </span>
-                          <p>{t.output}</p>
+                          <p>{renderMarkdown(t.output) ?? t.output}</p>
                         </div>
                       ))}
                       {(m.meta.tool_calls ?? []).map((c, i) => (
                         <div key={`tc-${i}`} className="cust-trace-block">
                           <span className="cust-trace-label">
-                            🔧 {c.name ?? c.tool}
+                            🔧 {humanizeToolName(c.name ?? c.tool ?? `Step ${i + 1}`)}
                           </span>
-                          <pre>
-                            {JSON.stringify(
-                              { input: c.input, output: c.output },
-                              null,
-                              2,
-                            )}
-                          </pre>
+                          {typeof c.output === "string" ? (
+                            <p>{renderMarkdown(c.output) ?? c.output}</p>
+                          ) : (
+                            <pre>{JSON.stringify(c.output, null, 2)}</pre>
+                          )}
                         </div>
                       ))}
                     </div>

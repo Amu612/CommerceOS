@@ -1,19 +1,20 @@
 .apv {
   min-height: 100vh;
   padding: 28px 32px 60px;
-  background: #0a0f1a;
-  color: #e2e8f0;
-  font-family: Inter, system-ui, sans-serif;
+  background: var(--bg-app);
+  color: var(--text-primary);
+  font-family: var(--font-body), system-ui, sans-serif;
 }
 .apv-header {
   display: flex;
   flex-wrap: wrap;
   gap: 16px;
   justify-content: space-between;
-  background: #0f172a;
-  border: 1px solid #1e293b;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
   border-radius: 16px;
   padding: 22px 24px;
+  box-shadow: var(--shadow-sm);
 }
 .apv-badge {
   display: inline-flex;
@@ -22,32 +23,32 @@
   font-size: 11px;
   font-weight: 700;
   letter-spacing: 0.16em;
-  color: #fbbf24;
+  color: var(--accent-gold);
 }
 .apv-dot {
   width: 9px;
   height: 9px;
   border-radius: 50%;
-  background: #fbbf24;
-  box-shadow: 0 0 12px #fbbf24;
+  background: var(--accent-gold);
+  box-shadow: 0 0 12px rgba(180, 83, 9, 0.4);
 }
 .apv-title {
   margin: 8px 0 4px;
   font-size: 25px;
-  font-weight: 800;
-  color: #fff;
+  font-weight: 700;
+  color: var(--text-primary);
 }
 .apv-sub {
   margin: 0;
   font-size: 13px;
-  color: #94a3b8;
+  color: var(--text-secondary);
   max-width: 680px;
   line-height: 1.55;
 }
 .apv-btn {
-  border: 1px solid #334155;
-  background: #1e293b;
-  color: #f1f5f9;
+  border: 1px solid var(--border-strong);
+  background: var(--bg-elevated);
+  color: var(--text-primary);
   font-weight: 600;
   font-size: 13px;
   padding: 9px 16px;
@@ -59,9 +60,9 @@
   margin-top: 16px;
   padding: 13px 16px;
   border-radius: 12px;
-  background: rgba(153, 27, 27, 0.18);
-  border: 1px solid rgba(248, 113, 113, 0.4);
-  color: #fca5a5;
+  background: var(--status-danger-bg);
+  border: 1px solid rgba(185, 28, 28, 0.35);
+  color: var(--status-danger);
   font-size: 13px;
 }
 .apv-kpis {
@@ -71,54 +72,56 @@
   margin-top: 18px;
 }
 .apv-kpi {
-  background: #0f172a;
-  border: 1px solid #1e293b;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
   border-radius: 14px;
   padding: 16px;
   display: flex;
   flex-direction: column;
   gap: 4px;
+  box-shadow: var(--shadow-sm);
 }
 .apv-kpi-value {
   font-size: 26px;
-  font-weight: 800;
-  color: #fff;
+  font-weight: 700;
+  color: var(--text-primary);
 }
 .apv-kpi-label {
   font-size: 11px;
   text-transform: uppercase;
   letter-spacing: 0.07em;
-  color: #64748b;
+  color: var(--text-muted);
 }
 .apv-kpi-ok .apv-kpi-value {
-  color: #34d399;
+  color: var(--status-success);
 }
 .apv-kpi-warn .apv-kpi-value {
-  color: #fbbf24;
+  color: var(--status-warning);
 }
 .apv-kpi-crit .apv-kpi-value {
-  color: #f87171;
+  color: var(--status-danger);
 }
 .apv-section {
-  background: #0f172a;
-  border: 1px solid #1e293b;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
   border-radius: 16px;
   padding: 22px 24px;
   margin-top: 22px;
+  box-shadow: var(--shadow-sm);
 }
 .apv-section-title {
   margin: 0 0 14px;
   font-size: 16px;
   font-weight: 700;
-  color: #fff;
+  color: var(--text-primary);
 }
 .apv-empty {
-  border: 1px dashed #334155;
+  border: 1px dashed var(--border-strong);
   border-radius: 12px;
   padding: 22px;
   text-align: center;
   font-size: 13px;
-  color: #64748b;
+  color: var(--text-muted);
 }
 .apv-list {
   display: flex;
@@ -126,9 +129,9 @@
   gap: 12px;
 }
 .apv-card {
-  background: #0b1220;
-  border: 1px solid #1e293b;
-  border-left: 3px solid #fbbf24;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent-gold);
   border-radius: 12px;
   padding: 14px 16px;
 }
@@ -142,36 +145,36 @@
 .apv-sev {
   font-size: 10px;
   font-weight: 800;
-  color: #06121f;
+  color: var(--text-on-accent);
   padding: 2px 8px;
   border-radius: 6px;
 }
 .apv-card-title {
   font-size: 14px;
   font-weight: 700;
-  color: #fff;
+  color: var(--text-primary);
 }
 .apv-tag {
   font-size: 10px;
-  color: #94a3b8;
-  border: 1px solid #1e293b;
+  color: var(--text-secondary);
+  border: 1px solid var(--border);
   border-radius: 6px;
   padding: 1px 7px;
 }
 .apv-tag-role {
-  color: #fcd34d;
-  border-color: rgba(245, 158, 11, 0.3);
+  color: var(--accent-gold);
+  border-color: rgba(180, 83, 9, 0.3);
 }
 .apv-card-detail {
   margin: 0 0 6px;
   font-size: 13px;
-  color: #cbd5e1;
+  color: var(--text-secondary);
   line-height: 1.5;
 }
 .apv-card-evidence {
   margin: 0 0 10px;
   font-size: 11px;
-  color: #64748b;
+  color: var(--text-muted);
   font-family: ui-monospace, monospace;
   word-break: break-word;
 }
@@ -182,9 +185,9 @@
   flex-wrap: wrap;
 }
 .apv-approve {
-  background: #059669;
+  background: var(--status-success);
   border: none;
-  color: #fff;
+  color: var(--text-on-accent);
   font-weight: 700;
   font-size: 12.5px;
   padding: 8px 14px;
@@ -192,12 +195,12 @@
   cursor: pointer;
 }
 .apv-approve:hover:not(:disabled) {
-  background: #10b981;
+  background: #115e59;
 }
 .apv-reject {
-  background: #1e293b;
-  border: 1px solid #475569;
-  color: #e2e8f0;
+  background: var(--bg-sunken);
+  border: 1px solid var(--border-strong);
+  color: var(--text-primary);
   font-weight: 700;
   font-size: 12.5px;
   padding: 8px 14px;
@@ -211,7 +214,7 @@
 }
 .apv-conf {
   font-size: 11px;
-  color: #64748b;
+  color: var(--text-muted);
 }
 .apv-table-wrap {
   overflow-x: auto;
@@ -224,18 +227,22 @@
 .apv-table th {
   text-align: left;
   padding: 9px 12px;
-  border-bottom: 1px solid #1e293b;
+  border-bottom: 1px solid var(--border);
   font-size: 10px;
   text-transform: uppercase;
   letter-spacing: 0.05em;
-  color: #64748b;
+  color: var(--text-muted);
 }
 .apv-table td {
   padding: 9px 12px;
-  border-bottom: 1px solid #131c2e;
-  color: #cbd5e1;
+  border-bottom: 1px solid var(--border);
+  color: var(--text-secondary);
 }
 .apv-mono {
   font-family: ui-monospace, monospace;
   font-size: 11.5px;
+}
+.apv-effect {
+  color: var(--text-secondary);
+  max-width: 260px;
 }

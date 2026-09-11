@@ -172,6 +172,19 @@ def triage_node(state: OrdersAgentState) -> Dict[str, Any]:
                 except Exception:
                     extracted_order_id = candidate
 
+    # Follow-up fallback: if this message has no order id of its own, check
+    # earlier turns in the conversation (most recent first) for the last one
+    # mentioned — resolves "what about its status?"-style follow-ups.
+    if not extracted_order_id and not extracted_product_id and not extracted_customer_id and len(messages) > 1:
+        from app.agents._shared import extract_order_id as _extract_oid
+
+        for m in reversed(messages[:-1]):
+            prior = m.content if isinstance(m, HumanMessage) else (m.get("content", "") if isinstance(m, dict) else "")
+            oid = _extract_oid(prior or "")
+            if oid:
+                extracted_order_id = oid
+                break
+
     # 1. Customer Search
     if extracted_customer_id:
         return {
@@ -184,8 +197,15 @@ def triage_node(state: OrdersAgentState) -> Dict[str, Any]:
             "error_message": "",
         }
 
-    # 2. Product Lookup
-    if extracted_product_id or (("product" in lower_msg or "item" in lower_msg) and ("search" in lower_msg or "show" in lower_msg or "find" in lower_msg or "detail" in lower_msg or "what is" in lower_msg)):
+    # 2. Product Lookup — a bare mention of "product(s)"/"item(s)" (or a resolved
+    # product id) routes here even without a verb like "show"/"find"/"detail".
+    # Explicit order-id / order-phrasing still wins when both are present, since
+    # that's answered (including item contents) by order_status below.
+    if extracted_product_id or (
+        not extracted_order_id
+        and "order" not in lower_msg
+        and any(k in lower_msg for k in ("product", "item"))
+    ):
         clean_target = extracted_product_id or last_msg.replace("show", "").replace("find", "").replace("product", "").replace("item", "").strip()
         return {
             "intent": "product_lookup",
