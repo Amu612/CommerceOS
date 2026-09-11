@@ -46,49 +46,6 @@
 
 ---
 
-## 🏗️ System Architecture
-
-```mermaid
-graph TD
-    subgraph Client Layer
-        UI["React 18 + Vite Dashboard\n(Port 3000)"]
-    end
-
-    subgraph API Gateway & Core [FastAPI Application - Port 8000]
-        Auth["JWT Authentication & RBAC"]
-        Audit["Append-Only Audit Logging"]
-        Replay["Event Stream Replay Engine"]
-    end
-
-    subgraph Autonomous Agents Layer
-        OA["Orders Operations Agent\n(LangGraph ReAct + Tools)"]
-        IA["Inventory Watchdog Agent\n(ROP / EOQ / Alerting)"]
-        STAT["Statistical Profiler\n(IQR / MAD / Modified Z-Score)"]
-    end
-
-    subgraph LLM & Intelligence Service
-        LLM["Unified LLM Service\n(Gemini / OpenAI / Groq / Ollama / Local Synth)"]
-    end
-
-    subgraph Persistence Layer
-        DB[("PostgreSQL / SQLite\n(Olist + DataCo Datasets)")]
-        Cache[("Redis Event Bus\n(Pub/Sub & Rate Limiting)")]
-    end
-
-    UI <-->|REST & WebSockets| API Gateway & Core
-    API Gateway & Core --> OA
-    API Gateway & Core --> IA
-    OA --> STAT
-    IA --> STAT
-    OA <--> LLM
-    IA <--> LLM
-    OA <--> DB
-    IA <--> DB
-    API Gateway & Core <--> Cache
-```
-
----
-
 ## 🚀 Getting Started
 
 ### Prerequisites
@@ -209,9 +166,3 @@ Interactive OpenAPI documentation is generated at **`/docs`** or **`/redoc`**. K
 ├── run_backend.py             # Uvicorn backend runner
 └── docker-compose.yml         # Containerized full-stack definition
 ```
-
----
-
-## 📄 License
-
-Distributed under the **MIT License**. See `LICENSE` for more information.
