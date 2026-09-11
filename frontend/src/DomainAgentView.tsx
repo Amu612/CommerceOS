@@ -131,14 +131,14 @@ export default function DomainAgentView({
     }
   };
 
-  const charts = data?.charts ?? {};
-  const chartTables = useMemo(
-    () =>
+  const chartTables = useMemo(() => {
+    const charts = data?.charts ?? {};
+    return (
       Object.entries(charts).filter(
         ([, v]) => Array.isArray(v) && v.length > 0 && typeof (v as unknown[])[0] === "object",
-      ) as [string, Record<string, unknown>[]][],
-    [charts],
-  );
+      ) as [string, Record<string, unknown>[]][]
+    );
+  }, [data?.charts]);
 
   return (
     <section className="dav" style={{ ["--accent" as string]: accent }}>

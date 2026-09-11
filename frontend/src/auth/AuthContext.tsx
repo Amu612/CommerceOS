@@ -66,5 +66,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
 }
 
+// eslint-disable-next-line react-refresh/only-export-components
 export const useAuth = () => useContext(Ctx);
+// eslint-disable-next-line react-refresh/only-export-components
 export const isAuthed = () => Boolean(getToken());

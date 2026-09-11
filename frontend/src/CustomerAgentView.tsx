@@ -215,7 +215,7 @@ export default function CustomerAgentView({
         setLoading(false);
       }
     },
-    [loading, queryUrl, streamInText],
+    [loading, queryUrl, streamInText, messages],
   );
 
   const lastUserMessage = useMemo(
