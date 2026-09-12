@@ -128,9 +128,9 @@ def pct(n: float, d: float, digits: int = 2) -> float:
 
 def money(v: Any) -> str:
     try:
-        return f"₹{float(v):,.2f}"
+        return f"R${float(v):,.2f}"
     except (TypeError, ValueError):
-        return "₹0.00"
+        return "R$0.00"
 
 
 def deterministic_answer(message: str, out: Any, agent_label: str, topic_map: dict) -> str:

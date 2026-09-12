@@ -1,4 +1,4 @@
-# CommerceOS / Nexus — backend runtime dependencies
+# CommerceOS — backend runtime dependencies
 # Pinned to the versions validated on Python 3.11. Update via `pip-compile` or deliberate bumps.
 
 # --- Web framework ---

@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 from app.database.session import SessionLocal, init_db
 from app.models.olist import Customer, Order, OrderItem, Product
 from app.models.dataco import DataCoOrder, DataCoOrderItem
-from app.services.event_bus import OperationalEvent, event_bus
+from app.services.event_bus import OperationalEvent, event_bus, publish_event
 from app.services.state_service import state_service
 
 logger = logging.getLogger(__name__)
@@ -74,11 +74,32 @@ class ReplayEngine:
         raw_events: List[Dict[str, Any]] = []
 
         try:
-            # 1. Load Olist Order Items first to get price/freight data
+            # 1. Load Olist Orders
+            orders_path = find_dataset("olist_orders_dataset.csv")
+            olist_order_rows = []
+            target_order_ids = set()
+            if orders_path:
+                df_orders = pd.read_csv(orders_path, nrows=max_orders)
+                for col in [
+                    "order_purchase_timestamp",
+                    "order_approved_at",
+                    "order_delivered_carrier_date",
+                    "order_delivered_customer_date",
+                    "order_estimated_delivery_date",
+                ]:
+                    df_orders[col] = pd.to_datetime(df_orders[col], errors="coerce")
+
+                for _, row in df_orders.iterrows():
+                    oid = str(row["order_id"])
+                    target_order_ids.add(oid)
+                    olist_order_rows.append(row)
+
+            # 2. Load Olist Order Items for indexed orders
             items_path = find_dataset("olist_order_items_dataset.csv")
             olist_items_by_order: Dict[str, List[Dict]] = {}
-            if items_path:
-                df_items = pd.read_csv(items_path, nrows=max_orders * 3)
+            if items_path and target_order_ids:
+                df_items = pd.read_csv(items_path)
+                df_items = df_items[df_items["order_id"].astype(str).isin(target_order_ids)]
                 df_items["shipping_limit_date"] = pd.to_datetime(df_items["shipping_limit_date"], errors="coerce")
                 for _, row in df_items.iterrows():
                     oid = str(row["order_id"])
@@ -92,63 +113,50 @@ class ReplayEngine:
                         "freight_value": float(row["freight_value"]) if pd.notna(row.get("freight_value")) else 0.0,
                     })
 
-            # 2. Load Olist Orders
-            orders_path = find_dataset("olist_orders_dataset.csv")
-            if orders_path:
-                df_orders = pd.read_csv(orders_path, nrows=max_orders)
-                for col in [
-                    "order_purchase_timestamp",
-                    "order_approved_at",
-                    "order_delivered_carrier_date",
-                    "order_delivered_customer_date",
-                    "order_estimated_delivery_date",
-                ]:
-                    df_orders[col] = pd.to_datetime(df_orders[col], errors="coerce")
+            seen_olist_ids = set()
+            for row in olist_order_rows:
+                purch_dt = row["order_purchase_timestamp"]
+                if pd.isna(purch_dt):
+                    continue
+                purch_ts = purch_dt.to_pydatetime()
+                if purch_ts.tzinfo is None:
+                    purch_ts = purch_ts.replace(tzinfo=timezone.utc)
 
-                seen_olist_ids = set()
-                for _, row in df_orders.iterrows():
-                    purch_dt = row["order_purchase_timestamp"]
-                    if pd.isna(purch_dt):
-                        continue
-                    purch_ts = purch_dt.to_pydatetime()
-                    if purch_ts.tzinfo is None:
-                        purch_ts = purch_ts.replace(tzinfo=timezone.utc)
+                oid = str(row["order_id"])
+                if oid in seen_olist_ids:
+                    continue
+                seen_olist_ids.add(oid)
 
-                    oid = str(row["order_id"])
-                    if oid in seen_olist_ids:
-                        continue
-                    seen_olist_ids.add(oid)
+                cid = str(row["customer_id"])
+                status = str(row.get("order_status", "delivered"))
 
-                    cid = str(row["customer_id"])
-                    status = str(row.get("order_status", "delivered"))
+                est_dt = row["order_estimated_delivery_date"]
+                deliv_dt = row["order_delivered_customer_date"]
+                is_delayed = bool(pd.notna(deliv_dt) and pd.notna(est_dt) and deliv_dt > est_dt)
 
-                    est_dt = row["order_estimated_delivery_date"]
-                    deliv_dt = row["order_delivered_customer_date"]
-                    is_delayed = bool(pd.notna(deliv_dt) and pd.notna(est_dt) and deliv_dt > est_dt)
+                # Get actual price/freight from order items
+                items = olist_items_by_order.get(oid, [])
+                total_price = sum(item["price"] for item in items) if items else 0.0
+                total_freight = sum(item["freight_value"] for item in items) if items else 0.0
+                item_count = len(items) if items else 1
 
-                    # Get actual price/freight from order items
-                    items = olist_items_by_order.get(oid, [])
-                    total_price = sum(item["price"] for item in items) if items else 0.0
-                    total_freight = sum(item["freight_value"] for item in items) if items else 0.0
-                    item_count = len(items) if items else 1
-
-                    raw_events.append({
-                        "source": "olist",
-                        "timestamp": purch_ts,
-                        "order_id": oid,
-                        "customer_id": cid,
-                        "status": status,
-                        "purchase_timestamp": purch_ts,
-                        "approved_at": row["order_approved_at"].to_pydatetime() if pd.notna(row["order_approved_at"]) else None,
-                        "delivered_carrier_date": row["order_delivered_carrier_date"].to_pydatetime() if pd.notna(row["order_delivered_carrier_date"]) else None,
-                        "delivered_customer_date": deliv_dt.to_pydatetime() if pd.notna(deliv_dt) else None,
-                        "estimated_delivery_date": est_dt.to_pydatetime() if pd.notna(est_dt) else purch_ts + timedelta(days=7),
-                        "is_delayed": is_delayed,
-                        "merchandise_revenue": total_price,
-                        "freight_value": total_freight,
-                        "item_count": item_count,
-                        "order_items": items,  # Store items for later ingestion
-                    })
+                raw_events.append({
+                    "source": "olist",
+                    "timestamp": purch_ts,
+                    "order_id": oid,
+                    "customer_id": cid,
+                    "status": status,
+                    "purchase_timestamp": purch_ts,
+                    "approved_at": row["order_approved_at"].to_pydatetime() if pd.notna(row["order_approved_at"]) else None,
+                    "delivered_carrier_date": row["order_delivered_carrier_date"].to_pydatetime() if pd.notna(row["order_delivered_carrier_date"]) else None,
+                    "delivered_customer_date": deliv_dt.to_pydatetime() if pd.notna(deliv_dt) else None,
+                    "estimated_delivery_date": est_dt.to_pydatetime() if pd.notna(est_dt) else purch_ts + timedelta(days=7),
+                    "is_delayed": is_delayed,
+                    "merchandise_revenue": total_price,
+                    "freight_value": total_freight,
+                    "item_count": item_count,
+                    "order_items": items,  # Store items for later ingestion
+                })
 
             # 3. Load DataCo Order Items first
             dc_path = find_dataset("DataCoSupplyChainDataset.csv")
@@ -352,6 +360,25 @@ class ReplayEngine:
             return "Ingestion resumed."
         return f"Ingestion cannot be resumed from state '{self.status}'."
 
+    def complete_now(self) -> str:
+        """
+        Fast-forwards the replay straight to the end in one call: every agent's
+        simulated clock (see `app.agents._shared.simulated_clock`) reads however
+        far this replay has progressed, so a stream left paused partway through
+        makes every dashboard look broken/empty until someone notices and
+        resumes it. This is the one-click fix — ingest everything remaining
+        right now and land on "stopped" (fully caught up), not stuck mid-way.
+        """
+        if not self._is_indexed or not self._events_index:
+            self.index_events_from_datasets()
+        remaining = len(self._events_index) - self._current_index
+        ingested = self.step(count=remaining) if remaining > 0 else 0
+        self.status = "stopped"
+        if self._replay_task and not self._replay_task.done():
+            self._replay_task.cancel()
+        logger.info(f"Data ingestion stream FAST-FORWARDED: {ingested} remaining record(s) ingested.")
+        return f"Fast-forwarded — ingested the remaining {ingested} record(s)."
+
     def stop(self) -> str:
         """Stops the data ingestion flow."""
         self.status = "stopped"
@@ -372,9 +399,20 @@ class ReplayEngine:
 
         state_service.reset_state()
 
+        db_cleared = True
         if clear_db:
             db = SessionLocal()
             try:
+                # Children before parents, or SQLite's FK constraint refuses
+                # the parent DELETE outright — this used to fail on every
+                # call (Order still had OrderPayment/OrderReview rows
+                # pointing at it) and silently roll back, while the endpoint
+                # kept reporting "reset" as a success. It genuinely never
+                # cleared anything until these two were added.
+                from app.models.olist import OrderPayment, OrderReview
+
+                db.query(OrderPayment).delete()
+                db.query(OrderReview).delete()
                 db.query(OrderItem).delete()
                 db.query(Order).delete()
                 db.query(DataCoOrderItem).delete()
@@ -383,6 +421,7 @@ class ReplayEngine:
                 logger.info("Active order records cleared from database for reset.")
             except Exception as e:
                 db.rollback()
+                db_cleared = False
                 logger.warning(f"Error resetting database tables: {e}")
             finally:
                 db.close()
@@ -391,7 +430,14 @@ class ReplayEngine:
         orders_agent.reset()
 
         logger.info("Data ingestion engine and Orders Agent RESET to initial state.")
-        return "Ingestion and agent reset."
+        if clear_db and not db_cleared:
+            # Never claim success for the one part of this call that could
+            # actually destroy data if it didn't happen — the ingestion
+            # position/agent-memory reset above still went through, but the
+            # caller (and the UI showing this message) must know the
+            # database itself was NOT cleared.
+            return "Ingestion position and agent memory reset, but clearing the database failed — see server logs. No order data was cleared."
+        return "Ingestion and agent reset." + (" Database cleared." if clear_db else "")
 
     def step(self, count: int = 50) -> int:
         """Synchronously ingests exactly 'count' order records into the system."""
@@ -523,27 +569,63 @@ class ReplayEngine:
 
                 olist_ids = [r["order_id"] for r in olist_records]
                 existing_olist_ids = set(r[0] for r in db.query(Order.order_id).filter(Order.order_id.in_(olist_ids)).all())
-                to_insert_olist = [r for r in olist_records if r["order_id"] not in existing_olist_ids]
+                seen_olist_ids = set(existing_olist_ids)
+                to_insert_olist = []
+                for r in olist_records:
+                    if r["order_id"] not in seen_olist_ids:
+                        seen_olist_ids.add(r["order_id"])
+                        to_insert_olist.append(r)
                 if to_insert_olist:
                     db.bulk_insert_mappings(Order, to_insert_olist)
 
             if olist_items_records:
+                # Ensure foreign key targets (Product, Seller) exist before inserting order items
+                from app.models.olist import Seller
+
+                existing_prods = set(r[0] for r in db.query(Product.product_id).all())
+                existing_sellers = set(r[0] for r in db.query(Seller.seller_id).all())
+                missing_prods = {r["product_id"] for r in olist_items_records} - existing_prods
+                missing_sellers = {r["seller_id"] for r in olist_items_records} - existing_sellers
+                if missing_prods:
+                    db.bulk_insert_mappings(Product, [{"product_id": p, "product_category_name": "general"} for p in missing_prods])
+                if missing_sellers:
+                    db.bulk_insert_mappings(Seller, [
+                        {"seller_id": s, "seller_zip_code_prefix": 0, "seller_city": "unknown", "seller_state": "NA"}
+                        for s in missing_sellers
+                    ])
+
                 # Insert order items (composite key: order_id, order_item_id)
                 existing_items = set((r[0], r[1]) for r in db.query(OrderItem.order_id, OrderItem.order_item_id).all())
-                to_insert_items = [r for r in olist_items_records if (r["order_id"], r["order_item_id"]) not in existing_items]
+                seen_items = set(existing_items)
+                to_insert_items = []
+                for r in olist_items_records:
+                    key = (r["order_id"], r["order_item_id"])
+                    if key not in seen_items:
+                        seen_items.add(key)
+                        to_insert_items.append(r)
                 if to_insert_items:
                     db.bulk_insert_mappings(OrderItem, to_insert_items)
 
             if dataco_records:
                 dc_ids = [r["order_id"] for r in dataco_records]
                 existing_dc_ids = set(r[0] for r in db.query(DataCoOrder.order_id).filter(DataCoOrder.order_id.in_(dc_ids)).all())
-                to_insert_dc = [r for r in dataco_records if r["order_id"] not in existing_dc_ids]
+                seen_dc_ids = set(existing_dc_ids)
+                to_insert_dc = []
+                for r in dataco_records:
+                    if r["order_id"] not in seen_dc_ids:
+                        seen_dc_ids.add(r["order_id"])
+                        to_insert_dc.append(r)
                 if to_insert_dc:
                     db.bulk_insert_mappings(DataCoOrder, to_insert_dc)
 
             if dataco_items_records:
-                existing_dc_items = set((r[0], r[1]) for r in db.query(DataCoOrderItem.order_id, DataCoOrderItem.order_item_id).all())
-                to_insert_dc_items = [r for r in dataco_items_records if (r["order_id"], r["order_item_id"]) not in existing_dc_items]
+                existing_dc_items = set(r[0] for r in db.query(DataCoOrderItem.order_item_id).all())
+                seen_dc_items = set(existing_dc_items)
+                to_insert_dc_items = []
+                for r in dataco_items_records:
+                    if r["order_item_id"] not in seen_dc_items:
+                        seen_dc_items.add(r["order_item_id"])
+                        to_insert_dc_items.append(r)
                 if to_insert_dc_items:
                     db.bulk_insert_mappings(DataCoOrderItem, to_insert_dc_items)
 
@@ -570,11 +652,19 @@ class ReplayEngine:
                 # Calculate chunk size based on speed
                 # If speed=50, chunk=5 every 0.1s
                 chunk_size = max(1, min(50, self.speed // 10))
-                ingested = self._ingest_batch(chunk_size)
+                # `_ingest_batch` is synchronous DB + pandas work — running it
+                # directly on this coroutine would block the whole asyncio
+                # event loop for its entire duration, freezing every other
+                # request (agent analysis, chat, automation) for as long as a
+                # replay stream is "running". Off the event loop, onto a
+                # worker thread.
+                ingested = await asyncio.to_thread(self._ingest_batch, chunk_size)
 
                 if ingested == 0:
+                    self.status = "stopped"
                     break
 
+                publish_event("ingestion", self.get_status())
                 # Sleep interval
                 interval = max(0.02, float(chunk_size) / float(self.speed))
                 await asyncio.sleep(interval)
@@ -582,11 +672,13 @@ class ReplayEngine:
             if self._current_index >= len(self._events_index):
                 self.status = "stopped"
                 logger.info("All indexed order events ingested.")
+                publish_event("ingestion", self.get_status())
         except asyncio.CancelledError:
             logger.info("Ingestion stream task cancelled.")
         except Exception as e:
             logger.error(f"Error in data ingestion loop: {e}", exc_info=True)
             self.status = "stopped"
+            publish_event("ingestion", self.get_status())
 
 
 replay_engine = ReplayEngine()

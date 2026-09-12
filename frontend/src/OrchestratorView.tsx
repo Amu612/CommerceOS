@@ -39,6 +39,13 @@ const HEALTH_COLOR: Record<string, string> = {
   NOT_ESTIMABLE: "#857f93",
   ERROR: "#b91c1c",
 };
+const HEALTH_LABEL: Record<string, string> = {
+  HEALTHY: "Healthy",
+  NEEDS_ATTENTION: "Needs Attention",
+  CRITICAL: "Critical",
+  NOT_ESTIMABLE: "Not Estimable",
+  ERROR: "Error",
+};
 const AGENT_ACCENT: Record<string, string> = {
   orders: "#1d4ed8",
   inventory: "#0f766e",
@@ -122,7 +129,7 @@ export default function OrchestratorView({ refreshKey }: { refreshKey?: number }
         <div className="orch-header-right">
           {data && (
             <span className="orch-health" style={{ color: HEALTH_COLOR[data.overall_health] ?? "#857f93" }}>
-              ● {data.overall_health.replace(/_/g, " ")}
+              ● {HEALTH_LABEL[data.overall_health] ?? data.overall_health}
               <span className="orch-conf">{Math.round((data.overall_confidence ?? 0) * 100)}% conf</span>
             </span>
           )}
@@ -135,12 +142,6 @@ export default function OrchestratorView({ refreshKey }: { refreshKey?: number }
       {error && (
         <div className="orch-error">
           <strong>Orchestrator note:</strong> {error}
-        </div>
-      )}
-
-      {stale && !loading && (
-        <div className="orch-error">
-          <strong>Refreshing:</strong> the numbers below are from an earlier sweep and are being updated now — they'll refresh in a moment without needing a click.
         </div>
       )}
 
@@ -165,7 +166,7 @@ export default function OrchestratorView({ refreshKey }: { refreshKey?: number }
               <div className="orch-domain-head">
                 <span className="orch-domain-name">{d.display_name}</span>
                 <span className="orch-domain-health" style={{ color: HEALTH_COLOR[d.health] ?? "#857f93" }}>
-                  ● {d.health.replace(/_/g, " ")}
+                  ● {HEALTH_LABEL[d.health] ?? d.health}
                 </span>
               </div>
               <p className="orch-domain-headline">{d.headline}</p>

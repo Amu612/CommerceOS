@@ -7,7 +7,10 @@ that must approve it. The guiding rules:
   * Financial actions, price changes, bulk customer communications, and anything
     that changes customer-visible state → NEVER auto. Always NEEDS_APPROVAL or BLOCKED.
   * Low-blast-radius internal actions (flag for review, internal notification,
-    queue reprioritisation) → AUTO when confidence is high enough.
+    queue reprioritisation) → AUTO when confidence is high enough AND the
+    finding's severity is not CRITICAL.
+  * CRITICAL-severity findings → ALWAYS NEEDS_APPROVAL, no matter the action
+    type — severity is the human operator's real "don't auto-run this" signal.
   * Everything else → NEEDS_APPROVAL by the owning domain admin.
 """
 from __future__ import annotations
@@ -60,11 +63,21 @@ def evaluate(agent: str, action_type: str, *, confidence: float, severity: str) 
     base_mode, min_conf, blocked = _ACTION_RULES.get(action_type, _DEFAULT_RULE)
     role = AGENT_ROLE_MAP.get(agent, UserRole.SUPER_ADMIN)
     role_value = role.value if hasattr(role, "value") else str(role)
+    sev = str(severity or "MEDIUM").upper()
 
     if blocked:
         return Decision(Mode.BLOCKED, role_value, f"'{action_type}' is never executed automatically (financial / customer-facing).")
 
     if base_mode == Mode.AUTO:
+        if sev == "CRITICAL":
+            # A CRITICAL finding always gets eyes on it before anything is
+            # actually done, regardless of how low-blast-radius the action
+            # type normally is — severity, not action type, is the operator's
+            # real signal for "don't let this run unattended".
+            return Decision(
+                Mode.NEEDS_APPROVAL, role_value,
+                f"'{action_type}' is normally auto-executed, but CRITICAL-severity findings always require {role_value} approval first.",
+            )
         if confidence >= min_conf:
             return Decision(Mode.AUTO, role_value, f"Low-blast-radius action, confidence {confidence:.2f} ≥ {min_conf}.")
         return Decision(Mode.NEEDS_APPROVAL, role_value, f"Confidence {confidence:.2f} below the {min_conf} auto-execute bar.")

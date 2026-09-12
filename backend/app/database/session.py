@@ -11,7 +11,7 @@ convenience for SQLite.
 """
 from __future__ import annotations
 
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine, event, text
 from sqlalchemy.orm import sessionmaker
 
 from app.core.logging import get_logger
@@ -22,7 +22,38 @@ logger = get_logger("db")
 
 def _make_engine(url: str, *, readonly: bool = False):
     if url.startswith("sqlite"):
-        return create_engine(url, connect_args={"check_same_thread": False}, echo=settings.DB_ECHO)
+        # `check_same_thread=False` lets FastAPI's threadpool share the file;
+        # `timeout=30` makes sqlite3 itself retry for 30s (instead of failing
+        # almost instantly) when another connection briefly holds the write
+        # lock — the two together are what actually eliminate the
+        # "database is locked" failures agents/automation used to surface as
+        # a hard FAILED status under any concurrent load (orchestrator run +
+        # websocket stream + an approval decision, all writing at once).
+        engine = create_engine(
+            url,
+            connect_args={"check_same_thread": False, "timeout": 30},
+            echo=settings.DB_ECHO,
+        )
+
+        @event.listens_for(engine, "connect")
+        def _sqlite_pragmas(dbapi_conn, _record):  # noqa: ANN001
+            cur = dbapi_conn.cursor()
+            # WAL: readers no longer block writers (or vice versa) — the
+            # single biggest lever against "database is locked" with several
+            # agents/the replay engine/automation hitting one SQLite file.
+            cur.execute("PRAGMA journal_mode=WAL")
+            # NORMAL is safe under WAL (durable across app crashes; only an
+            # OS crash could lose the last commit) and notably faster than
+            # the FULL default — part of what was making requests slow.
+            cur.execute("PRAGMA synchronous=NORMAL")
+            # Belt-and-suspenders on top of connect_args timeout: have SQLite
+            # itself wait up to 30s for a lock before raising, instead of the
+            # ~5s default.
+            cur.execute("PRAGMA busy_timeout=30000")
+            cur.execute("PRAGMA foreign_keys=ON")
+            cur.close()
+
+        return engine
     return create_engine(
         url,
         echo=settings.DB_ECHO,

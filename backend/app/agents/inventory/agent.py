@@ -114,7 +114,7 @@ class InventoryWatchdogAgent:
                 f"- **Catalog Overview**: Evaluated **{metrics.total_products:,}** products; **{len(low_stock_prods)}** items require restocking attention.",
                 f"- **Critical Alerts**: Dispatched **{len(alerts)}** automated alerts to inventory controllers.",
                 f"- **Demand Velocity**: Sales velocity analysis completed for {len(sales_trends)} top-selling categories.",
-                f"- **Capital Requirement**: Estimated reorder investment is **₹{sum(r.estimated_cost or 0 for r in recs):,.2f}** across {len(recs)} purchase candidates.",
+                f"- **Capital Requirement**: Estimated reorder investment is **R${sum(r.estimated_cost or 0 for r in recs):,.2f}** across {len(recs)} purchase candidates.",
                 f"- **Watchdog Status**: 🟢 Active continuous guardian mode.",
             ]
             output_text = "\n".join(summary_lines)

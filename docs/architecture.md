@@ -1,4 +1,4 @@
-# CommerceOS / Nexus — Solution Architecture
+# CommerceOS — Solution Architecture
 
 > Autonomous multi-agent operating system that automates end-to-end e-commerce
 > operations: **orders, inventory, customer support, logistics, pricing, marketing**,
@@ -57,13 +57,13 @@ graph TD
     MIG --> RDS
 ```
 
-| Container | Tech | Responsibility | Scaling |
-|---|---|---|---|
-| **Web SPA** | React 18 + Vite, react-router, react-query | Login, dashboards for each agent, orchestrator command center, approvals, admin | Static (CloudFront) |
-| **API** | FastAPI, SQLAlchemy 2, LangGraph | Auth, RBAC, agent query/analyze endpoints, WebSocket fan-out, dashboard aggregation | ECS target-tracking (CPU + ALB RPS) |
-| **Worker** | asyncio / arq | Single-writer replay engine, scheduled per-agent analyses, orchestrator cron, housekeeping | Fixed 1 (Redis `SET NX` lock) |
-| **PostgreSQL** | RDS PG 15 | Operational + warehouse tables | Multi-AZ + read replica |
-| **Redis** | ElastiCache | Event bus (pub/sub → WS), cache, rate-limit buckets, replay state, distributed lock | Single primary + replica |
+| Container      | Tech                                       | Responsibility                                                                             | Scaling                             |
+| -------------- | ------------------------------------------ | ------------------------------------------------------------------------------------------ | ----------------------------------- |
+| **Web SPA**    | React 18 + Vite, react-router, react-query | Login, dashboards for each agent, orchestrator command center, approvals, admin            | Static (CloudFront)                 |
+| **API**        | FastAPI, SQLAlchemy 2, LangGraph           | Auth, RBAC, agent query/analyze endpoints, WebSocket fan-out, dashboard aggregation        | ECS target-tracking (CPU + ALB RPS) |
+| **Worker**     | asyncio / arq                              | Single-writer replay engine, scheduled per-agent analyses, orchestrator cron, housekeeping | Fixed 1 (Redis `SET NX` lock)       |
+| **PostgreSQL** | RDS PG 15                                  | Operational + warehouse tables                                                             | Multi-AZ + read replica             |
+| **Redis**      | ElastiCache                                | Event bus (pub/sub → WS), cache, rate-limit buckets, replay state, distributed lock        | Single primary + replica            |
 
 ---
 
@@ -185,28 +185,28 @@ Full detail: `docs/security.md`.
 
 ## 7. Observability
 
-| Signal | Implementation |
-|---|---|
-| Logs | structlog JSON, `request_id` + `correlation_id` + `execution_id` on every line → CloudWatch |
+| Signal  | Implementation                                                                                                                                                                                                  |
+| ------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Logs    | structlog JSON, `request_id` + `correlation_id` + `execution_id` on every line → CloudWatch                                                                                                                     |
 | Metrics | `prometheus-fastapi-instrumentator` `/metrics`; custom: `agent_run_total`, `agent_run_latency_seconds`, `llm_tokens_total`, `llm_cost_usd_total`, `replay_lag_events`, `ws_connections` → CloudWatch (EMF/ADOT) |
-| Traces | OpenTelemetry → ADOT sidecar → X-Ray; one trace per agent run with node + SQL + LLM spans |
-| Health | `/health` (liveness), `/health/ready` (DB write + DB read + Redis + LLM ping) |
-| Alarms | 5xx rate, p95 latency, agent-failure rate, replay lag, RDS CPU/conns, Redis mem, LLM $/day → SNS |
-| Cost | daily LLM-cost rollup → budget alarm at `LLM_MONTHLY_BUDGET_USD` |
+| Traces  | OpenTelemetry → ADOT sidecar → X-Ray; one trace per agent run with node + SQL + LLM spans                                                                                                                       |
+| Health  | `/health` (liveness), `/health/ready` (DB write + DB read + Redis + LLM ping)                                                                                                                                   |
+| Alarms  | 5xx rate, p95 latency, agent-failure rate, replay lag, RDS CPU/conns, Redis mem, LLM $/day → SNS                                                                                                                |
+| Cost    | daily LLM-cost rollup → budget alarm at `LLM_MONTHLY_BUDGET_USD`                                                                                                                                                |
 
 ---
 
 ## 8. Environments
 
-| | dev | prod |
-|---|---|---|
-| RDS | single-AZ `db.t4g.micro`, no replica | Multi-AZ `db.t4g.medium` + read replica |
-| Redis | `cache.t4g.micro` | `cache.t4g.small` + replica |
-| ECS api | 1 task (0.5 vCPU / 1 GB) | 2–6 tasks (1 vCPU / 2 GB) |
-| ECS worker | 1 task | 1 task |
-| NAT | single | one per AZ |
-| Docs (`/docs`) | on | off |
-| LLM | `deterministic` or OpenAI dev key | Bedrock |
+|                | dev                                  | prod                                    |
+| -------------- | ------------------------------------ | --------------------------------------- |
+| RDS            | single-AZ `db.t4g.micro`, no replica | Multi-AZ `db.t4g.medium` + read replica |
+| Redis          | `cache.t4g.micro`                    | `cache.t4g.small` + replica             |
+| ECS api        | 1 task (0.5 vCPU / 1 GB)             | 2–6 tasks (1 vCPU / 2 GB)               |
+| ECS worker     | 1 task                               | 1 task                                  |
+| NAT            | single                               | one per AZ                              |
+| Docs (`/docs`) | on                                   | off                                     |
+| LLM            | `deterministic` or OpenAI dev key    | Bedrock                                 |
 
 ---
 

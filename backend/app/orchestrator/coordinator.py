@@ -154,7 +154,7 @@ class NexusOrchestrator:
                     {"label": "Products", "value": total},
                     {"label": "Low Stock", "value": low},
                     {"label": "Reorder Candidates", "value": len(r.recommendations or [])},
-                    {"label": "Inventory Value", "value": f"₹{(r.metrics.inventory_value if r.metrics else 0):,.0f}"},
+                    {"label": "Inventory Value", "value": f"R${(r.metrics.inventory_value if r.metrics else 0):,.0f}"},
                 ],
                 findings=findings,
             )

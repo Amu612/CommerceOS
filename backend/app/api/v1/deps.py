@@ -9,10 +9,11 @@ from typing import Optional
 from fastapi import Depends, Header, Query
 from sqlalchemy.orm import Session
 
+from app.core import rbac
 from app.core.security import decode_token
 from app.database.session import get_db
 from app.exceptions.base import AuthenticationException, AuthorizationException
-from app.models.security import AGENT_ROLE_MAP, User, UserRole
+from app.models.security import User, UserRole
 from app.services.auth_service import get_user_by_id
 
 
@@ -55,7 +56,7 @@ def get_optional_user(
 
 
 def require_super_admin(current_user: User = Depends(get_current_user)) -> User:
-    if current_user.role != UserRole.SUPER_ADMIN:
+    if not rbac.is_admin_only_route_allowed(current_user.role):
         raise AuthorizationException("Super admin access required.")
     return current_user
 
@@ -84,14 +85,89 @@ def auth_dependency():
 
 
 def require_agent_access(agent: str):
-    """Write access to a domain agent's controls requires the matching admin role."""
+    """Write access to a domain agent's controls requires the matching admin
+    role. Always strict (unlike `agent_dependency` below) — for routes that
+    mutate state and must never run un-authenticated regardless of
+    AUTH_ENFORCED."""
 
     def _check(current_user: User = Depends(get_current_user)) -> User:
-        if current_user.role == UserRole.SUPER_ADMIN:
-            return current_user
-        required = AGENT_ROLE_MAP.get(agent)
-        if required is None or current_user.role != required:
+        if not rbac.can_access_agent(current_user.role, agent):
             raise AuthorizationException(f"Access denied for agent '{agent}'.")
+        return current_user
+
+    return _check
+
+
+def agent_dependency(agent: str):
+    """
+    RBAC gate for one domain agent's entire router (mounted per-agent in
+    main.py) — an ORDERS_ADMIN gets 403 from every Inventory route, an
+    INVENTORY_ADMIN gets 403 from every Orders route, and so on. SUPER_ADMIN
+    always passes. See `app.core.rbac` for the single source of truth this
+    reads from.
+
+    Mirrors `auth_dependency()`'s soft/strict split so local dev without
+    AUTH_ENFORCED keeps working un-authenticated: no session at all is let
+    through (there's no role to check), but a *present* session whose role
+    doesn't match this agent is still denied — RBAC isn't only a
+    production-mode feature.
+    """
+
+    def _check(current_user: Optional[User] = Depends(auth_dependency())) -> Optional[User]:
+        if current_user is None:
+            return None
+        if not rbac.can_access_agent(current_user.role, agent):
+            raise AuthorizationException(
+                f"Your role ({current_user.role.value}) doesn't have access to the '{agent}' agent."
+            )
+        return current_user
+
+    return _check
+
+
+def ingestion_dependency():
+    """
+    RBAC gate for the data-ingestion/replay-control endpoints
+    (`/api/orders/ingestion/*`, `/api/simulation/*`, `/dashboard/simulation/*`
+    — three URL aliases over the exact same handler). This mutates the one
+    shared dataset every agent reads, and `reset` can wipe it outright, so
+    it's SUPER_ADMIN-only — the same rule applied consistently across all
+    three aliases, which is the point: before this, only the `/api/orders/...`
+    path happened to inherit Orders' agent-scoped gate, while the other two
+    aliases sat on the generic "any authenticated user" check and let any
+    domain admin reset the whole platform's data through them.
+    """
+
+    def _check(current_user: Optional[User] = Depends(auth_dependency())) -> Optional[User]:
+        if current_user is None:
+            return None
+        if not rbac.is_super_admin(current_user.role):
+            raise AuthorizationException(
+                f"Your role ({current_user.role.value}) doesn't have access to ingestion controls — "
+                "restricted to SUPER_ADMIN."
+            )
+        return current_user
+
+    return _check
+
+
+def orchestrator_dependency():
+    """
+    RBAC gate for the Orchestrator router — a cross-domain sweep of every
+    agent at once, so only SUPER_ADMIN may reach it (see
+    `rbac.can_access_orchestrator`). Same soft/strict split as
+    `agent_dependency`: no session at all passes through when AUTH_ENFORCED
+    is off, but a present, non-super-admin session is always denied.
+    """
+
+    def _check(current_user: Optional[User] = Depends(auth_dependency())) -> Optional[User]:
+        if current_user is None:
+            return None
+        if not rbac.can_access_orchestrator(current_user.role):
+            raise AuthorizationException(
+                f"Your role ({current_user.role.value}) doesn't have access to the Orchestrator — "
+                "it sweeps every domain agent at once and is restricted to SUPER_ADMIN."
+            )
         return current_user
 
     return _check

@@ -1,7 +1,7 @@
 [project]
 name = "commerceos-backend"
 version = "2.0.0"
-description = "CommerceOS / Nexus — autonomous multi-agent e-commerce operations platform (backend)"
+description = "CommerceOS — autonomous multi-agent e-commerce operations platform (backend)"
 requires-python = ">=3.11,<3.13"
 
 [tool.ruff]

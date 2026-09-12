@@ -101,12 +101,13 @@ class OrdersQueryResponse(BaseModel):
 class OrdersAgentState(TypedDict, total=False):
     """The state carried through each node in the Orders LangGraph."""
     messages: list
-    intent: str  # order_status | product_lookup | shipping_tracking | return_request | return_policy | analytics_query | search_orders | general
+    intent: str  # order_status | product_lookup | shipping_tracking | return_request | return_policy | analytics_query | order_value_query | order_period_query | search_orders | general
     order_id: str
     product_id: str
     search_query: str
     tracking_number: str
     customer_email: str
+    period_group_by: str  # "month" | "year" — for order_period_query
     tool_results: Dict[str, Any]
     final_response: str
     retry_count: int

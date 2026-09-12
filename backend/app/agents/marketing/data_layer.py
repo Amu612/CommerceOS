@@ -41,6 +41,7 @@ class MarketingData:
             customers.append({"uid": uid, "frequency": int(freq), "recency_days": recency_days, "monetary": float(monetary or 0)})
 
         total = len(customers)
+        total_orders = sum(c["frequency"] for c in customers)
         repeat = sum(1 for c in customers if c["frequency"] >= 2)
         monetary_vals = sorted(c["monetary"] for c in customers)
         freq_vals = sorted(c["frequency"] for c in customers)
@@ -72,7 +73,10 @@ class MarketingData:
             "total_customers": total,
             "repeat_customers": repeat,
             "repeat_rate_pct": pct(repeat, total),
-            "avg_order_value": round(sum(monetary_vals) / max(1, total), 2),
+            # AOV = total revenue / number of ORDERS, never number of customers
+            # (a repeat customer's orders would otherwise inflate this figure —
+            # that's customer lifetime value, a different metric).
+            "avg_order_value": round(sum(monetary_vals) / max(1, total_orders), 2),
             "segments": [{"segment": k, "customers": v, "share_pct": pct(v, total)} for k, v in segments.items()],
             "top_monetary_threshold": round(m_hi, 2),
         }

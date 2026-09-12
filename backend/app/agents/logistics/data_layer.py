@@ -90,6 +90,11 @@ class LogisticsData:
             float(v)
             for (v,) in db.query(DataCoOrder.days_for_shipping_real)
             .filter(DataCoOrder.order_date <= clock, DataCoOrder.days_for_shipping_real.isnot(None))
+            # Most-recent-first: without an explicit order, LIMIT returns
+            # whatever order the database happens to store rows in — which,
+            # after a chronological CSV import, silently biases the sample
+            # toward the OLDEST records instead of a representative one.
+            .order_by(DataCoOrder.order_date.desc())
             .limit(sample)
             .all()
             if v is not None and float(v) >= 0
@@ -119,6 +124,10 @@ class LogisticsData:
                 Order.order_delivered_customer_date.isnot(None),
                 Order.order_estimated_delivery_date.isnot(None),
             )
+            # Most-recent-first — see the comment in transit_distribution()
+            # above; an unordered LIMIT here would silently sample only the
+            # earliest-imported deliveries rather than the current picture.
+            .order_by(Order.order_purchase_timestamp.desc())
             .limit(sample)
             .all()
         )

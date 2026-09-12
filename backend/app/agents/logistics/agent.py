@@ -50,7 +50,7 @@ class LogisticsAgent(DomainAgent):
             ]
         elif tool_name == "transit_time_distribution" and data.get("status") == "OK":
             cards = [MetricCard(label="Median Transit", value=f"{data['median_days']}d",
-                                description=f"P90 {data['p90_days']}d · fence {data['outlier_fence_days']}d", data_status="CALCULATED")]
+                                description=f"Slowest 10% take {data['p90_days']}d+ · outliers beyond {data['outlier_fence_days']}d", data_status="CALCULATED")]
             chart = data
         elif tool_name == "carrier_scorecard":
             chart = data.get("carriers", [])

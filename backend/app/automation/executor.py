@@ -7,12 +7,15 @@ Automation executor + proposal service.
 """
 from __future__ import annotations
 
+import time
 from datetime import datetime, timezone
 from typing import Any, Optional
 
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
 from app.automation.actions import FINDING_ACTION_MAP, HANDLERS
+from app.automation.langchain_executor import execute_via_langchain
 from app.automation.policies import Mode, evaluate
 from app.core.logging import get_logger
 from app.models.operations import Approval, AutomationAction
@@ -21,6 +24,13 @@ from app.services.auth_service import log_audit
 from app.services.event_bus import publish_event
 
 logger = get_logger("automation.executor")
+
+# A handler opens its own DB session (see `automation.actions._notify`) that's
+# independent of the caller's — under SQLite that's a second writer against
+# the same file. WAL mode + busy_timeout (see `database.session`) make that
+# wait instead of erroring, but a couple of retries here is cheap insurance
+# against the rare case a transient lock outlives the timeout.
+_MAX_EXECUTE_ATTEMPTS = 3
 
 _SEV_RANK = {"CRITICAL": 4, "HIGH": 3, "MEDIUM": 2, "LOW": 1}
 
@@ -77,7 +87,20 @@ def propose_for_run(
         db.flush()
 
         if decision.mode == Mode.AUTO:
-            _execute(db, action)
+            # Commit the proposal itself before attempting execution: `_execute`
+            # shares this session with its handler now (see actions.py) and
+            # rolls it back on a handler failure — committing first means that
+            # rollback can only ever undo the *handler's* effect, never the
+            # just-flushed AutomationAction row itself.
+            db.commit()
+            # use_langchain=False here on purpose: a single agent run (or an
+            # orchestrator sweep of all six) can propose a dozen+ AUTO actions
+            # in one request, each waiting for the SQLite write lock behind
+            # the last — adding a real LLM round-trip per action turned one
+            # sweep into 30-70+ seconds. The LangChain-driven, narrated
+            # execution path is reserved for `decide()` below, where a human
+            # just approved exactly one action and is already waiting on it.
+            _execute(db, action, use_langchain=False)
         elif decision.mode == Mode.NEEDS_APPROVAL:
             db.add(Approval(
                 id=_uuid(), action_id=action.id, required_role=decision.required_role, status="PENDING",
@@ -95,26 +118,52 @@ def propose_for_run(
     return created
 
 
-def _execute(db: Session, action: AutomationAction) -> None:
+def _execute(db: Session, action: AutomationAction, *, use_langchain: bool = True) -> None:
     handler = HANDLERS.get(action.action_type)
     if not handler:
         action.status = "FAILED"
         action.result = {"error": f"no handler for {action.action_type}"}
         return
     run_fn, verify_fn, _ = handler
-    try:
-        result = run_fn(action.payload or {})
-        action.result = result
-        action.status = "EXECUTED"
-        action.executed_at = datetime.now(timezone.utc)
-        ok = bool(verify_fn(action.payload or {}, result))
-        action.verification = {"verified": ok, "at": datetime.now(timezone.utc).isoformat()}
-        action.status = "VERIFIED" if ok else "EXECUTED"
-        logger.info("automation_executed", action=action.action_type, verified=ok)
-    except Exception as exc:  # noqa: BLE001
-        action.status = "FAILED"
-        action.result = {"error": str(exc)}
-        logger.warning("automation_execute_failed", action=action.action_type, error=str(exc))
+    payload = action.payload or {}
+
+    for attempt in range(1, _MAX_EXECUTE_ATTEMPTS + 1):
+        try:
+            if use_langchain:
+                result = execute_via_langchain(action.action_type, payload, db, run_fn)
+            else:
+                result = run_fn(payload, db)
+                result["automation_backend"] = "deterministic"
+            action.result = result
+            action.status = "EXECUTED"
+            action.executed_at = datetime.now(timezone.utc)
+            ok = bool(verify_fn(payload, result))
+            action.verification = {"verified": ok, "at": datetime.now(timezone.utc).isoformat()}
+            action.status = "VERIFIED" if ok else "EXECUTED"
+            logger.info(
+                "automation_executed", action=action.action_type, verified=ok,
+                backend=result.get("automation_backend"), attempt=attempt,
+            )
+            return
+        except OperationalError as exc:
+            db.rollback()  # clear the failed flush so `db` is usable again
+            transient = "locked" in str(exc).lower() or "busy" in str(exc).lower()
+            if transient and attempt < _MAX_EXECUTE_ATTEMPTS:
+                logger.warning(
+                    "automation_execute_retry", action=action.action_type, attempt=attempt, error=str(exc),
+                )
+                time.sleep(0.3 * attempt)
+                continue
+            action.status = "FAILED"
+            action.result = {"error": str(exc)}
+            logger.warning("automation_execute_failed", action=action.action_type, error=str(exc))
+            return
+        except Exception as exc:  # noqa: BLE001
+            db.rollback()
+            action.status = "FAILED"
+            action.result = {"error": str(exc)}
+            logger.warning("automation_execute_failed", action=action.action_type, error=str(exc))
+            return
 
 
 def decide(db: Session, approval_id: str, *, approved: bool, actor: dict) -> AutomationAction:
@@ -128,6 +177,10 @@ def decide(db: Session, approval_id: str, *, approved: bool, actor: dict) -> Aut
     approval.status = "APPROVED" if approved else "REJECTED"
     approval.decided_by = actor.get("username")
     approval.decided_at = datetime.now(timezone.utc)
+    # Commit the human decision itself before attempting execution — `_execute`
+    # shares this session with its handler and rolls it back on failure, which
+    # must never also erase the fact that a human already approved/rejected.
+    db.commit()
 
     if approved:
         if action.action_type in HANDLERS:

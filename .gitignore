@@ -30,6 +30,8 @@ service-account*.json
 
 # ── Databases & data ─────────────────────────────────────
 *.db
+*.db-wal
+*.db-shm
 *.sqlite
 *.sqlite3
 backend/data/raw/

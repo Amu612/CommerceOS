@@ -23,6 +23,10 @@ class PricingData:
         rows = (
             db.query(DataCoOrder.order_total, DataCoOrder.order_profit)
             .filter(DataCoOrder.order_date <= clock, DataCoOrder.order_total > 0)
+            # Most-recent-first: an unordered LIMIT would otherwise silently
+            # sample whatever the database's on-disk order happens to be —
+            # after a chronological CSV import, that's the OLDEST orders.
+            .order_by(DataCoOrder.order_date.desc())
             .limit(8000)
             .all()
         )

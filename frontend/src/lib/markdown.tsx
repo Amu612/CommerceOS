@@ -3,9 +3,22 @@ import React from "react";
 /**
  * Minimal, dependency-free renderer for the small markdown subset the agents'
  * deterministic/LLM answers actually use: **bold**, `inline code`, "- " / "• "
- * bullet lists, "1. " numbered lists, and blank-line paragraph breaks. No
- * npm install needed — the backend only ever emits this known subset.
+ * bullet lists, "1. " numbered lists, GFM pipe tables, and blank-line
+ * paragraph breaks. No npm install needed — the backend only ever emits this
+ * known subset (the LLM path especially likes tables for ranked/comparison
+ * answers, so these must render as a real table, not a wall of "| a | b |").
  */
+
+/** A `| a | b |` row, split on unescaped pipes and trimmed. */
+function splitTableRow(line: string): string[] {
+  const trimmed = line.trim().replace(/^\|/, "").replace(/\|$/, "");
+  return trimmed.split(/(?<!\\)\|/).map((c) => c.trim().replace(/\\\|/g, "|"));
+}
+
+/** A separator row like `|---|:--:|--:|` — dashes/colons/pipes/spaces only. */
+function isTableSeparator(line: string): boolean {
+  return /^\s*\|?\s*:?-+:?\s*(\|\s*:?-+:?\s*)+\|?\s*$/.test(line);
+}
 
 function renderInline(text: string, keyPrefix: string): React.ReactNode[] {
   const nodes: React.ReactNode[] = [];
@@ -53,11 +66,50 @@ export function renderMarkdown(text: string): React.ReactNode {
     paraBuf = [];
   };
 
-  for (const raw of lines) {
+  let i = 0;
+  while (i < lines.length) {
+    const raw = lines[i];
     const line = raw.trimEnd();
     const heading = /^(#{1,4})\s+(.*)$/.exec(line);
     const bullet = /^\s*[-•]\s+(.*)$/.exec(line);
     const numbered = /^\s*\d+[.)]\s+(.*)$/.exec(line);
+    const isTableStart = line.includes("|") && i + 1 < lines.length && isTableSeparator(lines[i + 1]);
+
+    if (isTableStart) {
+      flushList();
+      flushPara();
+      const headerCells = splitTableRow(line);
+      const bodyRows: string[][] = [];
+      let j = i + 2; // skip the header row and the separator row
+      while (j < lines.length && lines[j].trim() !== "" && lines[j].includes("|")) {
+        bodyRows.push(splitTableRow(lines[j]));
+        j++;
+      }
+      const tKey = `t${blocks.length}`;
+      blocks.push(
+        <table key={tKey}>
+          <thead>
+            <tr>
+              {headerCells.map((c, ci) => (
+                <th key={ci}>{renderInline(c, `${tKey}-h-${ci}`)}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {bodyRows.map((row, ri) => (
+              <tr key={ri}>
+                {row.map((c, ci) => (
+                  <td key={ci}>{renderInline(c, `${tKey}-${ri}-${ci}`)}</td>
+                ))}
+              </tr>
+            ))}
+          </tbody>
+        </table>,
+      );
+      i = j;
+      continue;
+    }
+
     if (heading) {
       flushList();
       flushPara();
@@ -79,6 +131,7 @@ export function renderMarkdown(text: string): React.ReactNode {
       flushList();
       paraBuf.push(line.trim());
     }
+    i++;
   }
   flushList();
   flushPara();

@@ -39,55 +39,6 @@ _DEFAULT_LEAD_TIME = 7
 _RECENT_WINDOW_DAYS = 180
 
 
-def _shopify_product_to_inventory(p: Any, low_stock_threshold: int) -> InventoryProduct:
-    on_hand = p.inventory_quantity if p.inventory_quantity is not None else 0
-    is_low = on_hand < low_stock_threshold
-    return InventoryProduct(
-        id=str(p.product_id), product_id=str(p.product_id), sku=f"SHOPIFY-{p.product_id}",
-        name=p.title or f"Product {p.product_id}", category=p.product_type or "General",
-        stockQuantity=on_hand, stock_quantity=on_hand, available_stock=on_hand,
-        price=round(float(p.price or 0.0), 2), weight_g=None,
-        reorder_required=is_low, reorder_flag=is_low,
-        lead_time_days=_DEFAULT_LEAD_TIME,
-    )
-
-
-def _query_shopify_products(
-    db: Session, category: Optional[str] = None, limit: int = 50, low_stock_only: bool = False, threshold: int = 50,
-) -> List[InventoryProduct]:
-    """Live counterpart of `query_products` — real Shopify inventory counts,
-    `data_status=OBSERVED` (not modelled — Shopify tracks actual on-hand stock)."""
-    from app.models.shopify import ShopifyProduct
-
-    q = db.query(ShopifyProduct)
-    if category:
-        q = q.filter(ShopifyProduct.product_type.ilike(f"%{category}%"))
-    q = q.order_by(ShopifyProduct.inventory_quantity.asc().nulls_last()).limit(limit * 3 if low_stock_only else limit)
-    out = []
-    for p in q.all():
-        item = _shopify_product_to_inventory(p, threshold)
-        if low_stock_only and not item.reorder_required:
-            continue
-        out.append(item)
-        if len(out) >= limit:
-            break
-    return out
-
-
-def _get_shopify_product(db: Session, product_id: str) -> Optional[InventoryProduct]:
-    from app.models.shopify import ShopifyProduct
-
-    clean = str(product_id).strip().replace("SHOPIFY-", "")
-    p = None
-    try:
-        p = db.get(ShopifyProduct, int(clean))
-    except (ValueError, TypeError):
-        pass
-    if p is None:
-        p = db.query(ShopifyProduct).filter(ShopifyProduct.title.ilike(f"%{clean}%")).first()
-    return _shopify_product_to_inventory(p, 50) if p else None
-
-
 def _demand_stats(db: Session, product_ids: Optional[List[str]] = None) -> Dict[str, Dict[str, float]]:
     """Real per-product demand: total units, units in the recent window, first/last sale."""
     from app.agents._shared import simulated_clock
@@ -205,11 +156,6 @@ class InventoryTools:
         Only products with observed sales are returned (they are the ones we can model).
         "Low stock" = modelled on_hand < modelled reorder point (both data-derived).
         """
-        from app.services.data_source_service import data_source_service
-
-        if data_source_service.is_live():
-            return _query_shopify_products(db, category=category, limit=limit, low_stock_only=low_stock_only)
-
         # Rank by real demand so the view is the products that actually matter.
         demand = _demand_stats(db)
         if not demand:
@@ -261,11 +207,6 @@ class InventoryTools:
     @staticmethod
     def get_product_by_id(db: Session, product_id: str) -> Optional[InventoryProduct]:
         """Look up a product by id/SKU/prefix or a category keyword (PT or EN)."""
-        from app.services.data_source_service import data_source_service
-
-        if data_source_service.is_live():
-            return _get_shopify_product(db, product_id)
-
         clean_id = str(product_id).strip()
         for junk in ("SKU-", "sku-", "PROD-", "prod-", "DC-", "dc-", "#"):
             clean_id = clean_id.replace(junk, "")
@@ -324,14 +265,6 @@ class InventoryTools:
         Calculates sales velocity, historical sales totals, daily averages,
         and demand trend (INCREASING, STABLE, DECREASING).
         """
-        from app.services.data_source_service import data_source_service
-
-        if data_source_service.is_live():
-            # Sales-velocity trend needs order-item history depth a live demo
-            # store won't have yet — honestly empty, not modelled from stale
-            # historic Olist data.
-            return []
-
         results: List[SalesAnalysis] = []
 
         ids = [product_id] if product_id else None
@@ -577,7 +510,7 @@ def tool_query_inventory(threshold: int = 50, low_stock_only: bool = True) -> st
         prods = InventoryTools.query_products(db, threshold=threshold, limit=15, low_stock_only=low_stock_only)
         lines = [f"Found {len(prods)} products (threshold: {threshold}):"]
         for p in prods:
-            lines.append(f"- {p.name} (ID: {p.product_id}): Stock={p.stockQuantity}, Price=₹{p.price:.2f}, Reorder={p.reorder_required}")
+            lines.append(f"- {p.name} (ID: {p.product_id}): Stock={p.stockQuantity}, Price=R${p.price:.2f}, Reorder={p.reorder_required}")
         return "\n".join(lines)
     finally:
         db.close()
@@ -598,7 +531,7 @@ def tool_get_product_stock(product_id: str) -> str:
             f"SKU: {p.sku}\n"
             f"Category: {p.category}\n"
             f"Current Stock: {p.stockQuantity}\n"
-            f"Price: ₹{p.price:.2f}\n"
+            f"Price: R${p.price:.2f}\n"
             f"Weight: {p.weight_g}g\n"
             f"Lead Time: {p.lead_time_days} days\n"
             f"Reorder Flag: {p.reorder_required}"
@@ -618,7 +551,7 @@ def tool_suggest_reorders(threshold: int = 50) -> str:
         for r in recs:
             lines.append(
                 f"- {r.name}: Stock={r.current_stock}, Daily Sales={r.daily_sales}/day, "
-                f"ROP={r.reorder_point}, Suggested Order={r.suggested_quantity} units, Est Cost=₹{r.estimated_cost:.2f}"
+                f"ROP={r.reorder_point}, Suggested Order={r.suggested_quantity} units, Est Cost=R${r.estimated_cost:.2f}"
             )
         return "\n".join(lines)
     finally:

@@ -1,5 +1,5 @@
 """
-CommerceOS / Nexus — FastAPI application entrypoint.
+CommerceOS — FastAPI application entrypoint.
 
 M1 wires the production foundation (settings, structured logging, request
 context, typed error handling, security middleware) while keeping every existing
@@ -42,10 +42,19 @@ async def lifespan(app: FastAPI):
     # Auto-seed an empty database from the bundled dataset (dev convenience).
     db = SessionLocal()
     try:
+        from app.models.dataco import DataCoOrder
         from app.models.olist import Order
 
-        if db.query(Order).count() == 0:
-            logger.info("db_empty_seeding")
+        order_count = db.query(Order).count()
+        dataco_count = db.query(DataCoOrder).count()
+        # Check both sources independently — a partial prior seed (e.g. the
+        # process was killed mid-import, or Olist loaded but the DataCo CSV
+        # was briefly missing) must not look "seeded" just because Olist has
+        # rows; seed_data() re-runs both loaders, and each is dedup-safe on a
+        # rerun (checks existing ids first), so calling it again here never
+        # duplicates whichever source already succeeded.
+        if order_count == 0 or dataco_count == 0:
+            logger.info("db_empty_seeding", olist_orders=order_count, dataco_orders=dataco_count)
             try:
                 from scripts.seed_nexus_data import seed_data
 
@@ -53,6 +62,24 @@ async def lifespan(app: FastAPI):
                 logger.info("db_seed_complete")
             except Exception as exc:  # noqa: BLE001
                 logger.warning("db_seed_failed", error=str(exc))
+
+        # `replay_engine`'s ingest-progress counters are in-memory only, so a
+        # process restart forgets how far a prior replay got even though the
+        # data it already streamed is still sitting in the database — the
+        # Ingestion Control Bar would misleadingly read "0 orders / stopped"
+        # right after restarting a backend that has been fully seeded for
+        # weeks. Resync it to what's actually in the database: `complete_now`
+        # is dedup-safe (every insert already checks for an existing id), so
+        # this is a cheap catch-up, never a re-import. Re-query fresh rather
+        # than reusing order_count/dataco_count — seeding above may have just
+        # changed one or both from 0.
+        has_data = db.query(Order).count() > 0 or db.query(DataCoOrder).count() > 0
+        if has_data:
+            try:
+                msg = replay_engine.complete_now()
+                logger.info("replay_synced_to_existing_data", message=msg)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("replay_sync_failed", error=str(exc))
     finally:
         db.close()
 
@@ -94,11 +121,11 @@ from app.api.customer_routes import alias_router as customer_alias_router  # noq
 from app.api.customer_routes import customer_router  # noqa: E402
 from app.api.inventory_routes import alias_router as inventory_alias_router  # noqa: E402
 from app.api.inventory_routes import inventory_router  # noqa: E402
-from app.api.routes import nexus_sim_router, orders_router, simulation_router  # noqa: E402
+from app.api.routes import ingestion_router, nexus_sim_router, orders_router, simulation_router  # noqa: E402
 from app.api.v1 import audit as v1_audit  # noqa: E402
 from app.api.v1 import auth as v1_auth  # noqa: E402
 from app.api.v1 import users as v1_users  # noqa: E402
-from app.api.v1.deps import auth_dependency, get_current_user  # noqa: E402
+from app.api.v1.deps import agent_dependency, auth_dependency, get_current_user, ingestion_dependency, orchestrator_dependency  # noqa: E402
 
 # Public v1 (auth flows) — no dependency
 app.include_router(v1_auth.router, prefix=settings.API_V1_PREFIX)
@@ -113,10 +140,8 @@ app.include_router(v1_audit.router, prefix=settings.API_V1_PREFIX, dependencies=
 _agent_auth = [Depends(auth_dependency())]
 
 from app.api.v1 import automation as v1_automation  # noqa: E402
-from app.api.v1 import data_source as v1_data_source  # noqa: E402
 from app.api.v1 import orchestrator as v1_orchestrator  # noqa: E402
 from app.api.v1 import runs as v1_runs  # noqa: E402
-from app.api.v1 import shopify as v1_shopify  # noqa: E402
 from app.api.v1 import stream as v1_stream  # noqa: E402
 from app.api.v1 import system as v1_system  # noqa: E402
 from app.api.v1.agents import (  # noqa: E402
@@ -125,28 +150,41 @@ from app.api.v1.agents import (  # noqa: E402
     pricing_router,
 )
 
+# RBAC — see app.core.rbac for the single source of truth these dependencies
+# read from. Each domain agent's router is gated by its own admin role: an
+# ORDERS_ADMIN gets 403 from every Inventory/Pricing/etc. route, and so on.
+# The Orchestrator sweeps all six agents at once and cannot be scoped to one
+# domain, so it's SUPER_ADMIN-only. Automation/Approvals and run history stay
+# on the generic "any authenticated user" gate at the router level — they
+# self-scope per-request instead (list_approvals/list_actions/list_runs
+# filter to the caller's own agent; approve/reject 403 on a foreign-role
+# approval) because a domain admin legitimately does need to decide their
+# own domain's approvals, just not anyone else's.
+for r, agent in (
+    (orders_router, "orders"),
+    (inventory_router, "inventory"),
+    (inventory_alias_router, "inventory"),
+    (customer_router, "customer"),
+    (customer_alias_router, "customer"),
+    (logistics_router, "logistics"),
+    (marketing_router, "marketing"),
+    (pricing_router, "pricing"),
+):
+    app.include_router(r, dependencies=[Depends(agent_dependency(agent))])
+
+app.include_router(v1_orchestrator.router, dependencies=[Depends(orchestrator_dependency())])
+
+# Ingestion/replay control — SUPER_ADMIN-only, applied identically to all
+# three URL aliases (see `ingestion_dependency`).
+_ingestion_auth = [Depends(ingestion_dependency())]
+for r in (ingestion_router, simulation_router, nexus_sim_router):
+    app.include_router(r, dependencies=_ingestion_auth)
+
 for r in (
-    orders_router,
-    inventory_router,
-    inventory_alias_router,
-    customer_router,
-    customer_alias_router,
-    simulation_router,
-    nexus_sim_router,
-    logistics_router,
-    marketing_router,
-    pricing_router,
-    v1_orchestrator.router,
     v1_automation.router,
     v1_runs.router,
-    v1_data_source.router,
-    v1_shopify.router,
 ):
     app.include_router(r, dependencies=_agent_auth)
-
-# Shopify webhook — Shopify calls this directly and can never carry our JWT;
-# its security is the HMAC signature check inside the route itself, not auth.
-app.include_router(v1_shopify.webhook_router)
 
 # System status / LLM health — public so the frontend can discover auth mode
 # and provider health before a session exists.

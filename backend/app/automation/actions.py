@@ -12,12 +12,29 @@ import re
 from datetime import datetime, timezone
 from typing import Any, Callable
 
+from sqlalchemy.orm import Session
+
 from app.core.logging import get_logger
 from app.database.session import SessionLocal
 from app.models.security import NotificationSeverity, NotificationStatus
 from app.services.notification_service import notification_service
 
 logger = get_logger("automation.actions")
+
+# Every handler below takes the CALLER's session (the executor's request-scoped
+# `db`) and writes through it rather than opening a fresh `SessionLocal()`.
+#
+# That used to be a real bug, not just style: `propose_for_run`/`decide` hold
+# an open write transaction on the request's `db` (an uncommitted
+# `AutomationAction` insert) and, from inside that same call stack, would
+# invoke a handler that opened a SECOND SQLite connection and tried to write
+# on it too. SQLite allows only one writer at a time — the second connection
+# would block waiting for the first to commit, but the first was itself
+# blocked waiting for the handler call (on that second connection) to return.
+# That's a same-thread self-deadlock, not just contention: it always ran out
+# the full busy_timeout and surfaced as "database is locked" → status FAILED,
+# on effectively every automation action. Sharing one session removes the
+# second connection entirely.
 
 _EVIDENCE_EQ_RE = re.compile(r"(\w+)=([^\s,'}]+)")
 _EVIDENCE_DICT_RE = re.compile(r"'(\w+)':\s*'?([^,'}]+)'?")
@@ -40,20 +57,17 @@ def _parse_evidence(evidence: Any) -> dict[str, str]:
     return {k: v for k, v in out.items() if v not in ("None", "")}
 
 
-def _notify(*, title: str, message: str, agent: str, severity: str) -> dict[str, Any]:
-    db = SessionLocal()
-    try:
-        n = notification_service.create_notification(
-            db=db, title=title, message=message, responsible_agent=agent,
-            severity=severity, priority=severity, notification_type="AUTOMATION",
-        )
-        return {"notification_id": n.id}
-    finally:
-        db.close()
+def _notify(db: Session, *, title: str, message: str, agent: str, severity: str) -> dict[str, Any]:
+    n = notification_service.create_notification(
+        db=db, title=title, message=message, responsible_agent=agent,
+        severity=severity, priority=severity, notification_type="AUTOMATION",
+    )
+    return {"notification_id": n.id}
 
 
-def flag_for_review(payload: dict) -> dict:
+def flag_for_review(payload: dict, db: Session) -> dict:
     return _notify(
+        db,
         title=f"[Auto] {payload.get('title', 'Flagged for review')}",
         message=payload.get("detail", ""),
         agent=payload.get("agent", "orchestrator"),
@@ -61,8 +75,9 @@ def flag_for_review(payload: dict) -> dict:
     )
 
 
-def internal_notification(payload: dict) -> dict:
+def internal_notification(payload: dict, db: Session) -> dict:
     return _notify(
+        db,
         title=f"[Auto] {payload.get('title', 'Operational notice')}",
         message=payload.get("detail", ""),
         agent=payload.get("agent", "orchestrator"),
@@ -70,9 +85,10 @@ def internal_notification(payload: dict) -> dict:
     )
 
 
-def reprioritise_queue(payload: dict) -> dict:
+def reprioritise_queue(payload: dict, db: Session) -> dict:
     # No live queue system in the demo dataset — record the intent + notify ops.
     res = _notify(
+        db,
         title="[Auto] Queue reprioritisation applied",
         message=payload.get("detail", "Reprioritised the affected work queue."),
         agent=payload.get("agent", "orders"),
@@ -82,8 +98,9 @@ def reprioritise_queue(payload: dict) -> dict:
     return res
 
 
-def adjust_promised_date_model(payload: dict) -> dict:
+def adjust_promised_date_model(payload: dict, db: Session) -> dict:
     res = _notify(
+        db,
         title="[Auto] Promised-date buffer updated",
         message=payload.get("detail", "Applied a per-lane delivery buffer from the observed margin distribution."),
         agent="logistics", severity="MEDIUM",
@@ -92,7 +109,7 @@ def adjust_promised_date_model(payload: dict) -> dict:
     return res
 
 
-def create_purchase_order_request(payload: dict) -> dict:
+def create_purchase_order_request(payload: dict, db: Session) -> dict:
     """
     Records a reorder request against the real stock ledger (`stock_movements`)
     so it is durably queryable and shows up in that product's stock history —
@@ -102,6 +119,7 @@ def create_purchase_order_request(payload: dict) -> dict:
     ev = _parse_evidence(payload.get("evidence"))
     product_id = ev.get("product_id")
     res = _notify(
+        db,
         title=f"[PO Request] {payload.get('title', 'Reorder requested')}",
         message=payload.get("detail", "A purchase-order request was raised from a stock finding."),
         agent="inventory", severity=payload.get("severity", "MEDIUM"),
@@ -109,7 +127,6 @@ def create_purchase_order_request(payload: dict) -> dict:
     res["effect"] = "PURCHASE_ORDER_REQUESTED"
     res["product_id"] = product_id
     if product_id and product_id != "None":
-        db = SessionLocal()
         try:
             from app.models.operations import StockMovement
 
@@ -126,20 +143,19 @@ def create_purchase_order_request(payload: dict) -> dict:
                 balance_after=last.balance_after if last else None,
             )
             db.add(mv)
-            db.commit()
+            db.flush()
             res["stock_movement_id"] = mv.id
         except Exception as exc:  # noqa: BLE001
             logger.warning("purchase_order_stock_movement_failed", error=str(exc))
-        finally:
-            db.close()
     return res
 
 
-def open_carrier_review(payload: dict) -> dict:
+def open_carrier_review(payload: dict, db: Session) -> dict:
     """Opens a durable carrier-performance review record + notifies logistics ops."""
     ev = _parse_evidence(payload.get("evidence"))
     carrier = ev.get("carrier") or "Unknown carrier"
     res = _notify(
+        db,
         title=f"[Carrier Review] {carrier}",
         message=payload.get("detail", f"Opened a performance review for carrier '{carrier}'."),
         agent="logistics", severity=payload.get("severity", "MEDIUM"),
@@ -150,11 +166,12 @@ def open_carrier_review(payload: dict) -> dict:
     return res
 
 
-def reweight_carrier_routing(payload: dict) -> dict:
+def reweight_carrier_routing(payload: dict, db: Session) -> dict:
     """Records a routing re-weight decision away from the flagged carrier + notifies ops."""
     ev = _parse_evidence(payload.get("evidence"))
     carrier = ev.get("carrier") or "Unknown carrier"
     res = _notify(
+        db,
         title=f"[Routing] De-prioritised '{carrier}'",
         message=payload.get("detail", f"Time-sensitive volume re-weighted away from '{carrier}'."),
         agent="logistics", severity=payload.get("severity", "MEDIUM"),
@@ -164,12 +181,13 @@ def reweight_carrier_routing(payload: dict) -> dict:
     return res
 
 
-def set_margin_floor(payload: dict) -> dict:
+def set_margin_floor(payload: dict, db: Session) -> dict:
     """Records an active minimum-margin-floor policy for the flagged segment/category + notifies pricing."""
     ev = _parse_evidence(payload.get("evidence"))
     scope = ev.get("segment") or ev.get("category") or "store-wide"
     floor_pct = ev.get("lower_fence_pct") or ev.get("p25_margin_pct")
     res = _notify(
+        db,
         title=f"[Margin Floor] {scope}",
         message=payload.get("detail", f"Minimum-margin floor set for '{scope}'."),
         agent="pricing", severity=payload.get("severity", "MEDIUM"),
@@ -181,11 +199,12 @@ def set_margin_floor(payload: dict) -> dict:
     return res
 
 
-def launch_campaign(payload: dict) -> dict:
+def launch_campaign(payload: dict, db: Session) -> dict:
     """Records a launched retention/win-back campaign against the flagged segment + notifies marketing."""
     ev = _parse_evidence(payload.get("evidence"))
     segment = ev.get("segment") or "targeted segment"
     res = _notify(
+        db,
         title=f"[Campaign Launched] {segment}",
         message=payload.get("detail", f"Retention campaign launched for the '{segment}' segment."),
         agent="marketing", severity=payload.get("severity", "MEDIUM"),
@@ -196,9 +215,10 @@ def launch_campaign(payload: dict) -> dict:
     return res
 
 
-def escalate_to_human(payload: dict) -> dict:
+def escalate_to_human(payload: dict, db: Session) -> dict:
     """Escalates a finding to a human owner — a durable, notified escalation record."""
     res = _notify(
+        db,
         title=f"[Escalated] {payload.get('title', 'Escalation')}",
         message=payload.get("detail", "Escalated to a human owner for review."),
         agent=payload.get("agent", "orchestrator"), severity=payload.get("severity", "HIGH"),
@@ -207,11 +227,12 @@ def escalate_to_human(payload: dict) -> dict:
     return res
 
 
-# action_type -> (execute_fn, verify_fn, rollback_fn)
-HANDLERS: dict[str, tuple[Callable[[dict], dict], Callable[[dict, dict], bool], Callable[[dict, dict], None]]] = {}
+# action_type -> (execute_fn, verify_fn, rollback_fn). execute_fn takes the
+# caller's live `db` session (see the module docstring above for why).
+HANDLERS: dict[str, tuple[Callable[[dict, Session], dict], Callable[[dict, dict], bool], Callable[[dict, dict], None]]] = {}
 
 
-def _register(name: str, fn: Callable[[dict], dict]) -> None:
+def _register(name: str, fn: Callable[[dict, Session], dict]) -> None:
     def _verify(payload: dict, result: dict) -> bool:  # notification created == effect applied
         return bool(result.get("notification_id"))
 

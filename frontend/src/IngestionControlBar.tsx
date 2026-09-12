@@ -65,7 +65,14 @@ export default function IngestionControlBar({
         <div className="ingestion-metrics-group">
           <div className="ingestion-metric-box">
             <span className="metric-name">Simulated Clock</span>
-            <span className="metric-val">{formatTimestamp(status.simulated_date)}</span>
+            <span className="metric-val">
+              {formatTimestamp(status.simulated_date)}
+              {status.events_remaining > 0 && (
+                <span className="metric-behind" title="Every agent reads data only up to this simulated point in time — press Sync to Now to catch up to the full dataset.">
+                  {" "}· {status.events_remaining.toLocaleString()} behind
+                </span>
+              )}
+            </span>
           </div>
 
           <div className="ingestion-metric-box">
@@ -140,6 +147,22 @@ export default function IngestionControlBar({
             </svg>
             <span>Step +50</span>
           </button>
+
+          {status.events_remaining > 0 && (
+            <button
+              type="button"
+              className="btn-stream-action btn-fastforward"
+              onClick={() => onControl("complete")}
+              disabled={loading || status.status === "running"}
+              title="Ingest every remaining record right now — every agent reads the full dataset again"
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
+                <polygon points="2 4 12 12 2 20 2 4" />
+                <polygon points="12 4 22 12 12 20 12 4" />
+              </svg>
+              <span>Sync to Now</span>
+            </button>
+          )}
 
           <button
             type="button"

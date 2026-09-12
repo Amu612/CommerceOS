@@ -1,4 +1,4 @@
-# CommerceOS / Nexus — backend dev/test/tooling dependencies
+# CommerceOS — backend dev/test/tooling dependencies
 -r requirements.txt
 
 # --- Test ---

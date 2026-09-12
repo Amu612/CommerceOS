@@ -15,7 +15,7 @@ type Approval = {
   confidence?: number;
   payload?: Record<string, unknown>;
   result?: Record<string, unknown> | null;
-  verification?: { verified?: boolean } | null;
+  verification?: { verified?: boolean; at?: string } | null;
   created_at?: string;
   executed_at?: string;
   approval?: { id: string; required_role: string; status: string; decided_by?: string; reason?: string };
@@ -29,6 +29,17 @@ const STATUS_COLOR: Record<string, string> = {
   BLOCKED: "#b91c1c",
   REJECTED: "#857f93",
   FAILED: "#b91c1c",
+};
+// The backend keeps VERIFIED/EXECUTED distinct for audit purposes (was the
+// recorded effect independently confirmed, or just applied), but the console
+// only needs to tell an operator "this went through" — both read as Success.
+const STATUS_LABEL: Record<string, string> = {
+  VERIFIED: "Success",
+  EXECUTED: "Success",
+  PROPOSED: "Pending",
+  BLOCKED: "Blocked",
+  REJECTED: "Rejected",
+  FAILED: "Failed",
 };
 
 export default function ApprovalsView({ refreshKey }: { refreshKey?: number }) {
@@ -86,9 +97,11 @@ export default function ApprovalsView({ refreshKey }: { refreshKey?: number }) {
           </div>
           <h2 className="apv-title">Automation & Approvals</h2>
           <p className="apv-sub">
-            Agents propose actions from their findings. Low-blast-radius actions (internal flags,
-            promised-date buffers, queue hints) auto-execute and self-verify. Everything that moves
-            money or touches customers waits for the owning domain admin.
+            Agents propose actions from their findings. Low-blast-radius, non-critical actions
+            (internal flags, promised-date buffers, queue hints) run automatically through a
+            LangChain agent and self-verify — every run below shows proof it actually executed.
+            Anything CRITICAL, or that moves money or touches customers, always waits for the
+            owning domain admin to approve.
           </p>
         </div>
         <button className="apv-btn" onClick={load} disabled={loading}>
@@ -157,26 +170,28 @@ export default function ApprovalsView({ refreshKey }: { refreshKey?: number }) {
             <thead>
               <tr>
                 <th>Status</th>
-                <th>Mode</th>
+                <th>Trigger</th>
                 <th>Agent</th>
                 <th>Action</th>
                 <th>Title</th>
-                <th>Verified</th>
-                <th>Recorded effect</th>
+                <th>Proof of execution</th>
               </tr>
             </thead>
             <tbody>
               {actions.map((a) => (
                 <tr key={a.id}>
                   <td>
-                    <span style={{ color: STATUS_COLOR[a.status] ?? "#cbd5e1", fontWeight: 700 }}>{a.status}</span>
+                    <span style={{ color: STATUS_COLOR[a.status] ?? "#cbd5e1", fontWeight: 700 }}>
+                      {STATUS_LABEL[a.status] ?? a.status}
+                    </span>
                   </td>
-                  <td>{a.mode}</td>
+                  <td>{a.mode === "AUTO" ? "Automatic" : a.mode === "NEEDS_APPROVAL" ? "Manual approval" : "Blocked"}</td>
                   <td>{a.agent}</td>
                   <td className="apv-mono">{a.action_type}</td>
                   <td>{a.title}</td>
-                  <td>{a.verification?.verified ? "✓" : a.status === "BLOCKED" ? "—" : ""}</td>
-                  <td className="apv-effect">{describeEffect(a.result)}</td>
+                  <td className="apv-effect">
+                    <ExecutionProof a={a} />
+                  </td>
                 </tr>
               ))}
             </tbody>
@@ -187,8 +202,23 @@ export default function ApprovalsView({ refreshKey }: { refreshKey?: number }) {
   );
 }
 
+const BACKEND_LABEL: Record<string, string> = {
+  langchain: "LangChain agent",
+  deterministic: "Deterministic run",
+  deterministic_fallback: "Deterministic (LLM unavailable)",
+};
+
+function fmtTime(ts?: string): string {
+  if (!ts) return "";
+  try {
+    return new Date(ts).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
+  } catch {
+    return ts;
+  }
+}
+
 function describeEffect(result?: Record<string, unknown> | null): string {
-  if (!result) return "—";
+  if (!result) return "";
   const effect = result.effect;
   if (typeof effect === "string") {
     const label = effect.replace(/_/g, " ").toLowerCase();
@@ -197,9 +227,43 @@ function describeEffect(result?: Record<string, unknown> | null): string {
       .filter(Boolean);
     return bits.length ? `${label} (${bits.join(", ")})` : label;
   }
-  if (result.notification_id) return "Notification recorded";
-  if (result.error) return `Failed: ${String(result.error)}`;
-  return "—";
+  if (result.notification_id) return `Notification #${String(result.notification_id).slice(0, 8)} created`;
+  return "";
+}
+
+/**
+ * The actual evidence an operator needs that an "Automatic" action really ran:
+ * what executed it (LangChain vs. the deterministic fallback), when, whether
+ * its effect was independently re-checked afterward, and — for a genuine
+ * failure — the real error instead of a silent gap in the table.
+ */
+function ExecutionProof({ a }: { a: Approval }) {
+  if (a.status === "BLOCKED") return <span className="apv-proof-muted">Blocked by policy — never run</span>;
+  if (a.status === "PROPOSED") return <span className="apv-proof-muted">Awaiting a decision</span>;
+  if (a.status === "REJECTED") return <span className="apv-proof-muted">Rejected — not executed</span>;
+
+  const error = a.result?.error;
+  if (a.status === "FAILED" && error) {
+    return <span className="apv-proof-error">Execution failed: {String(error)}</span>;
+  }
+
+  const backendKey = String(a.result?.automation_backend ?? "");
+  const backendLabel = BACKEND_LABEL[backendKey] ?? "Executed";
+  const effect = describeEffect(a.result);
+  const verified = a.verification?.verified;
+
+  return (
+    <div className="apv-proof">
+      <div className="apv-proof-line">
+        <span className="apv-proof-backend">{backendLabel}</span>
+        {a.executed_at && <span className="apv-proof-time">{fmtTime(a.executed_at)}</span>}
+      </div>
+      {effect && <div className="apv-proof-effect">{effect}</div>}
+      <div className={verified ? "apv-proof-verified" : "apv-proof-unverified"}>
+        {verified ? `✓ Verified${a.verification?.at ? ` ${fmtTime(a.verification.at)}` : ""}` : "Not independently verified"}
+      </div>
+    </div>
+  );
 }
 
 function Kpi({ label, value, tone }: { label: string; value: number; tone: "ok" | "warn" | "crit" }) {

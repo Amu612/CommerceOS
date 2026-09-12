@@ -3,7 +3,7 @@ import IngestionControlBar, { IngestionStatus } from "./IngestionControlBar";
 import "./OrdersAgentDashboard.css";
 import "./DomainAgentView.css";
 import { renderMarkdown } from "./lib/markdown";
-import { humanizeToolName } from "./lib/format";
+import { humanizeToolName, humanizeMethod } from "./lib/format";
 
 const ORDERS_SUGGESTIONS = [
   "What is the delay rate?",
@@ -377,6 +377,26 @@ function EmptyState({ title, message }: { title: string; message: string }) {
   );
 }
 
+const INTENT_LABEL: Record<string, string> = {
+  order_status: "Order Lookup",
+  product_lookup: "Product Lookup",
+  search_orders: "Search",
+  analytics_query: "Pipeline Analytics",
+  order_value_query: "Order Value",
+  order_period_query: "Order Volume",
+  shipping_tracking: "Tracking",
+  return_request: "Return",
+  return_policy: "Policy",
+  general: "Answer",
+  not_estimable: "Not Estimable",
+};
+
+function humanizeIntent(intent?: string | null, success?: boolean): string {
+  if (success === false) return "Error";
+  if (!intent) return "Answer";
+  return INTENT_LABEL[intent] ?? intent.replace(/_/g, " ");
+}
+
 function DataStatusBadge({ status }: { status?: string | null }) {
   if (!status) return null;
   const s = status.toUpperCase();
@@ -408,9 +428,15 @@ function ProvenanceBadge({
   return (
     <div className="provenance-tag">
       {sampleCount !== undefined && sampleCount !== null && (
-        <span className="prov-sample">n={sampleCount.toLocaleString()}</span>
+        <span className="prov-sample" title="Sample size this figure is based on">
+          {sampleCount.toLocaleString()} orders
+        </span>
       )}
-      {method && <span className="prov-method">{method}</span>}
+      {method && (
+        <span className="prov-method" title={`Statistical method: ${method}`}>
+          {humanizeMethod(method)}
+        </span>
+      )}
     </div>
   );
 }
@@ -467,7 +493,12 @@ export default function OrdersAgentDashboard({
   const [ingestionLoading, setIngestionLoading] = useState(false);
 
   const fetchIngestionStatus = useCallback(async () => {
-    if (!effectiveIngestionUrl) return;
+    // Ingestion status is SUPER_ADMIN-only server-side (it exposes/controls
+    // the shared dataset every agent reads); when the bar itself is hidden
+    // (the normal case — App.tsx always hides this component's copy and
+    // renders its own top-level one instead, gated the same way) there's no
+    // reason to fetch it and take a 403 for a non-super-admin orders_admin.
+    if (!effectiveIngestionUrl || hideIngestionBar) return;
     try {
       const response = await fetch(`${effectiveIngestionUrl}/status`);
       if (response.ok) {
@@ -477,7 +508,7 @@ export default function OrdersAgentDashboard({
     } catch {
       // Backend initializing
     }
-  }, [effectiveIngestionUrl]);
+  }, [effectiveIngestionUrl, hideIngestionBar]);
 
   const loadAnalysis = useCallback(
     async (manual = false, silent = false) => {
@@ -895,39 +926,39 @@ export default function OrdersAgentDashboard({
           ) : (
             <div className="queue-layout">
               <div className="queue-stat-grid">
-                <div>
-                  <span>Median</span>
+                <div title="Median wait (P50) — half of pending orders are younger than this">
+                  <span>Typical Wait</span>
                   <strong>{formatHours(pending_queue.median_age_hours)}</strong>
                 </div>
 
-                <div>
-                  <span>P75</span>
+                <div title="75th percentile (P75) — 1 in 4 pending orders is older than this">
+                  <span>Above Average</span>
                   <strong>{formatHours(pending_queue.p75_age_hours)}</strong>
                 </div>
 
-                <div>
-                  <span>P90</span>
+                <div title="90th percentile (P90) — 1 in 10 pending orders is older than this">
+                  <span>High</span>
                   <strong>{formatHours(pending_queue.p90_age_hours)}</strong>
                 </div>
 
-                <div>
-                  <span>P95</span>
+                <div title="95th percentile (P95) — 1 in 20 pending orders is older than this">
+                  <span>Very High</span>
                   <strong>{formatHours(pending_queue.p95_age_hours)}</strong>
                 </div>
 
-                <div>
-                  <span>Maximum</span>
+                <div title="The single longest-waiting pending order">
+                  <span>Longest Wait</span>
                   <strong>{formatHours(pending_queue.max_age_hours)}</strong>
                 </div>
 
-                <div>
-                  <span>Anomalous</span>
+                <div title="Orders whose age is a statistical outlier (beyond the Tukey fence below), not just unusually large">
+                  <span>Unusual Cases</span>
                   <strong className="danger-number">
                     {formatNumber(pending_queue.anomalous_aging_count)}
                   </strong>
                   {pending_queue.empirical_outlier_fence_hours && (
                     <small className="fence-subtext">
-                      fence &gt;{" "}
+                      beyond{" "}
                       {formatHours(pending_queue.empirical_outlier_fence_hours)}
                     </small>
                   )}
@@ -1111,8 +1142,8 @@ export default function OrdersAgentDashboard({
               </strong>
             </div>
 
-            <div className="fulfillment-card">
-              <span>P90 Processing</span>
+            <div className="fulfillment-card" title="90th percentile (P90) processing time — 1 in 10 orders takes longer than this">
+              <span>Slowest 10%</span>
               <strong>
                 {formatHours(
                   fulfillment_health.p90_processing_hours ??
@@ -1524,26 +1555,38 @@ export default function OrdersAgentDashboard({
               )}
               {chat.map((m, i) => (
                 <div key={i} className={"dav-msg " + (m.role === "user" ? "dav-msg-user" : "dav-msg-agent")}>
-                  {m.role === "agent" && (
-                    <span className={"dav-msg-tag " + (m.success === false ? "dav-tag-det" : "dav-tag-llm")}>
-                      {m.intent ?? (m.success === false ? "error" : "answer")}
-                    </span>
-                  )}
-                  <div className="dav-msg-body">{renderMarkdown(m.text) ?? m.text}</div>
-                  {m.order_id && (
-                    <div className="order-reference">
-                      Order ID: <strong>{m.order_id}</strong>
-                    </div>
-                  )}
-                  {Boolean(m.raw_data) && (
-                    <details>
-                      <summary>Raw tool data</summary>
-                      <pre>{JSON.stringify(m.raw_data, null, 2)}</pre>
-                    </details>
-                  )}
+                  <div className="dav-msg-avatar" aria-hidden="true">{m.role === "user" ? "U" : "O"}</div>
+                  <div className="dav-msg-col">
+                    {m.role === "agent" && (
+                      <span className={"dav-msg-tag " + (m.success === false ? "dav-tag-det" : "dav-tag-llm")}>
+                        {humanizeIntent(m.intent, m.success)}
+                      </span>
+                    )}
+                    <div className="dav-msg-body">{renderMarkdown(m.text) ?? m.text}</div>
+                    {m.order_id && (
+                      <div className="order-reference">
+                        Order ID: <strong>{m.order_id}</strong>
+                      </div>
+                    )}
+                    {Boolean(m.raw_data) && (
+                      <details>
+                        <summary>Raw tool data</summary>
+                        <pre>{JSON.stringify(m.raw_data, null, 2)}</pre>
+                      </details>
+                    )}
+                  </div>
                 </div>
               ))}
-              {queryLoading && <div className="dav-msg dav-msg-agent"><div className="dav-msg-body">…thinking</div></div>}
+              {queryLoading && (
+                <div className="dav-msg dav-msg-agent">
+                  <div className="dav-msg-avatar" aria-hidden="true">O</div>
+                  <div className="dav-msg-col">
+                    <div className="dav-msg-body">
+                      <span className="dav-msg-thinking"><span /><span /><span /></span>
+                    </div>
+                  </div>
+                </div>
+              )}
             </div>
             <div className="dav-input-row">
               <input

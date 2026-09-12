@@ -151,20 +151,17 @@ function formatCurrency(value: unknown): string {
   const number = toNumber(value);
 
   if (number === null) {
-    return "₹0.00";
+    return "R$0.00";
   }
 
   return new Intl.NumberFormat("en-US", {
     style: "currency",
-    currency: "INR",
+    currency: "BRL",
     maximumFractionDigits: 2,
   }).format(number);
 }
 
-function extractArray<T>(
-  response: AgentResponse,
-  keys: string[]
-): T[] {
+function extractArray<T>(response: AgentResponse, keys: string[]): T[] {
   for (const key of keys) {
     const value = response[key];
 
@@ -188,9 +185,7 @@ function getProductId(product: InventoryProduct) {
   return product.id ?? product.product_id ?? product.sku ?? "P-1001";
 }
 
-function getRecommendationQuantity(
-  recommendation: ReorderRecommendation
-): number | null {
+function getRecommendationQuantity(recommendation: ReorderRecommendation): number | null {
   return (
     toNumber(recommendation.suggested_quantity) ??
     toNumber(recommendation.recommended_quantity) ??
@@ -226,9 +221,7 @@ export default function InventoryAgentView({
   const [asking, setAsking] = useState(false);
   const chatRef = useRef<HTMLDivElement | null>(null);
 
-  const [selectedProduct, setSelectedProduct] = useState<
-    string | number | null
-  >(null);
+  const [selectedProduct, setSelectedProduct] = useState<string | number | null>(null);
 
   const runMonitor = useCallback(async () => {
     try {
@@ -243,9 +236,7 @@ export default function InventoryAgentView({
 
       if (!response.ok) {
         const message = await response.text();
-        throw new Error(
-          message || `Inventory API returned ${response.status}`
-        );
+        throw new Error(message || `Inventory API returned ${response.status}`);
       }
 
       const result = (await response.json()) as AgentResponse;
@@ -253,11 +244,7 @@ export default function InventoryAgentView({
       setData(result);
       setLastUpdated(new Date());
     } catch (err) {
-      setError(
-        err instanceof Error
-          ? err.message
-          : "Unable to load inventory agent data."
-      );
+      setError(err instanceof Error ? err.message : "Unable to load inventory agent data.");
     } finally {
       setLoading(false);
       setMonitoring(false);
@@ -272,7 +259,9 @@ export default function InventoryAgentView({
   const ask = async (raw: string) => {
     const q = raw.trim();
     if (!q || asking) return;
-    const history = chat.slice(-6).map((m) => ({ role: m.role === "user" ? "user" : "assistant", text: m.text }));
+    const history = chat
+      .slice(-6)
+      .map((m) => ({ role: m.role === "user" ? "user" : "assistant", text: m.text }));
     setChat((c) => [...c, { role: "user", text: q }]);
     setInput("");
     setAsking(true);
@@ -287,7 +276,8 @@ export default function InventoryAgentView({
         throw new Error(message || `Inventory query returned ${response.status}`);
       }
       const result = (await response.json()) as AgentResponse & { llm_backed?: boolean };
-      const outputText = typeof result.output === "string" ? result.output : JSON.stringify(result, null, 2);
+      const outputText =
+        typeof result.output === "string" ? result.output : JSON.stringify(result, null, 2);
       setChat((c) => [...c, { role: "agent", text: outputText, llm: result.llm_backed }]);
     } catch (err) {
       const msg = err instanceof Error ? err.message : "Inventory agent query failed.";
@@ -325,12 +315,8 @@ export default function InventoryAgentView({
 
   const products = useMemo(
     () =>
-      extractArray<InventoryProduct>(data ?? {}, [
-        "low_stock_products",
-        "products",
-        "inventory",
-      ]),
-    [data]
+      extractArray<InventoryProduct>(data ?? {}, ["low_stock_products", "products", "inventory"]),
+    [data],
   );
 
   const recommendations = useMemo(
@@ -340,52 +326,34 @@ export default function InventoryAgentView({
         "reorder_suggestions",
         "reorderRecommendations",
       ]),
-    [data]
+    [data],
   );
 
   const salesAnalysis = useMemo(
     () =>
-      extractArray<SalesAnalysis>(data ?? {}, [
-        "sales_analysis",
-        "salesAnalysis",
-        "sales_trends",
-      ]),
-    [data]
+      extractArray<SalesAnalysis>(data ?? {}, ["sales_analysis", "salesAnalysis", "sales_trends"]),
+    [data],
   );
 
   const alerts = useMemo(
-    () =>
-      extractArray<InventoryAlert>(data ?? {}, [
-        "alerts",
-        "inventory_alerts",
-      ]),
-    [data]
+    () => extractArray<InventoryAlert>(data ?? {}, ["alerts", "inventory_alerts"]),
+    [data],
   );
 
   const actions = useMemo(
-    () =>
-      extractArray<InventoryAction>(data ?? {}, [
-        "actions",
-        "executed_actions",
-      ]),
-    [data]
+    () => extractArray<InventoryAction>(data ?? {}, ["actions", "executed_actions"]),
+    [data],
   );
 
   const toolCalls = useMemo(
-    () =>
-      extractArray<ToolCall>(data ?? {}, [
-        "tool_calls",
-        "toolCalls",
-      ]),
-    [data]
+    () => extractArray<ToolCall>(data ?? {}, ["tool_calls", "toolCalls"]),
+    [data],
   );
 
   const metrics = data?.metrics ?? {};
 
   const totalProducts =
-    toNumber(metrics.total_products) ??
-    toNumber(metrics.totalProducts) ??
-    products.length;
+    toNumber(metrics.total_products) ?? toNumber(metrics.totalProducts) ?? products.length;
 
   const lowStockCount =
     toNumber(metrics.low_stock_count) ??
@@ -393,9 +361,7 @@ export default function InventoryAgentView({
     products.filter((p) => (getStock(p) ?? Infinity) < 50).length;
 
   const reorderCount =
-    toNumber(metrics.reorder_count) ??
-    toNumber(metrics.reorderCount) ??
-    recommendations.length;
+    toNumber(metrics.reorder_count) ?? toNumber(metrics.reorderCount) ?? recommendations.length;
 
   const inventoryValue =
     toNumber(metrics.inventory_value) ??
@@ -412,9 +378,7 @@ export default function InventoryAgentView({
             <span>Inventory Agent</span>
           </div>
 
-          <h2 className="inv-header-title">
-            Smart Inventory Watchdog
-          </h2>
+          <h2 className="inv-header-title">Smart Inventory Watchdog</h2>
 
           <p className="inv-header-desc">
             Live inventory monitoring, demand velocity profiling, and automated reorder triggers.
@@ -440,7 +404,17 @@ export default function InventoryAgentView({
 
       {/* Error */}
       {error && (
-        <div style={{ marginTop: "16px", padding: "14px 18px", borderRadius: "12px", background: "var(--status-danger-bg)", border: "1px solid rgba(185, 28, 28, 0.35)", color: "var(--status-danger)", fontSize: "13px" }}>
+        <div
+          style={{
+            marginTop: "16px",
+            padding: "14px 18px",
+            borderRadius: "12px",
+            background: "var(--status-danger-bg)",
+            border: "1px solid rgba(185, 28, 28, 0.35)",
+            color: "var(--status-danger)",
+            fontSize: "13px",
+          }}
+        >
           <strong>Inventory Agent note:</strong> {error}
         </div>
       )}
@@ -480,9 +454,7 @@ export default function InventoryAgentView({
             subtitle="Latest empirical evaluation generated by the Smart Inventory Watchdog"
           />
 
-          <div className="inv-output-box">
-            {renderMarkdown(data.output) ?? data.output}
-          </div>
+          <div className="inv-output-box">{renderMarkdown(data.output) ?? data.output}</div>
         </div>
       )}
 
@@ -513,7 +485,9 @@ export default function InventoryAgentView({
               >
                 <div>
                   <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-                    <span style={{ fontWeight: 700, color: "var(--text-primary)", fontSize: "14px" }}>
+                    <span
+                      style={{ fontWeight: 700, color: "var(--text-primary)", fontSize: "14px" }}
+                    >
                       {alert.name ?? alert.sku ?? `Product ${alert.product_id ?? ""}`}
                     </span>
 
@@ -524,9 +498,18 @@ export default function InventoryAgentView({
                           padding: "2px 8px",
                           fontSize: "11px",
                           fontWeight: 700,
-                          background: alert.severity === "CRITICAL" ? "var(--status-danger-bg)" : "var(--status-warning-bg)",
-                          color: alert.severity === "CRITICAL" ? "var(--status-danger)" : "var(--status-warning)",
-                          border: alert.severity === "CRITICAL" ? "1px solid rgba(185, 28, 28, 0.3)" : "1px solid rgba(180, 83, 9, 0.3)",
+                          background:
+                            alert.severity === "CRITICAL"
+                              ? "var(--status-danger-bg)"
+                              : "var(--status-warning-bg)",
+                          color:
+                            alert.severity === "CRITICAL"
+                              ? "var(--status-danger)"
+                              : "var(--status-warning)",
+                          border:
+                            alert.severity === "CRITICAL"
+                              ? "1px solid rgba(185, 28, 28, 0.3)"
+                              : "1px solid rgba(180, 83, 9, 0.3)",
                         }}
                       >
                         {alert.severity}
@@ -534,12 +517,20 @@ export default function InventoryAgentView({
                     )}
                   </div>
 
-                  <p style={{ margin: "8px 0 0 0", fontSize: "13px", color: "var(--text-secondary)" }}>
+                  <p
+                    style={{
+                      margin: "8px 0 0 0",
+                      fontSize: "13px",
+                      color: "var(--text-secondary)",
+                    }}
+                  >
                     {alert.message ?? alert.reason ?? "Inventory alert"}
                   </p>
                 </div>
 
-                <span style={{ fontSize: "11px", color: "var(--text-muted)", whiteSpace: "nowrap" }}>
+                <span
+                  style={{ fontSize: "11px", color: "var(--text-muted)", whiteSpace: "nowrap" }}
+                >
                   {alert.timestamp ?? alert.created_at ?? ""}
                 </span>
               </div>
@@ -581,11 +572,7 @@ export default function InventoryAgentView({
                       <td>
                         <button
                           onClick={() =>
-                            setSelectedProduct(
-                              selectedProduct === productId
-                                ? null
-                                : productId
-                            )
+                            setSelectedProduct(selectedProduct === productId ? null : productId)
                           }
                           style={{
                             background: "none",
@@ -610,7 +597,13 @@ export default function InventoryAgentView({
                       </td>
 
                       <td>
-                        <span style={{ fontWeight: 700, color: (stock ?? 0) < 50 ? "var(--status-warning)" : "var(--status-success)" }}>
+                        <span
+                          style={{
+                            fontWeight: 700,
+                            color:
+                              (stock ?? 0) < 50 ? "var(--status-warning)" : "var(--status-success)",
+                          }}
+                        >
                           {formatNumber(stock)}
                         </span>
                       </td>
@@ -620,11 +613,8 @@ export default function InventoryAgentView({
                       </td>
 
                       <td>
-                        {product.reorder_required ||
-                        product.reorder_flag ? (
-                          <span className="inv-badge-reorder">
-                            Reorder Triggered
-                          </span>
+                        {product.reorder_required || product.reorder_flag ? (
+                          <span className="inv-badge-reorder">Reorder Triggered</span>
                         ) : (
                           <span style={{ fontSize: "11px", color: "var(--status-success)" }}>
                             Optimal Stock
@@ -673,15 +663,11 @@ export default function InventoryAgentView({
                     </td>
 
                     <td style={{ color: "var(--text-secondary)" }}>
-                      {formatNumber(
-                        item.current_stock ?? item.stock_quantity
-                      )}
+                      {formatNumber(item.current_stock ?? item.stock_quantity)}
                     </td>
 
                     <td style={{ color: "var(--text-secondary)" }}>
-                      {formatNumber(
-                        item.daily_sales ?? item.average_daily_sales
-                      )}
+                      {formatNumber(item.daily_sales ?? item.average_daily_sales)}
                     </td>
 
                     <td style={{ color: "var(--text-secondary)" }}>
@@ -701,9 +687,7 @@ export default function InventoryAgentView({
                     </td>
 
                     <td style={{ color: "var(--text-secondary)" }}>
-                      {formatCurrency(
-                        item.estimated_cost ?? item.supplier_unit_cost
-                      )}
+                      {formatCurrency(item.estimated_cost ?? item.supplier_unit_cost)}
                     </td>
                   </tr>
                 ))}
@@ -723,7 +707,14 @@ export default function InventoryAgentView({
         {salesAnalysis.length === 0 ? (
           <EmptyState message="No sales-analysis records returned." />
         ) : (
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))", gap: "16px", marginTop: "16px" }}>
+          <div
+            style={{
+              display: "grid",
+              gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))",
+              gap: "16px",
+              marginTop: "16px",
+            }}
+          >
             {salesAnalysis.map((item, index) => (
               <div
                 key={`${item.product_id ?? item.sku ?? index}`}
@@ -734,34 +725,28 @@ export default function InventoryAgentView({
                   padding: "16px",
                 }}
               >
-                <h4 style={{ margin: "0 0 12px 0", fontSize: "14px", fontWeight: 600, color: "var(--text-primary)" }}>
-                  {item.name ??
-                    item.sku ??
-                    `Product ${item.product_id ?? ""}`}
+                <h4
+                  style={{
+                    margin: "0 0 12px 0",
+                    fontSize: "14px",
+                    fontWeight: 600,
+                    color: "var(--text-primary)",
+                  }}
+                >
+                  {item.name ?? item.sku ?? `Product ${item.product_id ?? ""}`}
                 </h4>
 
                 <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "10px" }}>
-                  <MiniMetric
-                    label="Total Sales"
-                    value={formatNumber(item.total_sales)}
-                  />
+                  <MiniMetric label="Total Sales" value={formatNumber(item.total_sales)} />
 
                   <MiniMetric
                     label="Daily Sales"
-                    value={formatNumber(
-                      item.average_daily_sales ?? item.sales_velocity
-                    )}
+                    value={formatNumber(item.average_daily_sales ?? item.sales_velocity)}
                   />
 
-                  <MiniMetric
-                    label="Trajectory"
-                    value={item.trend ?? "STABLE"}
-                  />
+                  <MiniMetric label="Trajectory" value={item.trend ?? "STABLE"} />
 
-                  <MiniMetric
-                    label="Reorder Qty"
-                    value={formatNumber(item.reorder_quantity)}
-                  />
+                  <MiniMetric label="Reorder Qty" value={formatNumber(item.reorder_quantity)} />
                 </div>
               </div>
             ))}
@@ -794,12 +779,21 @@ export default function InventoryAgentView({
                 }}
               >
                 <div>
-                  <p style={{ margin: 0, fontSize: "13px", fontWeight: 600, color: "var(--text-primary)" }}>
+                  <p
+                    style={{
+                      margin: 0,
+                      fontSize: "13px",
+                      fontWeight: 600,
+                      color: "var(--text-primary)",
+                    }}
+                  >
                     {action.action ?? action.message ?? "Inventory action"}
                   </p>
 
                   {action.product_id !== undefined && (
-                    <p style={{ margin: "4px 0 0 0", fontSize: "11px", color: "var(--text-muted)" }}>
+                    <p
+                      style={{ margin: "4px 0 0 0", fontSize: "11px", color: "var(--text-muted)" }}
+                    >
                       Product: {String(action.product_id)}
                     </p>
                   )}
@@ -831,16 +825,31 @@ export default function InventoryAgentView({
             </div>
           )}
           {chat.map((m, i) => (
-            <div key={i} className={"dav-msg " + (m.role === "user" ? "dav-msg-user" : "dav-msg-agent")}>
-              {m.role === "agent" && (
-                <span className={"dav-msg-tag " + (m.llm ? "dav-tag-llm" : "dav-tag-det")}>
-                  {m.llm ? "LLM" : "deterministic"}
-                </span>
-              )}
-              <div className="dav-msg-body">{renderMarkdown(m.text) ?? m.text}</div>
+            <div
+              key={i}
+              className={"dav-msg " + (m.role === "user" ? "dav-msg-user" : "dav-msg-agent")}
+            >
+              <div className="dav-msg-avatar" aria-hidden="true">{m.role === "user" ? "U" : "I"}</div>
+              <div className="dav-msg-col">
+                {m.role === "agent" && (
+                  <span className={"dav-msg-tag " + (m.llm ? "dav-tag-llm" : "dav-tag-det")}>
+                    {m.llm ? "AI Reasoned" : "Data Lookup"}
+                  </span>
+                )}
+                <div className="dav-msg-body">{renderMarkdown(m.text) ?? m.text}</div>
+              </div>
             </div>
           ))}
-          {asking && <div className="dav-msg dav-msg-agent"><div className="dav-msg-body">…thinking</div></div>}
+          {asking && (
+            <div className="dav-msg dav-msg-agent">
+              <div className="dav-msg-avatar" aria-hidden="true">I</div>
+              <div className="dav-msg-col">
+                <div className="dav-msg-body">
+                  <span className="dav-msg-thinking"><span /><span /><span /></span>
+                </div>
+              </div>
+            </div>
+          )}
         </div>
         <div className="dav-input-row">
           <input
@@ -850,7 +859,11 @@ export default function InventoryAgentView({
             onKeyDown={(e) => e.key === "Enter" && ask(input)}
             placeholder="Ask the Inventory Agent…"
           />
-          <button className="dav-btn dav-btn-primary" disabled={asking || !input.trim()} onClick={() => ask(input)}>
+          <button
+            className="dav-btn dav-btn-primary"
+            disabled={asking || !input.trim()}
+            onClick={() => ask(input)}
+          >
             {asking ? "…" : "Send"}
           </button>
         </div>
@@ -875,15 +888,39 @@ export default function InventoryAgentView({
                   overflow: "hidden",
                 }}
               >
-                <summary style={{ padding: "12px 16px", cursor: "pointer", fontWeight: 600, fontSize: "13px", color: "var(--text-primary)" }}>
+                <summary
+                  style={{
+                    padding: "12px 16px",
+                    cursor: "pointer",
+                    fontWeight: 600,
+                    fontSize: "13px",
+                    color: "var(--text-primary)",
+                  }}
+                >
                   🔧 {humanizeToolName(call.tool ?? call.name ?? `Step ${index + 1}`)}
                 </summary>
 
-                <div style={{ borderTop: "1px solid var(--border)", padding: "14px 16px", background: "var(--bg-sunken)", fontSize: "12.5px", color: "var(--text-secondary)", lineHeight: 1.6 }}>
+                <div
+                  style={{
+                    borderTop: "1px solid var(--border)",
+                    padding: "14px 16px",
+                    background: "var(--bg-sunken)",
+                    fontSize: "12.5px",
+                    color: "var(--text-secondary)",
+                    lineHeight: 1.6,
+                  }}
+                >
                   {typeof call.output === "string" ? (
-                    renderMarkdown(call.output) ?? call.output
+                    (renderMarkdown(call.output) ?? call.output)
                   ) : (
-                    <pre style={{ margin: 0, fontSize: "11px", whiteSpace: "pre-wrap", overflowX: "auto" }}>
+                    <pre
+                      style={{
+                        margin: 0,
+                        fontSize: "11px",
+                        whiteSpace: "pre-wrap",
+                        overflowX: "auto",
+                      }}
+                    >
                       {JSON.stringify(call.output, null, 2)}
                     </pre>
                   )}
@@ -908,69 +945,62 @@ function MetricCard({
 }) {
   return (
     <div className="inv-card">
-      <p className="inv-card-title">
-        {title}
-      </p>
+      <p className="inv-card-title">{title}</p>
 
-      <p className="inv-card-value">
-        {value}
-      </p>
+      <p className="inv-card-value">{value}</p>
 
-      <p className="inv-card-desc">
-        {description}
-      </p>
+      <p className="inv-card-desc">{description}</p>
     </div>
   );
 }
 
-function MiniMetric({
-  label,
-  value,
-}: {
-  label: string;
-  value: string;
-}) {
+function MiniMetric({ label, value }: { label: string; value: string }) {
   return (
-    <div style={{ background: "var(--bg-surface)", border: "1px solid var(--border)", borderRadius: "8px", padding: "10px" }}>
-      <p style={{ margin: 0, fontSize: "10px", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.08em", color: "var(--text-muted)" }}>
+    <div
+      style={{
+        background: "var(--bg-surface)",
+        border: "1px solid var(--border)",
+        borderRadius: "8px",
+        padding: "10px",
+      }}
+    >
+      <p
+        style={{
+          margin: 0,
+          fontSize: "10px",
+          fontWeight: 700,
+          textTransform: "uppercase",
+          letterSpacing: "0.08em",
+          color: "var(--text-muted)",
+        }}
+      >
         {label}
       </p>
 
-      <p style={{ margin: "4px 0 0 0", fontSize: "13px", fontWeight: 700, color: "var(--text-primary)" }}>
+      <p
+        style={{
+          margin: "4px 0 0 0",
+          fontSize: "13px",
+          fontWeight: 700,
+          color: "var(--text-primary)",
+        }}
+      >
         {value}
       </p>
     </div>
   );
 }
 
-function SectionTitle({
-  title,
-  subtitle,
-}: {
-  title: string;
-  subtitle: string;
-}) {
+function SectionTitle({ title, subtitle }: { title: string; subtitle: string }) {
   return (
     <div className="inv-section-header">
-      <h3 className="inv-section-title">
-        {title}
-      </h3>
+      <h3 className="inv-section-title">{title}</h3>
 
-      <p className="inv-section-subtitle">
-        {subtitle}
-      </p>
+      <p className="inv-section-subtitle">{subtitle}</p>
     </div>
   );
 }
 
-function EmptyState({
-  message,
-}: {
-  message: string;
-}) {
-  return (
-    <div className="inv-empty">
-      {message}
-    </div>
-  );
+function EmptyState({ message }: { message: string }) {
+  return <div className="inv-empty">{message}</div>;
 }

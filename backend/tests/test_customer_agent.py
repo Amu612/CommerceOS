@@ -59,7 +59,7 @@ def test_05_billing_uses_db():
         oid = db.query(DataCoOrder.order_id).first() or db.query(Order.order_id).first()
         assert oid is not None, "no orders seeded"
         text, recs = CustomerSupportTools.billing_lookup(str(oid[0]), db=db)
-        assert "₹" in text  # store currency is INR (₹)
+        assert "R$" in text  # store currency is BRL (R$) — Olist/DataCo is Brazilian
     finally:
         db.close()
 

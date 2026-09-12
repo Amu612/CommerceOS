@@ -7,6 +7,7 @@ from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
+from app.core import rbac
 from app.core.security import create_access_token, create_refresh_token, decode_token
 from app.database.session import get_db
 from app.exceptions.base import AuthenticationException
@@ -34,12 +35,23 @@ class RefreshRequest(BaseModel):
 
 
 def _user_public(user: User) -> dict:
+    """
+    The single payload the frontend renders its nav and route guards from —
+    `permitted_agents` / `can_access_orchestrator` come straight from
+    `app.core.rbac`, the same module every backend route dependency reads,
+    so the UI can never drift out of sync with what the server will actually
+    allow (it also means a client bug can only ever hide too much, never
+    grant access the API itself would refuse).
+    """
     return {
         "id": user.id,
         "username": user.username,
         "email": user.email,
         "role": user.role.value,
         "is_active": user.is_active,
+        "permitted_agents": rbac.permitted_agents(user.role),
+        "can_access_orchestrator": rbac.can_access_orchestrator(user.role),
+        "is_super_admin": rbac.is_super_admin(user.role),
     }
 
 

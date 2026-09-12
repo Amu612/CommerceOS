@@ -349,6 +349,10 @@ class OrdersTools:
                 .filter(
                     Order.order_purchase_timestamp <= sim_clock,
                 )
+                # Most-recent-first — an unordered LIMIT would otherwise
+                # silently sample the oldest rows after a chronological
+                # import, biasing every percentile computed from this list.
+                .order_by(Order.order_purchase_timestamp.desc())
                 .limit(limit)
                 .all()
             )
@@ -371,6 +375,7 @@ class OrdersTools:
                     DataCoOrder.order_date <= sim_clock,
                     DataCoOrder.shipping_date.isnot(None),
                 )
+                .order_by(DataCoOrder.order_date.desc())
                 .limit(limit)
                 .all()
             )
@@ -725,6 +730,7 @@ class OrdersTools:
                     Order.order_delivered_customer_date.isnot(None),
                     Order.order_delivered_customer_date <= sim_clock,
                 )
+                .order_by(Order.order_purchase_timestamp.desc())
                 .limit(limit)
                 .all()
             )
@@ -747,6 +753,7 @@ class OrdersTools:
                     DataCoOrder.order_date <= sim_clock,
                     DataCoOrder.days_for_shipping_real.isnot(None),
                 )
+                .order_by(DataCoOrder.order_date.desc())
                 .limit(limit)
                 .all()
             )
@@ -1591,6 +1598,146 @@ class OrdersTools:
         )
 
     @staticmethod
+    def get_order_value_stats(db: Optional[Session] = None) -> Dict[str, Any]:
+        """
+        Average order value, computed the standard way: total amount paid across
+        all orders, divided by the number of orders — never per customer (that's
+        a different metric, customer lifetime value). Olist's payment amount is
+        `order_payments.payment_value` (an order can have several installment
+        rows, so those are summed per order first); DataCo's is `order_total`.
+        Also returns the most-used payment method.
+        """
+        from app.database.session import SessionLocal
+        from app.models.olist import OrderPayment
+
+        should_close = False
+        if db is None:
+            db = SessionLocal()
+            should_close = True
+        try:
+            sim_clock = get_simulated_clock(db)
+
+            olist_order_ids = [
+                r[0] for r in db.query(Order.order_id).filter(Order.order_purchase_timestamp <= sim_clock).all()
+            ]
+            olist_total = 0.0
+            olist_count = 0
+            payment_counts: Dict[str, int] = {}
+            if olist_order_ids:
+                # per-order payment total (sums installment rows for the same order)
+                per_order = dict(
+                    db.query(OrderPayment.order_id, func.sum(OrderPayment.payment_value))
+                    .filter(OrderPayment.order_id.in_(olist_order_ids))
+                    .group_by(OrderPayment.order_id)
+                    .all()
+                )
+                olist_total = sum(float(v or 0.0) for v in per_order.values())
+                olist_count = len(per_order)
+                for method, cnt in (
+                    db.query(OrderPayment.payment_type, func.count(func.distinct(OrderPayment.order_id)))
+                    .filter(OrderPayment.order_id.in_(olist_order_ids))
+                    .group_by(OrderPayment.payment_type)
+                    .all()
+                ):
+                    payment_counts[method or "unknown"] = payment_counts.get(method or "unknown", 0) + int(cnt)
+
+            dc_row = (
+                db.query(func.count(DataCoOrder.order_id), func.coalesce(func.sum(DataCoOrder.order_total), 0.0))
+                .filter(DataCoOrder.order_date <= sim_clock)
+                .first()
+            )
+            dc_count, dc_total = (int(dc_row[0]), float(dc_row[1])) if dc_row else (0, 0.0)
+            if dc_count:
+                for method, cnt in (
+                    db.query(DataCoOrder.payment_type, func.count(DataCoOrder.order_id))
+                    .filter(DataCoOrder.order_date <= sim_clock)
+                    .group_by(DataCoOrder.payment_type)
+                    .all()
+                ):
+                    payment_counts[method or "unknown"] = payment_counts.get(method or "unknown", 0) + int(cnt)
+
+            total_orders = olist_count + dc_count
+            total_value = olist_total + dc_total
+            if total_orders == 0:
+                return {"status": "NOT_ESTIMABLE", "sample_count": 0}
+
+            top_method, top_method_count = (
+                max(payment_counts.items(), key=lambda kv: kv[1]) if payment_counts else (None, 0)
+            )
+            return {
+                "status": "OK",
+                "sample_count": total_orders,
+                "total_orders": total_orders,
+                "total_order_value": round(total_value, 2),
+                "average_order_value": round(total_value / total_orders, 2),
+                "top_payment_method": top_method,
+                "top_payment_method_count": top_method_count,
+                "top_payment_method_share_pct": round(top_method_count / total_orders * 100, 2) if top_method else 0.0,
+                "payment_method_breakdown": sorted(
+                    [{"payment_method": k, "orders": v, "share_pct": round(v / total_orders * 100, 2)} for k, v in payment_counts.items()],
+                    key=lambda r: -r["orders"],
+                ),
+            }
+        finally:
+            if should_close:
+                db.close()
+
+    @staticmethod
+    def get_orders_by_period(group_by: str = "month", db: Optional[Session] = None) -> Dict[str, Any]:
+        """
+        Order counts grouped by calendar month ("2017-09") or year ("2017"),
+        blending Olist + DataCo, up to the simulated clock — answers "how many
+        orders in <month>", "top N months by orders", "compare <year> vs <year>".
+        """
+        from app.database.session import SessionLocal
+
+        should_close = False
+        if db is None:
+            db = SessionLocal()
+            should_close = True
+        try:
+            sim_clock = get_simulated_clock(db)
+            fmt = "%Y" if group_by == "year" else "%Y-%m"
+            counts: Dict[str, int] = {}
+
+            for period, cnt in (
+                db.query(func.strftime(fmt, Order.order_purchase_timestamp), func.count(Order.order_id))
+                .filter(Order.order_purchase_timestamp <= sim_clock)
+                .group_by(func.strftime(fmt, Order.order_purchase_timestamp))
+                .all()
+            ):
+                if period:
+                    counts[period] = counts.get(period, 0) + int(cnt)
+
+            for period, cnt in (
+                db.query(func.strftime(fmt, DataCoOrder.order_date), func.count(DataCoOrder.order_id))
+                .filter(DataCoOrder.order_date <= sim_clock)
+                .group_by(func.strftime(fmt, DataCoOrder.order_date))
+                .all()
+            ):
+                if period:
+                    counts[period] = counts.get(period, 0) + int(cnt)
+
+            if not counts:
+                return {"status": "NOT_ESTIMABLE", "sample_count": 0}
+
+            rows = sorted(
+                [{"period": k, "order_count": v} for k, v in counts.items()],
+                key=lambda r: -r["order_count"],
+            )
+            return {
+                "status": "OK",
+                "sample_count": sum(counts.values()),
+                "group_by": group_by,
+                "periods": rows,
+                "top_period": rows[0]["period"] if rows else None,
+                "top_period_count": rows[0]["order_count"] if rows else 0,
+            }
+        finally:
+            if should_close:
+                db.close()
+
+    @staticmethod
     def initiate_return(order_id: str, reason: str, db: Optional[Session] = None) -> ReturnRequestResult:
         import uuid
         detail = OrdersTools.lookup_order(order_id, db=db)
@@ -1630,7 +1777,7 @@ def tool_lookup_order(order_id: str) -> str:
         return f"❌ Order #{order_id} not found in database."
 
     items_str = "\n".join(
-        f"  • {it.product_name} x{it.quantity} — ₹{it.price:.2f}"
+        f"  • {it.product_name} x{it.quantity} — R${it.price:.2f}"
         for it in detail.items
     ) if detail.items else "  • 1x Order fulfillment package (itemized details pending in active batch)"
     review = _lookup_order_review(detail.order_id)
@@ -1639,7 +1786,7 @@ def tool_lookup_order(order_id: str) -> str:
         f"📦 **Order #{detail.order_id}**\n"
         f"👤 Customer: `#{detail.customer_id[:16]}` ({detail.customer_city or 'City'}, {detail.customer_state or 'ST'})\n"
         f"📌 Status: **{detail.status.upper()}**\n"
-        f"💰 Total Value: **₹{detail.total:.2f}**\n"
+        f"💰 Total Value: **R${detail.total:.2f}**\n"
         f"🚚 Tracking Number: `{detail.tracking_number}`\n"
         f"📅 Placed: {detail.purchase_timestamp[:10] if detail.purchase_timestamp else 'N/A'}\n"
         f"{review_line}"
@@ -1667,7 +1814,7 @@ def tool_lookup_product(product_id_or_keyword: str) -> str:
     parts = [f"🔍 **Found {res['count']} matching product(s) for '{product_id_or_keyword}':**\n"]
     for i, p in enumerate(res["products"], 1):
         cat = p.get("category_english") or p.get("category", "General")
-        price_str = f"₹{p['avg_price']:.2f}" if "avg_price" in p else (f"₹{p.get('price', 0):.2f}")
+        price_str = f"R${p['avg_price']:.2f}" if "avg_price" in p else (f"R${p.get('price', 0):.2f}")
         orders_str = ", ".join(f"`{oid[:8]}...`" for oid in p.get("sample_orders", [])) if p.get("sample_orders") else "None in active stream"
         orders_cnt = p.get("orders_count", 0)
         sales_status = f"Units Sold: **{orders_cnt}**" if orders_cnt > 0 else "Status: **Active in Catalog** (In Stock)"
@@ -1696,7 +1843,7 @@ def tool_search_orders(query: str) -> str:
             f"   • Status: **{o['status'].upper()}**\n"
             f"   • Date: {o.get('purchase_date', 'N/A')}\n"
             + (f"   • Product: `{o['product_id']}`\n" if "product_id" in o else "")
-            + (f"   • Total/Price: ₹{o.get('price') or o.get('total', 0):.2f}\n" if "price" in o or "total" in o else "")
+            + (f"   • Total/Price: R${o.get('price') or o.get('total', 0):.2f}\n" if "price" in o or "total" in o else "")
         )
     return "\n".join(parts)
 
@@ -1716,11 +1863,47 @@ def tool_get_analytics_summary(metric_name: str = "all") -> str:
         f"• **Total Orders**: {s['total_orders']:,} (Pending: {s['pending_orders']:,}, Completed: {s['completed_orders']:,})\n"
         f"• **Fulfillment Rate**: {s['fulfillment_rate_pct']:.1f}% | **Delay Rate**: {s['delay_rate_pct']:.1f}%\n"
         f"• **SLA Delivery Health**: **{s['sla_health']}**\n"
-        f"• **Processing Performance**: Avg: **{avg_p}** | Median: **{med_p}** | P90: **{p90_p}**\n"
+        f"• **Processing Performance**: Avg: **{avg_p}** | Median: **{med_p}** | Slowest 10%: **{p90_p}**\n"
         f"• **Delivery Performance**: Avg: **{avg_d}** | Median: **{med_d}**\n"
         f"• **Cancellation Rate**: {s['cancellation_rate_pct']:.1f}%\n"
-        f"• **Backlog Aging Risk**: {s['anomalous_aging_count']} orders beyond empirical fence"
+        f"• **Backlog Aging Risk**: {s['anomalous_aging_count']} order(s) with an unusually long wait (statistical outliers)"
     )
+
+
+@tool
+def tool_get_order_value_stats() -> str:
+    """Average order value, total order value, and the most-used payment method — computed as total amount paid across all orders divided by the number of orders. Use for 'average order value', 'AOV', 'most common payment method'."""
+    s = OrdersTools.get_order_value_stats()
+    if s.get("status") != "OK":
+        return "Not enough order/payment data has been observed yet to compute order value."
+    lines = [
+        f"Average Order Value (AOV): R${s['average_order_value']:.2f} — computed from R${s['total_order_value']:,.2f} in total payments across {s['total_orders']:,} orders.",
+    ]
+    if s.get("top_payment_method"):
+        lines.append(
+            f"Most-used payment method: **{s['top_payment_method']}** "
+            f"({s['top_payment_method_count']:,} orders, {s['top_payment_method_share_pct']}%)."
+        )
+    lines.append("Payment method breakdown:")
+    for row in s["payment_method_breakdown"][:8]:
+        lines.append(f"- {row['payment_method']}: {row['orders']:,} orders ({row['share_pct']}%)")
+    return "\n".join(lines)
+
+
+@tool
+def tool_get_orders_by_period(group_by: str = "month") -> str:
+    """Order counts grouped by calendar month or year (pass group_by='year' for a yearly view). Use for 'how many orders in <month/year>', 'top months by order volume', 'compare <year> vs <year>'."""
+    s = OrdersTools.get_orders_by_period(group_by=group_by)
+    if s.get("status") != "OK":
+        return "Not enough order data has been observed yet to break this down by period."
+    ranked = sorted(s["periods"], key=lambda r: -r["order_count"])[:10]
+    lines = [f"Order counts by {s['group_by']} (top {len(ranked)} by volume, {s['sample_count']:,} orders total):"]
+    for row in ranked:
+        lines.append(f"- {row['period']}: {row['order_count']:,} orders")
+    chrono = sorted(s["periods"], key=lambda r: r["period"])
+    lines.append("")
+    lines.append(f"Chronological ({s['group_by']}): " + ", ".join(f"{r['period']}={r['order_count']:,}" for r in chrono))
+    return "\n".join(lines)
 
 
 @tool
@@ -1768,7 +1951,7 @@ def tool_initiate_return(order_id: str, reason: str) -> str:
             f"✅ **Return Request Authorized!**\n\n"
             f"📦 Order: `#{ret.order_id}`\n"
             f"🔢 RMA Number: **{ret.rma_number}**\n"
-            f"💰 Refund Amount: **₹{ret.refund_amount:.2f}**\n"
+            f"💰 Refund Amount: **R${ret.refund_amount:.2f}**\n"
             f"📋 Reason: {ret.reason}\n"
             f"📌 Status: **{ret.status}**\n\n"
             f"ℹ️ {ret.instructions}"
@@ -1782,6 +1965,8 @@ ALL_ORDERS_TOOLS = [
     tool_lookup_product,
     tool_search_orders,
     tool_get_analytics_summary,
+    tool_get_order_value_stats,
+    tool_get_orders_by_period,
     tool_track_shipment,
     tool_get_return_policy,
     tool_check_return_eligibility,

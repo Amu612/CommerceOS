@@ -19,6 +19,8 @@ from app.agents.orders.tools import (
     tool_lookup_product,
     tool_search_orders,
     tool_get_analytics_summary,
+    tool_get_order_value_stats,
+    tool_get_orders_by_period,
     tool_track_shipment,
     tool_get_return_policy,
     tool_check_return_eligibility,
@@ -34,12 +36,13 @@ TRIAGE_PROMPT = """You are an e-commerce operations triage intelligence assistan
 Analyze the user message and extract the intent and entities as JSON:
 
 {
-    "intent": "<order_status | product_lookup | search_orders | analytics_query | shipping_tracking | return_request | return_policy | general>",
+    "intent": "<order_status | product_lookup | search_orders | analytics_query | order_value_query | order_period_query | shipping_tracking | return_request | return_policy | general>",
     "order_id": "<order ID if present, empty if none>",
     "product_id": "<product ID or product keyword if present, empty if none>",
     "search_query": "<search criteria or keyword if present, empty if none>",
     "tracking_number": "<tracking number if present, empty if none>",
     "customer_email": "<email if present, empty if none>",
+    "period_group_by": "<'year' if the question is about years, otherwise 'month'>",
     "needs_tool": true/false
 }
 
@@ -48,6 +51,8 @@ Rules:
 - "order_status": user is asking about order status or order contents/details
 - "search_orders": user wants to search orders by product, customer, or status filter
 - "analytics_query": user asks about pipeline health, delay rate, fulfillment rate, backlog aging, cancellations, or forecast
+- "order_value_query": user asks about average order value, AOV, total order/revenue value, or which payment method is most used/frequent
+- "order_period_query": user asks how many orders were placed in a given month/year, the top months/years by order count, or to compare order volume between years
 - "shipping_tracking": user asks where their package or shipment is
 - "return_request": user wants to return an item or request an RMA
 - "return_policy": user asks about return guidelines or refund policies
@@ -102,6 +107,7 @@ def triage_node(state: OrdersAgentState) -> Dict[str, Any]:
                     "search_query": str(resp.get("search_query") or ""),
                     "tracking_number": str(resp.get("tracking_number") or ""),
                     "customer_email": str(resp.get("customer_email") or ""),
+                    "period_group_by": str(resp.get("period_group_by") or "month"),
                     "error_message": "",
                 }
     except Exception as e:
@@ -254,8 +260,43 @@ def triage_node(state: OrdersAgentState) -> Dict[str, Any]:
             "error_message": "",
         }
 
-    # 5. Pipeline Analytics
-    if any(k in lower_msg for k in ["delay rate", "fulfillment rate", "sla", "processing time", "delivery time", "how many order", "how many cancel", "backlog", "forecast", "anomal", "pipeline", "performance", "metrics"]):
+    # 5a. Order value / payment method
+    if any(k in lower_msg for k in ["average order value", "avg order value", " aov", "aov ", "order value", "payment method", "most used payment", "most frequent payment", "total order value", "total revenue"]):
+        return {
+            "intent": "order_value_query",
+            "order_id": "",
+            "product_id": "",
+            "search_query": last_msg,
+            "tracking_number": "",
+            "customer_email": "",
+            "error_message": "",
+        }
+
+    # 5b. Order counts by month/year
+    if any(k in lower_msg for k in ["top month", "top year", "orders placed in", "orders were placed", "how many orders in", "orders per month", "orders per year", "orders by month", "orders by year", "compare", "busiest month", "busiest year"]) and (
+        "order" in lower_msg or "compare" in lower_msg
+    ):
+        return {
+            "intent": "order_period_query",
+            "order_id": "",
+            "product_id": "",
+            "search_query": last_msg,
+            "tracking_number": "",
+            "customer_email": "",
+            "period_group_by": "year" if any(k in lower_msg for k in ["year", "annual", "yoy"]) and "month" not in lower_msg else "month",
+            "error_message": "",
+        }
+
+    # 5c. Pipeline Analytics (delay/fulfillment/backlog — general operational health,
+    # including "how many delivered vs canceled" aggregate counts, but only when
+    # no specific order id was mentioned — an order id with those words means a
+    # question about THAT order, handled by order_status below instead).
+    aggregate_delivered_vs_cancelled = (
+        not extracted_order_id and "deliver" in lower_msg and "cancel" in lower_msg
+    )
+    if aggregate_delivered_vs_cancelled or any(
+        k in lower_msg for k in ["delay rate", "fulfillment rate", "sla", "processing time", "delivery time", "how many cancel", "backlog", "forecast", "anomal", "pipeline", "performance", "metrics"]
+    ):
         return {
             "intent": "analytics_query",
             "order_id": "",
@@ -330,6 +371,15 @@ def tool_node(state: OrdersAgentState) -> Dict[str, Any]:
         elif intent == "analytics_query":
             res = tool_get_analytics_summary.invoke({"metric_name": "all"})
             tool_results["tool_get_analytics_summary"] = str(res)
+
+        elif intent == "order_value_query":
+            res = tool_get_order_value_stats.invoke({})
+            tool_results["tool_get_order_value_stats"] = str(res)
+
+        elif intent == "order_period_query":
+            group_by = state.get("period_group_by") or "month"
+            res = tool_get_orders_by_period.invoke({"group_by": group_by})
+            tool_results["tool_get_orders_by_period"] = str(res)
 
         elif intent == "order_status":
             if order_id:
@@ -439,6 +489,10 @@ def response_node(state: OrdersAgentState) -> Dict[str, Any]:
         parts.append("### 📋 Order Search Results")
     elif intent == "analytics_query":
         parts.append("### 📊 Pipeline Intelligence")
+    elif intent == "order_value_query":
+        parts.append("### 💰 Order Value Intelligence")
+    elif intent == "order_period_query":
+        parts.append("### 📅 Order Volume by Period")
     elif intent == "shipping_tracking":
         parts.append("### 🚚 Shipment Tracking")
     elif intent == "return_request":

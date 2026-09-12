@@ -282,6 +282,17 @@
   margin: 4px 0 8px;
   padding-left: 20px;
 }
+.cust-msg-body table {
+  border-collapse: collapse;
+  margin: 6px 0;
+  font-size: 12.5px;
+}
+.cust-msg-body th,
+.cust-msg-body td {
+  padding: 5px 10px;
+  border: 1px solid var(--border);
+  text-align: left;
+}
 
 .cust-msg-user .cust-msg-body {
   background: linear-gradient(135deg, var(--accent-primary-dark), var(--accent-primary));

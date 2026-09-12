@@ -75,7 +75,7 @@ class BaseAppSettings(BaseSettings):
     JWT_ALGORITHM: str = "HS256"
     JWT_TTL_MINUTES: int = 60 * 12
     JWT_REFRESH_TTL_MINUTES: int = 60 * 24 * 7
-    SEED_ADMIN_PASSWORD: str = "CommerceOS2024!"
+    SEED_ADMIN_PASSWORD: str = "CommerceOS2026!"
     PASSWORD_MIN_LENGTH: int = 10
     # When False, read/query agent routes are open (dev convenience). Always True in prod.
     AUTH_ENFORCED: bool = False
@@ -122,26 +122,6 @@ class BaseAppSettings(BaseSettings):
     DATASET_DIR: Optional[str] = None  # local dir OR s3://bucket/prefix
     REPLAY_MAX_ORDERS: int = 15000
 
-    # historic | live_shopify. "historic" always works (the seeded Olist/DataCo
-    # dataset); "live_shopify" is only actually selectable once Shopify
-    # credentials below are configured — see resolve_data_source().
-    DATA_SOURCE: Literal["historic", "live_shopify"] = "historic"
-
-    # ── Shopify (live data source) ──────────────────────────────────
-    SHOPIFY_STORE_DOMAIN: Optional[str] = None  # e.g. "your-store.myshopify.com"
-    SHOPIFY_API_VERSION: str = "2024-10"
-    SHOPIFY_WEBHOOK_SECRET: Optional[str] = None
-    # Preferred: Dev Dashboard apps use the client-credentials grant — the
-    # backend exchanges these for a 24h Admin API access token itself and
-    # refreshes it automatically (see app.services.shopify_service). No token
-    # is ever pasted manually.
-    SHOPIFY_CLIENT_ID: Optional[str] = None
-    SHOPIFY_CLIENT_SECRET: Optional[str] = None
-    # Legacy fallback: a manually-generated static token from an admin-created
-    # custom app's "API credentials" tab. Used only if the client id/secret
-    # above aren't set.
-    SHOPIFY_ADMIN_TOKEN: Optional[str] = None
-
     # ── Apify (competitor price feed — Pricing agent only) ──────────
     APIFY_TOKEN: Optional[str] = None
     APIFY_ACTOR_ID: Optional[str] = None
@@ -172,21 +152,8 @@ class BaseAppSettings(BaseSettings):
         return self.DATABASE_URL.startswith("sqlite")
 
     @property
-    def shopify_configured(self) -> bool:
-        if not self.SHOPIFY_STORE_DOMAIN:
-            return False
-        return bool((self.SHOPIFY_CLIENT_ID and self.SHOPIFY_CLIENT_SECRET) or self.SHOPIFY_ADMIN_TOKEN)
-
-    @property
     def apify_configured(self) -> bool:
         return bool(self.APIFY_TOKEN and self.APIFY_ACTOR_ID)
-
-    def resolve_data_source(self) -> str:
-        """`live_shopify` only if it's actually configured — otherwise fall back
-        to `historic` rather than leaving the app pointed at an empty source."""
-        if self.DATA_SOURCE == "live_shopify" and not self.shopify_configured:
-            return "historic"
-        return self.DATA_SOURCE
 
     def resolve_llm(self) -> tuple[str, str]:
         """Return (provider, model) — resolving 'auto' to whatever has credentials."""

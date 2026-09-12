@@ -1,8 +1,19 @@
 import React, { useState } from "react";
 import { useAuth } from "../auth/AuthContext";
+import "./Login.css";
+
+const SEEDED_ROLES = [
+  "admin",
+  "orders_admin",
+  "inventory_admin",
+  "support_admin",
+  "pricing_admin",
+  "marketing_admin",
+  "logistics_admin",
+];
 
 export default function Login() {
-  const { login } = useAuth();
+  const { login, sessionExpired } = useAuth();
   const [username, setUsername] = useState("admin");
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
@@ -22,110 +33,72 @@ export default function Login() {
   };
 
   return (
-    <div
-      style={{
-        minHeight: "100vh",
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
-        background: "radial-gradient(1200px 600px at 50% -10%, #10213a 0%, #080d14 60%)",
-        fontFamily: "Inter, system-ui, sans-serif",
-      }}
-    >
-      <form
-        onSubmit={submit}
-        style={{
-          width: 380,
-          background: "#0f172a",
-          border: "1px solid #1e293b",
-          borderRadius: 18,
-          padding: 32,
-          boxShadow: "0 24px 60px -20px rgba(0,0,0,0.6)",
-        }}
-      >
-        <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 18 }}>
-          <div
-            style={{
-              width: 40,
-              height: 40,
-              borderRadius: 12,
-              background: "linear-gradient(135deg,#3b82f6,#ec4899)",
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              fontSize: 20,
-            }}
-          >
-            ⚡
-          </div>
-          <div>
-            <div style={{ color: "#fff", fontWeight: 800, fontSize: 16 }}>CommerceOS / Nexus</div>
-            <div style={{ color: "#64748b", fontSize: 11 }}>Multi-Agent Operations Platform</div>
-          </div>
+    <div className="login-page">
+      <form className="login-card" onSubmit={submit}>
+        <div className="login-crest">
+          <svg viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <path d="M24 3 L41 12 V26 C41 36 33.5 42.5 24 45 C14.5 42.5 7 36 7 26 V12 Z"
+              fill="var(--accent-primary)" stroke="var(--accent-gold)" strokeWidth="1.2" />
+            <path d="M24 10 L34 15.5 V26 C34 32.5 29.7 37 24 39 C18.3 37 14 32.5 14 26 V15.5 Z"
+              fill="none" stroke="var(--accent-gold-light)" strokeWidth="1" opacity="0.6" />
+            <path d="M17 24.5 L22 29.5 L31 19" stroke="var(--accent-gold-light)" strokeWidth="2.4"
+              strokeLinecap="round" strokeLinejoin="round" fill="none" />
+          </svg>
+          <div className="login-brand">CommerceOS</div>
+          <div className="login-rule" />
+          <div className="login-tagline">Autonomous Operations Console</div>
         </div>
 
-        <label style={labelStyle}>Username</label>
-        <input value={username} onChange={(e) => setUsername(e.target.value)} style={inputStyle} autoFocus />
+        <div className="login-field">
+          <label className="login-label" htmlFor="login-username">Username</label>
+          <input
+            id="login-username"
+            className="login-input"
+            value={username}
+            onChange={(e) => setUsername(e.target.value)}
+            autoFocus
+            autoComplete="username"
+          />
+        </div>
 
-        <label style={labelStyle}>Password</label>
-        <input
-          type="password"
-          value={password}
-          onChange={(e) => setPassword(e.target.value)}
-          style={inputStyle}
-          placeholder="CommerceOS2024!"
-        />
+        <div className="login-field">
+          <label className="login-label" htmlFor="login-password">Password</label>
+          <input
+            id="login-password"
+            className="login-input"
+            type="password"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            placeholder="••••••••••••"
+            autoComplete="current-password"
+          />
+        </div>
 
-        {error && (
-          <div style={{ color: "#fca5a5", fontSize: 12.5, marginTop: 10, marginBottom: 4 }}>{error}</div>
+        {!error && sessionExpired && (
+          <div className="login-error">Your session expired — please sign in again.</div>
         )}
+        {error && <div className="login-error">{error}</div>}
 
-        <button
-          type="submit"
-          disabled={busy || !password}
-          style={{
-            marginTop: 16,
-            width: "100%",
-            padding: "11px 0",
-            borderRadius: 11,
-            border: "none",
-            background: busy ? "#334155" : "#6366f1",
-            color: "#fff",
-            fontWeight: 700,
-            fontSize: 14,
-            cursor: busy ? "default" : "pointer",
-          }}
-        >
-          {busy ? "Signing in…" : "Sign in"}
+        <button type="submit" className="login-submit" disabled={busy || !password}>
+          {busy ? "Signing in…" : "Sign In"}
         </button>
 
-        <p style={{ color: "#475569", fontSize: 11, marginTop: 16, lineHeight: 1.6 }}>
-          Seeded roles: <code>admin</code>, <code>orders_admin</code>, <code>inventory_admin</code>,{" "}
-          <code>support_admin</code>, <code>pricing_admin</code>, <code>marketing_admin</code>,{" "}
-          <code>logistics_admin</code> — password <code>CommerceOS2024!</code>
-        </p>
+        <div className="login-roles">
+          <p className="login-roles-label">Seeded roles — click to fill username</p>
+          <div className="login-role-chips">
+            {SEEDED_ROLES.map((role) => (
+              <button
+                type="button"
+                key={role}
+                className={`login-role-chip${username === role ? " active" : ""}`}
+                onClick={() => setUsername(role)}
+              >
+                {role}
+              </button>
+            ))}
+          </div>
+        </div>
       </form>
     </div>
   );
 }
-
-const labelStyle: React.CSSProperties = {
-  display: "block",
-  fontSize: 11,
-  fontWeight: 700,
-  letterSpacing: "0.06em",
-  textTransform: "uppercase",
-  color: "#64748b",
-  marginTop: 12,
-  marginBottom: 5,
-};
-const inputStyle: React.CSSProperties = {
-  width: "100%",
-  padding: "10px 12px",
-  borderRadius: 10,
-  border: "1px solid #334155",
-  background: "#0a0f1a",
-  color: "#fff",
-  fontSize: 14,
-  outline: "none",
-};

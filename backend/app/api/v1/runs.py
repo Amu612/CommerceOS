@@ -8,7 +8,9 @@ from sqlalchemy import desc
 from sqlalchemy.orm import Session
 
 from app.api.v1.deps import get_current_user
+from app.core import rbac
 from app.database.session import get_read_db
+from app.exceptions.base import AuthorizationException
 from app.models.operations import AgentFinding, AgentRun
 from app.models.security import User
 
@@ -19,9 +21,19 @@ router = APIRouter(prefix="/api/v1/runs", tags=["Agent Runs"])
 def list_runs(
     agent: Optional[str] = Query(None),
     limit: int = Query(50, ge=1, le=200),
-    _: User = Depends(get_current_user),
+    current: User = Depends(get_current_user),
     db: Session = Depends(get_read_db),
 ):
+    # A domain admin may only ever see their own agent's run history — an
+    # explicit `agent=<other>` query is a cross-domain request (403), and an
+    # unscoped query (no `agent` at all) is silently narrowed to their one
+    # agent rather than 403ing on the empty case, so their own dashboard's
+    # "recent runs" view keeps working unchanged.
+    if not rbac.is_super_admin(current.role):
+        if agent is not None and not rbac.can_access_run_history(current.role, agent):
+            raise AuthorizationException(f"Access denied for agent '{agent}' run history.")
+        agent = agent or rbac.agent_for_role(current.role)
+
     q = db.query(AgentRun)
     if agent:
         q = q.filter(AgentRun.agent == agent)
@@ -41,12 +53,14 @@ def list_runs(
 
 
 @router.get("/{run_id}")
-def get_run(run_id: str, _: User = Depends(get_current_user), db: Session = Depends(get_read_db)):
+def get_run(run_id: str, current: User = Depends(get_current_user), db: Session = Depends(get_read_db)):
     r = db.query(AgentRun).filter(AgentRun.id == run_id).first()
     if not r:
         from app.exceptions.base import NotFoundException
 
         raise NotFoundException("Run not found.")
+    if not rbac.can_access_agent(current.role, r.agent):
+        raise AuthorizationException(f"Access denied for agent '{r.agent}' run history.")
     return {
         "id": r.id, "agent": r.agent, "health": r.health, "confidence": r.confidence,
         "summary": r.summary, "started_at": r.started_at.isoformat() if r.started_at else None,

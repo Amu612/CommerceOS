@@ -4,7 +4,18 @@ const TOKEN_KEY = "commerceos_token";
 const REFRESH_KEY = "commerceos_refresh";
 const USER_KEY = "commerceos_user";
 
-export type AuthUser = { id: string; username: string; email: string; role: string };
+export type AuthUser = {
+  id: string;
+  username: string;
+  email: string;
+  role: string;
+  /** Straight from the backend's `app.core.rbac` — the same source every API
+   * route dependency reads from, so the nav this drives can never grant more
+   * than the server itself would allow. */
+  permitted_agents: string[];
+  can_access_orchestrator: boolean;
+  is_super_admin: boolean;
+};
 
 export function getToken(): string | null {
   try {
@@ -131,4 +142,23 @@ export async function login(username: string, password: string): Promise<AuthUse
   if (!res.ok) throw new ApiError(body?.detail || "Invalid username or password", res.status, body);
   setSession(body.access_token, body.refresh_token, body.user);
   return body.user as AuthUser;
+}
+
+/** Records the logout server-side (it lands in the audit log) before
+ * discarding the local session — best-effort: an expired/already-invalid
+ * token, or the network being down, must never block clearing the client
+ * session, which is the part that actually matters for security. */
+export async function logout(): Promise<void> {
+  const token = getToken();
+  if (token) {
+    try {
+      await fetch(`${API_BASE_URL}/api/v1/auth/logout`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}` },
+      });
+    } catch {
+      /* offline / already expired — fall through and clear locally anyway */
+    }
+  }
+  clearSession();
 }

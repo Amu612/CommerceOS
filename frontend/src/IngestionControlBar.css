@@ -137,6 +137,11 @@
   color: #ffffff;
 }
 
+.metric-behind {
+  color: #fbbf24;
+  font-weight: 700;
+}
+
 .ingestion-speed-controls {
   display: flex;
   align-items: center;
@@ -223,6 +228,17 @@
 
 .btn-stream-action.btn-step:hover:not(:disabled) {
   background: rgba(255, 255, 255, 0.2);
+  color: #ffffff;
+}
+
+.btn-stream-action.btn-fastforward {
+  background: rgba(52, 211, 153, 0.18);
+  color: #6ee7b7;
+  border: 1px solid rgba(52, 211, 153, 0.4);
+}
+
+.btn-stream-action.btn-fastforward:hover:not(:disabled) {
+  background: rgba(52, 211, 153, 0.3);
   color: #ffffff;
 }
 

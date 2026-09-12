@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from typing import Optional, Dict, Any
 from fastapi import APIRouter, Depends, Request
@@ -98,7 +99,7 @@ def reset_orders_agent(db: Session = Depends(get_db)):
 
 
 class IngestionControlRequest(BaseModel):
-    action: Optional[str] = "start"  # "start", "pause", "resume", "stop", "reset", "step"
+    action: Optional[str] = "start"  # "start", "pause", "resume", "stop", "reset", "step", "complete"
     speed: Optional[int] = None
     step: Optional[int] = 50
     clear_db: Optional[bool] = True
@@ -106,14 +107,23 @@ class IngestionControlRequest(BaseModel):
 
 from app.services.replay_engine import replay_engine
 
+# A dedicated router, not more routes on `orders_router` — ingestion/replay
+# control mutates the shared dataset every single agent reads (and `reset`
+# can wipe it outright), so it's a platform-wide administrative capability,
+# not something scoped to "the Orders agent" just because its URL happens to
+# start with /api/orders for backwards compatibility. Gated SUPER_ADMIN-only
+# in main.py (see `ingestion_dependency`) — separately from, and stricter
+# than, `agent_dependency("orders")`.
+ingestion_router = APIRouter(prefix="/api/orders", tags=["Ingestion"])
 
-@router.get("/ingestion/status")
+
+@ingestion_router.get("/ingestion/status")
 def get_ingestion_status():
     """Returns the current data ingestion / streaming status."""
     return replay_engine.get_status()
 
 
-@router.post("/ingestion/control")
+@ingestion_router.post("/ingestion/control")
 async def control_ingestion(payload: IngestionControlRequest):
     """
     Controls the flow of data ingestion into the system:
@@ -126,6 +136,13 @@ async def control_ingestion(payload: IngestionControlRequest):
     action = (payload.action or "status").lower().strip()
     msg = ""
 
+    # start/pause/resume/stop are cheap flag flips — fine directly on the
+    # event loop. step/complete/reset do real synchronous DB + pandas work
+    # (complete_now() alone can ingest thousands of rows in one call) and
+    # this route is `async def` (needed for `await replay_engine.start()`),
+    # so FastAPI does NOT offload it to a worker thread the way a plain `def`
+    # route gets — calling them directly here would freeze every other
+    # in-flight request on the server for the whole duration.
     if action == "start":
         msg = await replay_engine.start()
     elif action == "pause":
@@ -135,11 +152,14 @@ async def control_ingestion(payload: IngestionControlRequest):
     elif action == "stop":
         msg = replay_engine.stop()
     elif action == "reset":
-        msg = replay_engine.reset(clear_db=payload.clear_db if payload.clear_db is not None else True)
+        clear_db = payload.clear_db if payload.clear_db is not None else True
+        msg = await asyncio.to_thread(replay_engine.reset, clear_db=clear_db)
     elif action == "step":
         count = payload.step or 50
-        ingested = replay_engine.step(count=count)
+        ingested = await asyncio.to_thread(replay_engine.step, count=count)
         msg = f"Stepped {ingested} records into the system."
+    elif action == "complete":
+        msg = await asyncio.to_thread(replay_engine.complete_now)
     else:
         msg = f"Unknown action '{action}'."
 

@@ -15,12 +15,6 @@ from app.models.dataco import (
     DataCoOrder,
     DataCoOrderItem,
 )
-from app.models.shopify import (
-    ShopifyCustomer,
-    ShopifyOrder,
-    ShopifyOrderItem,
-    ShopifyProduct,
-)
 from app.models.competitor import (
     CompetitorPrice,
 )
@@ -61,10 +55,6 @@ __all__ = [
     "Inventory",
     "DataCoOrder",
     "DataCoOrderItem",
-    "ShopifyCustomer",
-    "ShopifyOrder",
-    "ShopifyOrderItem",
-    "ShopifyProduct",
     "CompetitorPrice",
     "User",
     "UserRole",

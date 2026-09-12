@@ -53,6 +53,12 @@ const HEALTH_COLOR: Record<string, string> = {
   CRITICAL: "var(--status-danger)",
   NOT_ESTIMABLE: "var(--status-neutral)",
 };
+const HEALTH_LABEL: Record<string, string> = {
+  HEALTHY: "Healthy",
+  NEEDS_ATTENTION: "Needs Attention",
+  CRITICAL: "Critical",
+  NOT_ESTIMABLE: "Not Estimable",
+};
 const SEV_COLOR: Record<string, string> = {
   CRITICAL: "var(--status-danger)",
   HIGH: "#c2410c",
@@ -62,6 +68,37 @@ const SEV_COLOR: Record<string, string> = {
 
 function fmt(v: unknown): string {
   if (typeof v === "number") return new Intl.NumberFormat().format(v);
+  return String(v ?? "—");
+}
+
+const ACRONYMS = new Set(["sla", "rop", "eoq", "roi", "csat", "ltv", "cac", "sku", "id"]);
+
+/** Turns a raw snake_case field name (as returned by the backend) into a
+ * short, title-cased header — e.g. "at_risk_rate_pct" -> "At Risk Rate",
+ * with the unit shown in the cell instead (see `fmtCell`) rather than
+ * cluttering the header with "_pct"/"_days". */
+function humanizeKey(key: string): string {
+  const stripped = key.replace(/_(pct|percent|days?)$/i, "");
+  return stripped
+    .split("_")
+    .filter(Boolean)
+    .map((w) => (ACRONYMS.has(w.toLowerCase()) ? w.toUpperCase() : w.charAt(0).toUpperCase() + w.slice(1)))
+    .join(" ");
+}
+
+/** Renders a chart-table cell with its unit inferred from the field name
+ * (percent, days, currency) so a bare number is never shown without context
+ * the header alone dropped. */
+function fmtCell(key: string, v: unknown): string {
+  if (typeof v === "number") {
+    const kl = key.toLowerCase();
+    if (kl.endsWith("_pct") || kl.endsWith("percent")) return `${v}%`;
+    if (kl.endsWith("_days") || kl === "days") return `${v}d`;
+    if (/(revenue|price|cost|value|total|freight|discount|margin_amount)/.test(kl)) {
+      return new Intl.NumberFormat("en-US", { style: "currency", currency: "BRL", maximumFractionDigits: 2 }).format(v);
+    }
+    return new Intl.NumberFormat().format(v);
+  }
   return String(v ?? "—");
 }
 
@@ -153,7 +190,7 @@ export default function DomainAgentView({
         <div className="dav-header-right">
           {data && (
             <span className="dav-health" style={{ color: HEALTH_COLOR[data.health] ?? "#94a3b8" }}>
-              ● {data.health.replace(/_/g, " ")}
+              ● {HEALTH_LABEL[data.health] ?? data.health}
               <span className="dav-conf">{Math.round((data.confidence ?? 0) * 100)}% conf</span>
             </span>
           )}
@@ -247,21 +284,21 @@ export default function DomainAgentView({
       {/* Chart tables */}
       {chartTables.map(([name, rows]) => (
         <div key={name} className="dav-section">
-          <h3 className="dav-section-title">{name.replace(/_/g, " ")}</h3>
+          <h3 className="dav-section-title">{humanizeKey(name)}</h3>
           <div className="dav-table-wrap">
             <table className="dav-table">
               <thead>
                 <tr>
                   {Object.keys(rows[0]).map((k) => (
-                    <th key={k}>{k.replace(/_/g, " ")}</th>
+                    <th key={k}>{humanizeKey(k)}</th>
                   ))}
                 </tr>
               </thead>
               <tbody>
                 {rows.slice(0, 12).map((row, ri) => (
                   <tr key={ri}>
-                    {Object.values(row).map((cell, ci) => (
-                      <td key={ci}>{fmt(cell)}</td>
+                    {Object.entries(row).map(([k, cell]) => (
+                      <td key={k}>{fmtCell(k, cell)}</td>
                     ))}
                   </tr>
                 ))}
@@ -289,15 +326,27 @@ export default function DomainAgentView({
           )}
           {chat.map((m, i) => (
             <div key={i} className={"dav-msg " + (m.role === "user" ? "dav-msg-user" : "dav-msg-agent")}>
-              {m.role === "agent" && (
-                <span className={"dav-msg-tag " + (m.llm ? "dav-tag-llm" : "dav-tag-det")}>
-                  {m.llm ? "LLM" : "deterministic"}
-                </span>
-              )}
-              <div className="dav-msg-body">{renderMarkdown(m.text) ?? m.text}</div>
+              <div className="dav-msg-avatar" aria-hidden="true">{m.role === "user" ? "U" : agentKey.slice(0, 1).toUpperCase()}</div>
+              <div className="dav-msg-col">
+                {m.role === "agent" && (
+                  <span className={"dav-msg-tag " + (m.llm ? "dav-tag-llm" : "dav-tag-det")}>
+                    {m.llm ? "AI Reasoned" : "Data Lookup"}
+                  </span>
+                )}
+                <div className="dav-msg-body">{renderMarkdown(m.text) ?? m.text}</div>
+              </div>
             </div>
           ))}
-          {asking && <div className="dav-msg dav-msg-agent"><div className="dav-msg-body">…thinking</div></div>}
+          {asking && (
+            <div className="dav-msg dav-msg-agent">
+              <div className="dav-msg-avatar" aria-hidden="true">{agentKey.slice(0, 1).toUpperCase()}</div>
+              <div className="dav-msg-col">
+                <div className="dav-msg-body">
+                  <span className="dav-msg-thinking"><span /><span /><span /></span>
+                </div>
+              </div>
+            </div>
+          )}
         </div>
         <div className="dav-input-row">
           <input

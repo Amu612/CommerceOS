@@ -30,17 +30,32 @@ class NotificationSeverity(str, enum.Enum):
     CRITICAL = "CRITICAL"
 
 
+# The canonical agent key -> its owning admin role. "customer" is the only
+# spelling any route, the frontend, or a DB row (`AutomationAction.agent`,
+# `AgentRun.agent`) ever actually uses — a "customer_support" alias used to
+# sit here too, mapping to the same role, and silently broke the reverse
+# lookup below (ROLE_AGENTS[CUSTOMER_SUPPORT_ADMIN] resolved to whichever
+# entry happened to be inserted last, i.e. the alias, not "customer") —
+# support_admin's own automation/run-history self-scoping filtered on an
+# agent key nothing was ever tagged with and came back permanently empty.
+# Keep this map one role -> one agent key; a second key for the same role
+# reintroduces exactly that bug.
 AGENT_ROLE_MAP = {
     "inventory": UserRole.INVENTORY_ADMIN,
     "orders": UserRole.ORDERS_ADMIN,
     "customer": UserRole.CUSTOMER_SUPPORT_ADMIN,
-    "customer_support": UserRole.CUSTOMER_SUPPORT_ADMIN,
     "pricing": UserRole.PRICING_ADMIN,
     "marketing": UserRole.MARKETING_ADMIN,
     "logistics": UserRole.LOGISTICS_ADMIN,
 }
 
 ROLE_AGENTS = {v: k for k, v in AGENT_ROLE_MAP.items()}
+assert len(ROLE_AGENTS) == len(AGENT_ROLE_MAP), (
+    "AGENT_ROLE_MAP must be a one-to-one mapping — two agent keys pointing at "
+    "the same role would make ROLE_AGENTS (the reverse lookup every "
+    "self-scoping RBAC check uses) silently resolve to whichever key was "
+    "inserted last, not necessarily the real one."
+)
 
 
 def _uuid() -> str:

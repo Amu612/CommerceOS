@@ -10,7 +10,6 @@ import { useAuth } from "./auth/AuthContext";
 import { subscribeEvents } from "./lib/ws";
 import IngestionControlBar, { IngestionStatus } from "./IngestionControlBar";
 import "./IngestionControlBar.css";
-import DataSourceSwitch from "./DataSourceSwitch";
 import CompetitorFeedControl from "./CompetitorFeedControl";
 import "./App.css";
 import { API_ENDPOINTS } from "./config";
@@ -26,7 +25,12 @@ type ActiveTab =
   | "approvals";
 
 const TABS: { key: ActiveTab; label: string; badge: string; accent: string }[] = [
-  { key: "orchestrator", label: "Orchestrator", badge: "All Agents", accent: "var(--agent-orchestrator)" },
+  {
+    key: "orchestrator",
+    label: "Orchestrator",
+    badge: "All Agents",
+    accent: "var(--agent-orchestrator)",
+  },
   { key: "orders", label: "Orders", badge: "Operations", accent: "var(--agent-orders)" },
   { key: "inventory", label: "Inventory", badge: "Watchdog", accent: "var(--agent-inventory)" },
   { key: "logistics", label: "Logistics", badge: "Delivery", accent: "var(--agent-logistics)" },
@@ -38,13 +42,26 @@ const TABS: { key: ActiveTab; label: string; badge: string; accent: string }[] =
 
 /** Mounts its children once `mounted` first goes true, then keeps them mounted
  * (hidden via CSS when not `show`) instead of unmounting on every tab switch. */
-function TabSlot({ show, mounted, children }: { show: boolean; mounted: boolean; children: React.ReactNode }) {
+function TabSlot({
+  show,
+  mounted,
+  children,
+}: {
+  show: boolean;
+  mounted: boolean;
+  children: React.ReactNode;
+}) {
   if (!mounted) return null;
   return <div style={{ display: show ? undefined : "none" }}>{children}</div>;
 }
 
 function LlmBadge() {
-  const [s, setS] = React.useState<{ resolved_provider?: string; chat_model_available?: boolean; reachable?: boolean | null; model?: string | null } | null>(null);
+  const [s, setS] = React.useState<{
+    resolved_provider?: string;
+    chat_model_available?: boolean;
+    reachable?: boolean | null;
+    model?: string | null;
+  } | null>(null);
   React.useEffect(() => {
     const load = () =>
       fetch(API_ENDPOINTS.system.llm)
@@ -59,16 +76,36 @@ function LlmBadge() {
   return (
     <span
       className={"app-llm-badge " + (on ? "on" : "off")}
-      title={s ? `${s.resolved_provider} · ${s.model ?? "—"} · reachable: ${s.reachable}` : "checking…"}
+      title={
+        s ? `${s.resolved_provider} · ${s.model ?? "—"} · reachable: ${s.reachable}` : "checking…"
+      }
     >
       LLM: {on ? (s?.resolved_provider ?? "on") : "deterministic"}
     </span>
   );
 }
 
+/**
+ * What this session's user may see, straight from the server (`/auth/me` /
+ * the login response — see `app.core.rbac` on the backend, the single
+ * source of truth both sides read from). When auth isn't enforced at all
+ * (`user` is null but the app still renders, per the check below) everyone
+ * gets the full nav — that's the existing local-dev/demo convenience, not a
+ * client-side permission decision.
+ */
+function visibleTabs(user: ReturnType<typeof useAuth>["user"]): ActiveTab[] {
+  if (!user) return TABS.map((t) => t.key);
+  const allowed = new Set<ActiveTab>(user.permitted_agents as ActiveTab[]);
+  const tabs: ActiveTab[] = [];
+  if (user.can_access_orchestrator) tabs.push("orchestrator");
+  tabs.push(...TABS.map((t) => t.key).filter((k) => allowed.has(k)));
+  tabs.push("approvals"); // every role gets Approvals — server-side scoped to their own domain
+  return tabs;
+}
+
 export default function App() {
   const { user, authRequired, ready, logout } = useAuth();
-  const [activeTab, setActiveTab] = useState<ActiveTab>("orchestrator");
+  const [activeTab, setActiveTabState] = useState<ActiveTab>("orchestrator");
   // Tabs render lazily on first visit, then stay mounted (just hidden) rather
   // than unmounting on every switch — otherwise each view's chat history and
   // already-fetched analysis were thrown away every time you left the tab,
@@ -77,15 +114,37 @@ export default function App() {
   const [toast, setToast] = useState<string | null>(null);
   const toastTimer = useRef<number | null>(null);
 
+  const permitted = visibleTabs(user);
+
+  // A click always goes through this — even if a nav button somehow rendered
+  // for a tab the current role can't see, `goToTab` itself still refuses it.
+  // The API calls each view makes are the real boundary (403 either way);
+  // this just keeps the client's own state from ever pointing at a view the
+  // user has no business seeing rendered.
   const goToTab = (key: ActiveTab) => {
-    setActiveTab(key);
+    if (!permitted.includes(key)) return;
+    setActiveTabState(key);
     setVisitedTabs((prev) => (prev.has(key) ? prev : new Set(prev).add(key)));
   };
 
-  // Which order data source every agent is reading — "historic" (Olist/DataCo
-  // replay) or "live_shopify". Drives whether the replay IngestionControlBar
-  // or the live Sync-Now control is shown, in the same visual slot.
-  const [activeDataSource, setActiveDataSource] = useState<"historic" | "live_shopify">("historic");
+  // A tab only ever renders visible when it's both the active one AND still
+  // permitted — the second half is what stops a stale `activeTab` (set
+  // before `permitted` caught up, e.g. right after logging in as a more
+  // restricted role in the same tab) from flashing a view its role can't
+  // reach.
+  const showTab = (key: ActiveTab) => activeTab === key && permitted.includes(key);
+
+  // When the session (and so the permitted set) changes — login, logout, or
+  // a role swap between accounts in the same tab — land on a tab this user
+  // can actually see instead of leaving them stuck on (or defaulting to) one
+  // they can't, which for most domain admins is "orchestrator".
+  useEffect(() => {
+    if (permitted.includes(activeTab)) return;
+    const next = permitted[0] ?? "approvals";
+    setActiveTabState(next);
+    setVisitedTabs((prev) => (prev.has(next) ? prev : new Set(prev).add(next)));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user?.id]);
 
   const [ingestion, setIngestion] = useState<IngestionStatus>({
     status: "stopped",
@@ -106,14 +165,20 @@ export default function App() {
   // Safe to bump on every inbound WS event.
   const [liveKey, setLiveKey] = useState(0);
 
+  // Ingestion status is SUPER_ADMIN-only server-side (see the bar's own
+  // comment above) — skip polling it at all for anyone else instead of
+  // generating a 403 on every tick.
+  const canControlIngestion = !user || user.is_super_admin;
+
   const fetchIngestionStatus = useCallback(async () => {
+    if (!canControlIngestion) return;
     try {
       const response = await fetch(API_ENDPOINTS.orders.ingestion.status);
       if (response.ok) setIngestion((await response.json()) as IngestionStatus);
     } catch {
       /* backend warming up */
     }
-  }, []);
+  }, [canControlIngestion]);
 
   const sendIngestionControl = async (action: string, speed?: number, step?: number) => {
     setIngestionLoading(true);
@@ -160,13 +225,16 @@ export default function App() {
       const channel = String(e.channel ?? "");
       if (type === "connected" || type === "ping") return;
       const key = `${channel} ${type}`;
-      if (!/orchestr|automation|approval|action|run_completed|sweep|notification/i.test(key)) return;
+      if (!/orchestr|automation|approval|action|run_completed|sweep|notification/i.test(key))
+        return;
       setLiveKey((k) => k + 1);
-      const label =
-        /approval/i.test(key) ? "Approval queue updated" :
-        /orchestr|sweep/i.test(key) ? "Orchestrator sweep completed" :
-        /run_completed/i.test(key) ? `${(e.data as any)?.agent ?? "Agent"} analysis updated` :
-        "Automation action updated";
+      const label = /approval/i.test(key)
+        ? "Approval queue updated"
+        : /orchestr|sweep/i.test(key)
+          ? "Orchestrator sweep completed"
+          : /run_completed/i.test(key)
+            ? `${(e.data as any)?.agent ?? "Agent"} analysis updated`
+            : "Automation action updated";
       setToast(label);
       if (toastTimer.current) window.clearTimeout(toastTimer.current);
       toastTimer.current = window.setTimeout(() => setToast(null), 4000);
@@ -185,7 +253,7 @@ export default function App() {
           <div className="app-logo">⚡</div>
           <div>
             <div className="app-title-row">
-              <span className="app-title">CommerceOS / Nexus</span>
+              <span className="app-title">CommerceOS</span>
               <span className="app-badge">Multi-Agent OS</span>
             </div>
             <p className="app-tagline">
@@ -196,14 +264,18 @@ export default function App() {
         </div>
 
         <nav className="app-nav">
-          {TABS.map((t) => {
+          {TABS.filter((t) => permitted.includes(t.key)).map((t) => {
             const active = activeTab === t.key;
             return (
               <button
                 key={t.key}
                 onClick={() => goToTab(t.key)}
                 className={"app-tab" + (active ? " active" : "")}
-                style={active ? { background: t.accent, boxShadow: `0 2px 10px ${t.accent}55` } : undefined}
+                style={
+                  active
+                    ? { background: t.accent, boxShadow: `0 2px 10px ${t.accent}55` }
+                    : undefined
+                }
               >
                 <span
                   className="app-tab-dot"
@@ -232,31 +304,49 @@ export default function App() {
 
       {toast && <div className="app-toast">⟳ {toast}</div>}
 
-      <div className="app-ingestion-bar">
-        <div style={{ marginBottom: activeDataSource === "historic" ? "10px" : 0 }}>
-          <DataSourceSwitch
-            onStatusChange={setActiveDataSource}
-            onChanged={() => setRefreshKey((k) => k + 1)}
+      {/* Ingestion/replay control mutates the one shared dataset every agent
+          reads (and "Reset" can wipe it outright), so it's SUPER_ADMIN-only
+          server-side too (see `ingestion_dependency` on the backend) — a
+          domain admin who could still see this bar would just get a 403 on
+          every button, so it's hidden rather than shown-disabled. */}
+      {canControlIngestion && (
+        <div className="app-ingestion-bar">
+          <IngestionControlBar
+            status={ingestion}
+            loading={ingestionLoading}
+            onControl={sendIngestionControl}
           />
         </div>
-        {activeDataSource === "historic" && (
-          <IngestionControlBar status={ingestion} loading={ingestionLoading} onControl={sendIngestionControl} />
-        )}
-      </div>
+      )}
 
       <main>
+        {/* Defense in depth, not the real boundary — every view's own API
+            calls are what actually enforce this (403 either way). This just
+            means a stale/manipulated `activeTab` renders an explicit refusal
+            instead of silently falling through to a view the click-through
+            nav already wouldn't offer. */}
+        {!permitted.includes(activeTab) && (
+          <div className="app-forbidden">
+            <h2>Access Restricted</h2>
+            <p>
+              Your role ({user?.role ?? "guest"}) doesn't have access to this view. Redirecting you
+              to somewhere you do…
+            </p>
+          </div>
+        )}
+
         {/* Each tab mounts the first time it's visited, then stays mounted
             (hidden, not destroyed) so its chat history and already-fetched
             analysis survive switching to another tab and back. */}
-        <TabSlot show={activeTab === "orchestrator"} mounted={visitedTabs.has("orchestrator")}>
+        <TabSlot show={showTab("orchestrator")} mounted={visitedTabs.has("orchestrator")}>
           <OrchestratorView refreshKey={refreshKey + liveKey} />
         </TabSlot>
 
-        <TabSlot show={activeTab === "approvals"} mounted={visitedTabs.has("approvals")}>
+        <TabSlot show={showTab("approvals")} mounted={visitedTabs.has("approvals")}>
           <ApprovalsView refreshKey={refreshKey + liveKey} />
         </TabSlot>
 
-        <TabSlot show={activeTab === "orders"} mounted={visitedTabs.has("orders")}>
+        <TabSlot show={showTab("orders")} mounted={visitedTabs.has("orders")}>
           <OrdersAgentDashboard
             analysisUrl={API_ENDPOINTS.orders.analyze}
             queryUrl={API_ENDPOINTS.orders.query}
@@ -267,7 +357,7 @@ export default function App() {
           />
         </TabSlot>
 
-        <TabSlot show={activeTab === "inventory"} mounted={visitedTabs.has("inventory")}>
+        <TabSlot show={showTab("inventory")} mounted={visitedTabs.has("inventory")}>
           <InventoryAgentView
             monitorUrl={API_ENDPOINTS.inventory.monitor}
             queryUrl={API_ENDPOINTS.inventory.query}
@@ -276,7 +366,7 @@ export default function App() {
           />
         </TabSlot>
 
-        <TabSlot show={activeTab === "customer"} mounted={visitedTabs.has("customer")}>
+        <TabSlot show={showTab("customer")} mounted={visitedTabs.has("customer")}>
           <CustomerAgentView
             agentsUrl={API_ENDPOINTS.customer.agents}
             queryUrl={API_ENDPOINTS.customer.query}
@@ -284,7 +374,7 @@ export default function App() {
           />
         </TabSlot>
 
-        <TabSlot show={activeTab === "logistics"} mounted={visitedTabs.has("logistics")}>
+        <TabSlot show={showTab("logistics")} mounted={visitedTabs.has("logistics")}>
           <DomainAgentView
             agentKey="logistics"
             title="Logistics Intelligence"
@@ -302,7 +392,7 @@ export default function App() {
           />
         </TabSlot>
 
-        <TabSlot show={activeTab === "pricing"} mounted={visitedTabs.has("pricing")}>
+        <TabSlot show={showTab("pricing")} mounted={visitedTabs.has("pricing")}>
           <DomainAgentView
             agentKey="pricing"
             title="Pricing & Margin Intelligence"
@@ -321,7 +411,7 @@ export default function App() {
           />
         </TabSlot>
 
-        <TabSlot show={activeTab === "marketing"} mounted={visitedTabs.has("marketing")}>
+        <TabSlot show={showTab("marketing")} mounted={visitedTabs.has("marketing")}>
           <DomainAgentView
             agentKey="marketing"
             title="Marketing Intelligence"
