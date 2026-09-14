@@ -81,7 +81,6 @@ export default function OrchestratorView({ refreshKey }: { refreshKey?: number }
     } finally {
       setLoading(false);
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Expensive: trigger a fresh cross-domain sweep. Explicit user action, or

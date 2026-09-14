@@ -22,7 +22,7 @@ export type AuthUser = {
 // nothing auth-related is ever persisted to localStorage/webStorage. Any
 // legacy keys from older builds are wiped on first load below.
 let memoryToken: string | null = null;
-let memoryRefresh: string | null = null;
+let _memoryRefresh: string | null = null;
 let memoryUser: AuthUser | null = null;
 
 try {
@@ -40,19 +40,23 @@ export function getToken(): string | null {
   return memoryToken;
 }
 
+export function getRefreshToken(): string | null {
+  return _memoryRefresh;
+}
+
 export function getUser(): AuthUser | null {
   return memoryUser;
 }
 
 export function setSession(access: string, refresh: string, user: AuthUser) {
   memoryToken = access;
-  memoryRefresh = refresh;
+  _memoryRefresh = refresh;
   memoryUser = user;
 }
 
 export function clearSession() {
   memoryToken = null;
-  memoryRefresh = null;
+  _memoryRefresh = null;
   memoryUser = null;
 }
 
