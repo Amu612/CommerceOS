@@ -169,7 +169,20 @@ def inventory_tool_node(state: InventoryAgentState) -> Dict[str, Any]:
         elif intent == "product_stock" and pid:
             tool_name = "tool_get_product_stock"
             tool_input = {"product_id": pid}
-            tool_result = tool_get_product_stock.invoke(tool_input)
+            res = tool_get_product_stock.invoke(tool_input)
+            if "Product not found" in str(res) or "not found" in str(res).lower():
+                from app.agents.entity_resolver import entity_resolver
+                fallback = entity_resolver.resolve_entity(pid)
+                if fallback.get("status") == "FOUND":
+                    etype = fallback.get("entity_type")
+                    if etype != "product":
+                        tool_result = f"ID '{pid}' is a **{etype.upper()}** (not an inventory product):\n\n" + fallback.get("summary", "")
+                    else:
+                        tool_result = str(res)
+                else:
+                    tool_result = str(res)
+            else:
+                tool_result = str(res)
         elif intent == "reorder_suggestions":
             tool_name = "tool_suggest_reorders"
             tool_input = {"threshold": thresh}

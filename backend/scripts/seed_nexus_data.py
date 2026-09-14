@@ -23,32 +23,57 @@ from app.models.dataco import DataCoOrder, DataCoOrderItem
 logger = logging.getLogger("seed_nexus_data")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 
-# Dataset directory: settings.DATASET_DIR / NEXUS_DATA_DIR env, else project-relative fallbacks.
+# Dataset directory: settings.DATASET_DIR / NEXUS_DATA_DIR / DATA_DIR env, else project-relative standard locations.
 def _get_nexus_data_dirs() -> List[str]:
-    for candidate in (os.environ.get("DATASET_DIR"), os.environ.get("NEXUS_DATA_DIR")):
+    """
+    Discovers dataset directories strictly from environment variables,
+    application settings, and standard project-relative data folders.
+    Self-contained: does not depend on any hardcoded external paths or references.
+    """
+    dirs: List[str] = []
+
+    # 1. Environment variables
+    for env_var in ("DATASET_DIR", "NEXUS_DATA_DIR", "DATA_DIR"):
+        candidate = os.environ.get(env_var)
         if candidate and os.path.isdir(candidate):
-            return [candidate]
+            dirs.append(candidate)
+
+    # 2. Application settings fallback
     try:
         from app.core.settings import settings
-
-        if settings.DATASET_DIR and os.path.isdir(settings.DATASET_DIR):
-            return [settings.DATASET_DIR]
+        if getattr(settings, "DATASET_DIR", None) and os.path.isdir(settings.DATASET_DIR):
+            dirs.append(settings.DATASET_DIR)
     except Exception:
         pass
-    # Project-relative fallbacks
+
+    # 3. Standard project-relative locations
     backend_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     project_dir = os.path.dirname(backend_dir)
     parent_dir = os.path.dirname(project_dir)
-    dirs = [
-        os.path.join(backend_dir, "data", "raw"),
-        os.path.join(backend_dir, "data", "processed"),
-        os.path.join(project_dir, "data", "raw"),
-        os.path.join(project_dir, "data", "processed"),
-        os.path.join(parent_dir, "updated_CommerceOS", "backend", "app", "data", "raw"),
-        os.path.join(parent_dir, "updated_CommerceOS", "backend", "app", "data", "processed"),
-        os.path.join(parent_dir, "archive (1)"),
-    ]
-    return [d for d in dirs if os.path.isdir(d)]
+
+    for base in (backend_dir, project_dir, parent_dir):
+        dirs.extend([
+            os.path.join(base, "data"),
+            os.path.join(base, "data", "raw"),
+            os.path.join(base, "data", "processed"),
+            os.path.join(base, "backend", "data"),
+            os.path.join(base, "backend", "data", "raw"),
+            os.path.join(base, "backend", "data", "processed"),
+            os.path.join(base, "backend", "app", "data"),
+            os.path.join(base, "backend", "app", "data", "raw"),
+            os.path.join(base, "backend", "app", "data", "processed"),
+        ])
+
+    # Filter to existing directories and preserve order without duplicates
+    seen = set()
+    valid_dirs = []
+    for d in dirs:
+        norm = os.path.normpath(os.path.abspath(d)) if d else ""
+        if norm and norm not in seen and os.path.isdir(norm):
+            seen.add(norm)
+            valid_dirs.append(norm)
+
+    return valid_dirs
 
 
 def find_dataset(filename: str) -> str:
@@ -65,7 +90,7 @@ def clean_val(v):
     return v
 
 
-def seed_data(db: Session = None, olist_limit: int = 25000, dataco_limit: int = 8000):
+def seed_data(db: Session = None, olist_limit: int = 25000, dataco_limit: int = 8000, seed_orders: bool = False):
     should_close = False
     if db is None:
         init_db()
@@ -125,7 +150,37 @@ def seed_data(db: Session = None, olist_limit: int = 25000, dataco_limit: int = 
             db.commit()
             logger.info(f"Inserted {len(prod_records)} Olist products.")
 
-        # 3. Ingest Olist Orders
+        # 3. Ingest Olist Sellers (FK target for order_items).
+        try:
+            from app.models.olist import Seller
+
+            sell_path = find_dataset("olist_sellers_dataset.csv")
+            df_sell = pd.read_csv(sell_path)
+            existing_sellers = set(r[0] for r in db.query(Seller.seller_id).all())
+            sell_records = [
+                {
+                    "seller_id": str(r["seller_id"]),
+                    "seller_zip_code_prefix": int(r["seller_zip_code_prefix"]) if pd.notna(r.get("seller_zip_code_prefix")) else 0,
+                    "seller_city": str(r.get("seller_city") or "unknown"),
+                    "seller_state": str(r.get("seller_state") or "NA"),
+                }
+                for _, r in df_sell.iterrows()
+                if str(r["seller_id"]) not in existing_sellers
+            ]
+            if sell_records:
+                db.bulk_insert_mappings(Seller, sell_records)
+                db.commit()
+                logger.info(f"Inserted {len(sell_records)} Olist sellers.")
+        except Exception as e:
+            logger.warning(f"Seller seed skipped: {e}")
+
+        # If seed_orders is False, finish after dimension tables (Customers, Products, Sellers)
+        # Orders will stream dynamically into the database through the Ingestion Engine button controls
+        if not seed_orders:
+            logger.info("Static dimensions seeded (Customers, Products, Sellers). Skipping orders table: streaming runs via Ingestion Engine button controls.")
+            return
+
+        # 4. Ingest Olist Orders (Only when seed_orders is True)
         orders_path = find_dataset("olist_orders_dataset.csv")
         logger.info(f"Loading orders from {orders_path}...")
         df_orders = pd.read_csv(orders_path, nrows=olist_limit)
@@ -175,30 +230,6 @@ def seed_data(db: Session = None, olist_limit: int = 25000, dataco_limit: int = 
             db.bulk_insert_mappings(Order, order_records)
             db.commit()
             logger.info(f"Inserted {len(order_records)} Olist orders.")
-
-        # 3b. Ingest Olist Sellers (FK target for order_items).
-        try:
-            from app.models.olist import Seller
-
-            sell_path = find_dataset("olist_sellers_dataset.csv")
-            df_sell = pd.read_csv(sell_path)
-            existing_sellers = set(r[0] for r in db.query(Seller.seller_id).all())
-            sell_records = [
-                {
-                    "seller_id": str(r["seller_id"]),
-                    "seller_zip_code_prefix": int(r["seller_zip_code_prefix"]) if pd.notna(r.get("seller_zip_code_prefix")) else 0,
-                    "seller_city": str(r.get("seller_city") or "unknown"),
-                    "seller_state": str(r.get("seller_state") or "NA"),
-                }
-                for _, r in df_sell.iterrows()
-                if str(r["seller_id"]) not in existing_sellers
-            ]
-            if sell_records:
-                db.bulk_insert_mappings(Seller, sell_records)
-                db.commit()
-                logger.info(f"Inserted {len(sell_records)} Olist sellers.")
-        except Exception as e:
-            logger.warning(f"Seller seed skipped: {e}")
 
         # 4. Ingest Olist Order Items
         items_path = find_dataset("olist_order_items_dataset.csv")
@@ -372,6 +403,7 @@ def seed_data(db: Session = None, olist_limit: int = 25000, dataco_limit: int = 
             df_dc["shipping date (DateOrders)"] = pd.to_datetime(df_dc["shipping date (DateOrders)"], errors="coerce")
 
             existing_dc_orders = set(r[0] for r in db.query(DataCoOrder.order_id).all())
+            existing_dc_items = set(r[0] for r in db.query(DataCoOrderItem.order_item_id).all())
             dc_order_map = {}
             dc_item_records = []
 
@@ -409,10 +441,37 @@ def seed_data(db: Session = None, olist_limit: int = 25000, dataco_limit: int = 
                         dc_order_map[oid]["order_total"] += float(row["Order Item Total"]) if pd.notna(row.get("Order Item Total")) else 0.0
                         dc_order_map[oid]["order_profit"] += float(row["Order Profit Per Order"]) if pd.notna(row.get("Order Profit Per Order")) else 0.0
 
+                item_id = int(row["Order Item Id"])
+                if item_id not in existing_dc_items:
+                    existing_dc_items.add(item_id)
+                    dc_item_records.append({
+                        "order_item_id": item_id,
+                        "order_id": oid,
+                        "product_card_id": int(row["Product Card Id"]),
+                        "product_name": str(row.get("Product Name") or ""),
+                        "category_id": int(row["Category Id"]) if pd.notna(row.get("Category Id")) else None,
+                        "category_name": str(row.get("Category Name") or ""),
+                        "department_id": int(row["Department Id"]) if pd.notna(row.get("Department Id")) else None,
+                        "department_name": str(row.get("Department Name") or ""),
+                        "product_price": float(row["Product Price"]) if pd.notna(row.get("Product Price")) else 0.0,
+                        "order_item_quantity": int(row["Order Item Quantity"]) if pd.notna(row.get("Order Item Quantity")) else 1,
+                        "sales": float(row["Sales"]) if pd.notna(row.get("Sales")) else 0.0,
+                        "order_item_discount": float(row["Order Item Discount"]) if pd.notna(row.get("Order Item Discount")) else 0.0,
+                        "order_item_discount_rate": float(row["Order Item Discount Rate"]) if pd.notna(row.get("Order Item Discount Rate")) else 0.0,
+                        "order_item_total": float(row["Order Item Total"]) if pd.notna(row.get("Order Item Total")) else 0.0,
+                        "order_item_profit_ratio": float(row["Order Item Profit Ratio"]) if pd.notna(row.get("Order Item Profit Ratio")) else 0.0,
+                        "order_profit_per_order": float(row["Order Profit Per Order"]) if pd.notna(row.get("Order Profit Per Order")) else 0.0,
+                    })
+
             if dc_order_map:
                 db.bulk_insert_mappings(DataCoOrder, list(dc_order_map.values()))
                 db.commit()
                 logger.info(f"Inserted {len(dc_order_map)} DataCo orders.")
+
+            if dc_item_records:
+                db.bulk_insert_mappings(DataCoOrderItem, dc_item_records)
+                db.commit()
+                logger.info(f"Inserted {len(dc_item_records)} DataCo order items.")
         except Exception as e:
             logger.warning(f"DataCo ingestion skipped or failed: {e}")
 
@@ -431,4 +490,6 @@ def seed_data(db: Session = None, olist_limit: int = 25000, dataco_limit: int = 
 valid_prods_cache = set()
 
 if __name__ == "__main__":
-    seed_data()
+    import sys
+    seed_orders_flag = "--orders" in sys.argv or "--all" in sys.argv
+    seed_data(seed_orders=seed_orders_flag)

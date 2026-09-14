@@ -20,15 +20,15 @@ class LogisticsAgent(DomainAgent):
     lookup_tools = LOOKUP_TOOLS
     recommendation_playbook = [
         Recommendation(
-            title="Re-weight carrier routing by observed reliability",
-            detail="Shift time-sensitive volume from the slowest carrier to the fastest with comparable cost.",
-            expected_impact="Lower late-delivery-risk rate and SLA gap on affected lanes.",
+            title="Switch packages to faster delivery companies",
+            detail="Send urgent packages with the fastest and most dependable delivery partners.",
+            expected_impact="Fewer late deliveries and happier customers.",
             priority="AUTO",
         ),
         Recommendation(
-            title="Region-specific promised-date model",
-            detail="Replace one global lead-time with per-lane lead times derived from the transit distribution.",
-            expected_impact="Fewer broken promises; lower support contact rate.",
+            title="Give realistic delivery dates for each city",
+            detail="Give far-away places more delivery days and nearby places fewer days instead of one guess for everyone.",
+            expected_impact="Keep our delivery promises and reduce customer complaints.",
             priority="MEDIUM",
         ),
     ]

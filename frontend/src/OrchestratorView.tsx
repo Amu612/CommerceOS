@@ -3,6 +3,8 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import "./OrchestratorView.css";
 import { API_ENDPOINTS } from "./config";
+import { AgentReportingControls } from "./AgentReportingControls";
+import { AgentReportData, ChartSeries } from "./lib/reportGenerator";
 
 type DomainFinding = { agent: string; category: string; severity: string; title: string; recommended_action: string; confidence: number };
 type DomainSnapshot = {
@@ -113,6 +115,76 @@ export default function OrchestratorView({ refreshKey }: { refreshKey?: number }
     loadLatest();
   }, [loadLatest, refreshKey]);
 
+  const buildReportData = useCallback((): AgentReportData => {
+    const domainHealthSeries: ChartSeries[] = [];
+    if (data?.domains) {
+      const counts: Record<string, number> = {};
+      data.domains.forEach((d) => {
+        const h = HEALTH_LABEL[d.health] || d.health || "Unknown";
+        counts[h] = (counts[h] || 0) + 1;
+      });
+      Object.entries(counts).forEach(([h, count]) => {
+        domainHealthSeries.push({
+          label: h,
+          value: count,
+          color: h === "Healthy" ? "#10b981" : h === "Needs Attention" ? "#f59e0b" : "#ef4444",
+        });
+      });
+    }
+
+    const findingSeveritySeries: ChartSeries[] = [
+      { label: "Critical", value: Number(data?.kpis["critical_findings"] || 0), color: "#ef4444" },
+      { label: "Open Issues", value: Math.max(0, Number(data?.kpis["open_findings"] || 0) - Number(data?.kpis["critical_findings"] || 0)), color: "#f59e0b" },
+      { label: "Systemic Patterns", value: data?.systemic_findings?.length || 0, color: "#6366f1" },
+    ];
+
+    const reportFindings = [
+      ...(data?.systemic_findings || []).map((sf) => ({
+        title: sf.title,
+        severity: sf.severity || "HIGH",
+        category: `Systemic (${sf.domains.join(", ")})`,
+        whatHappened: sf.explanation,
+        whyItMatters: "This issue touches multiple business areas simultaneously and needs cross-team cooperation.",
+        recommendedAction: sf.recommended_action,
+      })),
+      ...(data?.conflicts || []).map((c) => ({
+        title: `Conflicting goals between ${c.between.join(" and ")}`,
+        severity: "MEDIUM",
+        category: "Cross-Agent Conflict",
+        whatHappened: c.description,
+        whyItMatters: "When teams pull in different directions, business efficiency and profits suffer.",
+        recommendedAction: c.resolution,
+      })),
+    ];
+
+    return {
+      agentName: "Nexus Orchestrator",
+      agentRole: "Cross-Domain Command Center",
+      timestamp: data?.timestamp ? new Date(data.timestamp).toLocaleString() : new Date().toLocaleString(),
+      health: data?.overall_health ? HEALTH_LABEL[data.overall_health] || data.overall_health : "Healthy",
+      confidencePct: data?.overall_confidence ? Math.round(data.overall_confidence * 100) : 90,
+      summary: data?.summary || "Cross-domain system sweep completed successfully.",
+      metrics: [
+        { label: "Domains Healthy", value: `${String(data?.kpis?.["domains_healthy"] ?? 0)} / ${String(data?.kpis?.["domains_total"] ?? 6)}` },
+        { label: "Open Findings", value: Number(data?.kpis?.["open_findings"] ?? 0) },
+        { label: "Critical Findings", value: Number(data?.kpis?.["critical_findings"] ?? 0) },
+        { label: "Systemic Patterns", value: data?.systemic_findings?.length ?? 0 },
+        { label: "Conflicts Resolved", value: data?.conflicts?.length ?? 0 },
+      ],
+      findings: reportFindings,
+      recommendations: (data?.priority_actions || []).map((actionStr: string, i: number) => ({
+        title: `Priority Action #${i + 1}`,
+        detail: actionStr,
+        expectedImpact: "Resolves prioritized cross-domain conflict or bottlenecks.",
+        priority: String(i + 1),
+      })),
+      charts: [
+        { title: "DOMAIN AGENT HEALTH BREAKDOWN", type: "donut", data: domainHealthSeries },
+        { title: "SYSTEMIC FINDINGS & ISSUES", type: "bar", data: findingSeveritySeries },
+      ],
+    };
+  }, [data]);
+
   return (
     <section className="orch">
       <div className="orch-header">
@@ -133,6 +205,11 @@ export default function OrchestratorView({ refreshKey }: { refreshKey?: number }
               <span className="orch-conf">{Math.round((data.overall_confidence ?? 0) * 100)}% conf</span>
             </span>
           )}
+          <AgentReportingControls
+            agentName="Nexus Orchestrator"
+            generateReportData={buildReportData}
+            disabled={!data || loading}
+          />
           <button className="orch-btn" onClick={runSweep} disabled={loading}>
             {loading ? "Coordinating…" : stale ? "Run Sweep" : "Re-run Sweep"}
           </button>

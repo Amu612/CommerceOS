@@ -83,10 +83,10 @@ def detect_late_delivery_risk() -> dict:
         return {"finding": {
             "category": "LATE_DELIVERY_RISK",
             "severity": severity_from_fraction(frac),
-            "title": "Elevated late-delivery risk across the shipment base",
-            "what_happened": f"{at_risk:,} of {total:,} shipments ({r['at_risk_rate_pct']}%) carry a late-delivery-risk flag.",
-            "why_it_matters": "Late deliveries drive support contacts, refund requests, and repeat-purchase churn.",
-            "recommended_action": "Prioritise the worst lanes/carriers; pre-emptively notify customers on flagged shipments and pad promised delivery dates for those lanes.",
+            "title": "Many packages are at risk of arriving late",
+            "what_happened": f"{at_risk:,} out of {total:,} packages ({r['at_risk_rate_pct']}%) are likely to be late.",
+            "why_it_matters": "When packages arrive late, customers get upset, ask for money back, and stop buying from us.",
+            "recommended_action": "Fix the slowest delivery routes first. Tell buyers about delays early and add extra days to delivery estimates.",
             "evidence": f"at_risk={at_risk}, total={total}, rate={r['at_risk_rate_pct']}%",
             "confidence": 0.9, "data_status": "CALCULATED", "sample_count": total,
         }}
@@ -106,10 +106,10 @@ def detect_slow_carrier() -> dict:
         return {"finding": {
             "category": "CARRIER_PERFORMANCE",
             "severity": "HIGH" if worst["avg_delay_days"] >= 1.5 else "MEDIUM",
-            "title": f"Carrier '{worst['carrier']}' is running behind schedule",
-            "what_happened": f"'{worst['carrier']}' averages {worst['avg_transit_days']}d transit vs {worst['avg_scheduled_days']}d scheduled (+{worst['avg_delay_days']}d) over {worst['shipments']:,} shipments, {worst['late_risk_rate_pct']}% flagged.",
-            "why_it_matters": "A structurally slow carrier degrades SLA on every order routed through it.",
-            "recommended_action": f"Re-weight routing away from '{worst['carrier']}' for time-sensitive orders; open a carrier performance review; adjust its promised-date model by +{worst['avg_delay_days']}d.",
+            "title": f"Delivery company '{worst['carrier']}' is too slow",
+            "what_happened": f"Delivery company '{worst['carrier']}' takes {worst['avg_transit_days']} days instead of the planned {worst['avg_scheduled_days']} days (it is {worst['avg_delay_days']} days late on average across {worst['shipments']:,} packages).",
+            "why_it_matters": "Using a slow delivery company makes packages late and hurts our customer reviews.",
+            "recommended_action": f"Send rush orders using faster delivery companies instead. Add {worst['avg_delay_days']} days to expected delivery dates for '{worst['carrier']}'.",
             "evidence": fmt_evidence(worst), "confidence": 0.85, "data_status": "CALCULATED", "sample_count": worst["shipments"],
         }}
     finally:
@@ -128,10 +128,10 @@ def detect_lane_bottleneck() -> dict:
         return {"finding": {
             "category": "LANE_BOTTLENECK",
             "severity": "HIGH" if worst["sla_gap_days"] >= 2 else "MEDIUM",
-            "title": f"Lane '{worst['lane']}' has the widest SLA gap",
-            "what_happened": f"'{worst['lane']}' delivers in {worst['avg_transit_days']}d, {worst['sla_gap_days']}d over its scheduled window, {worst['late_risk_rate_pct']}% flagged ({worst['shipments']:,} shipments).",
-            "why_it_matters": "Concentrated lane delay points to a hub or customs bottleneck that compounds across every carrier on that lane.",
-            "recommended_action": f"Audit the '{worst['lane']}' distribution hub and customs clearance; consider an alternate hub or expedited tier for that region.",
+            "title": f"Shipping to '{worst['lane']}' takes too long",
+            "what_happened": f"Deliveries to '{worst['lane']}' take {worst['avg_transit_days']} days, which is {worst['sla_gap_days']} days slower than promised ({worst['late_risk_rate_pct']}% are late).",
+            "why_it_matters": "This entire region has shipping slowdowns, meaning almost all packages sent here arrive late.",
+            "recommended_action": f"Check the sorting center for '{worst['lane']}' to see what is stuck, or try shipping from a closer warehouse.",
             "evidence": fmt_evidence(worst), "confidence": 0.85, "data_status": "CALCULATED", "sample_count": worst["shipments"],
         }}
     finally:
@@ -149,10 +149,10 @@ def detect_sla_degradation() -> dict:
         return {"finding": {
             "category": "DELIVERY_SLA",
             "severity": "HIGH" if s["sla_health"] == "DEGRADED" else "MEDIUM",
-            "title": f"Delivery SLA is {s['sla_health']}",
-            "what_happened": f"{s['late_deliveries']:,} of {s['sample_count']:,} delivered orders arrived after the promised date (median margin {s['median_margin_days']}d, P90 {s['p90_margin_days']}d).",
-            "why_it_matters": "Systematic overshoot of promised dates erodes trust and inflates 'where is my order' contacts.",
-            "recommended_action": "Recalibrate the estimated-delivery-date model per region using the observed margin distribution; add a buffer equal to the P75 margin.",
+            "title": "Too many packages are delivered past their promised date",
+            "what_happened": f"{s['late_deliveries']:,} out of {s['sample_count']:,} orders arrived later than the promised date.",
+            "why_it_matters": "Missing delivery promises makes buyers lose trust and call support asking where their orders are.",
+            "recommended_action": "Show buyers safer delivery dates with a few extra days added so packages arrive on time.",
             "evidence": fmt_evidence({k: s[k] for k in ("on_time_rate_pct", "median_margin_days", "p90_margin_days")}),
             "confidence": 0.85, "data_status": "CALCULATED", "sample_count": s["sample_count"],
         }}

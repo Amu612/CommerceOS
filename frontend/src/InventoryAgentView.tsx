@@ -6,6 +6,8 @@ import "./DomainAgentView.css";
 import { API_ENDPOINTS } from "./config";
 import { renderMarkdown } from "./lib/markdown";
 import { humanizeToolName } from "./lib/format";
+import { AgentReportingControls } from "./AgentReportingControls";
+import { AgentReportData, ChartSeries } from "./lib/reportGenerator";
 
 type InventoryAgentViewProps = {
   monitorUrl?: string;
@@ -368,6 +370,60 @@ export default function InventoryAgentView({
     toNumber(metrics.inventoryValue) ??
     products.reduce((acc, p) => acc + (getStock(p) || 0) * (toNumber(p.price) || 0), 0);
 
+  const buildReportData = useCallback((): AgentReportData => {
+    const lowStockSeries: ChartSeries[] = products
+      .filter((p: InventoryProduct) => (getStock(p) ?? Infinity) < 50)
+      .slice(0, 6)
+      .map((p: InventoryProduct) => ({
+        label: String(p.name || p.sku || `Item #${p.id || p.product_id || "unknown"}`),
+        value: getStock(p) || 0,
+        color: (getStock(p) || 0) < 10 ? "#ef4444" : "#f59e0b",
+      }));
+
+    const stockHealthSeries: ChartSeries[] = [
+      { label: "Healthy Stock", value: Math.max(0, totalProducts - lowStockCount), color: "#10b981" },
+      { label: "Low Stock Items", value: lowStockCount, color: "#f59e0b" },
+      { label: "Critical Reorders", value: reorderCount, color: "#ef4444" },
+    ];
+
+    const reportFindings = alerts.map((a: InventoryAlert) => ({
+      title: String(a.name || "Inventory Stock Alert"),
+      severity: String(a.severity || "MEDIUM"),
+      category: "Inventory Level",
+      whatHappened: String(a.message || a.reason || "Stock level has crossed safety replenishment thresholds."),
+      whyItMatters: "Running out of popular inventory leads to lost sales and disappointed customers.",
+      recommendedAction: "Trigger immediate replenishment order to suppliers.",
+    }));
+
+    const recs = recommendations.map((r: ReorderRecommendation, i: number) => ({
+      title: `Restock ${String(r.name || r.sku || `Product #${r.product_id || i + 1}`)}`,
+      detail: `Reorder suggested quantity: ${getRecommendationQuantity(r) ?? 50} units from supplier.`,
+      expectedImpact: "Prevents stockouts and fulfills incoming order demand seamlessly.",
+      priority: String(i + 1),
+    }));
+
+    return {
+      agentName: "Inventory Agent",
+      agentRole: "Smart Inventory Watchdog & Demand Velocity Profiling",
+      timestamp: lastUpdated ? lastUpdated.toLocaleString() : new Date().toLocaleString(),
+      health: lowStockCount > 20 ? "Needs Attention" : "Healthy",
+      confidencePct: 92,
+      summary: `Currently monitoring ${totalProducts} catalog items. ${lowStockCount} items are running below safe threshold levels with ${reorderCount} active reorder recommendations.`,
+      metrics: [
+        { label: "Catalog Products", value: totalProducts },
+        { label: "Low Stock Count", value: lowStockCount },
+        { label: "Reorder Triggers", value: reorderCount },
+        { label: "Inventory Value", value: `$${Math.round(inventoryValue).toLocaleString()}` },
+      ],
+      findings: reportFindings,
+      recommendations: recs,
+      charts: [
+        { title: "INVENTORY STOCK HEALTH", type: "donut", data: stockHealthSeries },
+        { title: "LOWEST STOCK PRODUCTS (UNITS ON HAND)", type: "bar", data: lowStockSeries },
+      ],
+    };
+  }, [products, alerts, recommendations, totalProducts, lowStockCount, reorderCount, inventoryValue, lastUpdated]);
+
   return (
     <section className="inventory-view-container">
       {/* Header */}
@@ -385,12 +441,18 @@ export default function InventoryAgentView({
           </p>
         </div>
 
-        <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: "12px", flexWrap: "wrap" }}>
           {lastUpdated && (
             <span style={{ fontSize: "12px", color: "var(--text-muted)" }}>
               Updated {lastUpdated.toLocaleTimeString()}
             </span>
           )}
+
+          <AgentReportingControls
+            agentName="Inventory Agent"
+            generateReportData={buildReportData}
+            disabled={!data || loading}
+          />
 
           <button
             onClick={runManualMonitor}

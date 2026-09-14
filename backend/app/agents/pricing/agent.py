@@ -21,15 +21,15 @@ class PricingAgent(DomainAgent):
     lookup_tools = LOOKUP_TOOLS
     recommendation_playbook = [
         Recommendation(
-            title="Set a minimum-margin floor in the pricing rules",
-            detail="Block or flag any order configuration projecting below the observed P25 order margin.",
-            expected_impact="Removes the negative-margin tail without touching healthy orders.",
+            title="Set a minimum price floor so no order loses money",
+            detail="Stop or review any checkout where the total price does not cover product and shipping costs.",
+            expected_impact="Stops money losses right away without hurting regular sales.",
             priority="AUTO",
         ),
         Recommendation(
-            title="Move from list-wide to targeted discounts",
-            detail="Replace blanket category promos with segment/customer-targeted offers.",
-            expected_impact="Recovers discount leakage while protecting conversion.",
+            title="Send coupons to specific buyers instead of store-wide sales",
+            detail="Give special discounts only to select customers instead of lowering prices for everyone on the site.",
+            expected_impact="Saves money on unnecessary discounts while keeping sales strong.",
             priority="MEDIUM",
         ),
     ]

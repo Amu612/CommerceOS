@@ -64,10 +64,10 @@ def detect_loss_making_orders() -> dict:
         return {"finding": {
             "category": "LOSS_MAKING_ORDERS",
             "severity": severity_from_fraction(frac),
-            "title": "A material share of orders ship below zero margin",
-            "what_happened": f"{m['loss_making_orders']:,} of {m['sample_count']:,} orders ({m['loss_making_rate_pct']}%) had negative profit; the 25th-percentile order margin is {m['p25_margin_pct']}%.",
-            "why_it_matters": "Loss-making orders convert marketing spend into direct cash loss and often cluster around over-discounted SKUs or high-freight lanes.",
-            "recommended_action": "Identify the SKUs/segments in the loss tail; set a minimum-margin floor in the pricing rules; cap stackable discounts.",
+            "title": "Some orders are losing money",
+            "what_happened": f"{m['loss_making_orders']:,} out of {m['sample_count']:,} orders ({m['loss_making_rate_pct']}%) lost money instead of making a profit.",
+            "why_it_matters": "Selling items at a loss burns through cash and wastes advertising money.",
+            "recommended_action": "Find items that lose money and raise their price. Do not allow buyers to combine too many discounts.",
             "evidence": fmt_evidence({k: m[k] for k in ("loss_making_orders", "loss_making_rate_pct", "p25_margin_pct", "lower_fence_pct")}),
             "confidence": 0.85, "data_status": "CALCULATED", "sample_count": m["sample_count"],
         }}
@@ -90,10 +90,10 @@ def detect_weak_segment() -> dict:
         return {"finding": {
             "category": "SEGMENT_MARGIN",
             "severity": "HIGH" if weak["margin_pct"] < 0 else "MEDIUM",
-            "title": f"Segment '{weak['segment']}' drags blended margin",
-            "what_happened": f"'{weak['segment']}' runs {weak['margin_pct']}% margin ({money(weak['profit'])} on {money(weak['revenue'])}) vs blended {m['blended_margin_pct']}%, across {weak['orders']:,} orders.",
-            "why_it_matters": "A structurally low-margin segment needs a different price/promo posture than the rest of the book.",
-            "recommended_action": f"Raise floor prices or reduce promotional depth in '{weak['segment']}'; re-check freight subsidy for that market.",
+            "title": f"Sales to '{weak['segment']}' make very little profit",
+            "what_happened": f"Sales to '{weak['segment']}' only make {weak['margin_pct']}% profit ({money(weak['profit'])} profit on {money(weak['revenue'])} in sales), which is much lower than normal.",
+            "why_it_matters": "If a big group of buyers makes low profit, overall business earnings go down.",
+            "recommended_action": f"Lower discounts and charge fair shipping costs for buyers in '{weak['segment']}'.",
             "evidence": fmt_evidence(weak), "confidence": 0.8, "data_status": "CALCULATED", "sample_count": weak["orders"],
         }}
     finally:
@@ -115,10 +115,10 @@ def detect_discount_leakage() -> dict:
         return {"finding": {
             "category": "DISCOUNT_LEAKAGE",
             "severity": "MEDIUM",
-            "title": f"Discounting in '{leaky['category']}' outpaces the margin it earns",
-            "what_happened": f"'{leaky['category']}' averages {leaky['avg_discount_rate_pct']}% discount but only {leaky['avg_profit_ratio_pct']}% profit ratio; {money(leaky['total_discount_given'])} of discount given.",
-            "why_it_matters": "Discount that does not lift volume or margin is a direct giveaway.",
-            "recommended_action": f"A/B test a lower discount ceiling in '{leaky['category']}'; move to targeted rather than list-wide promos.",
+            "title": f"Discounts are too high in '{leaky['category']}'",
+            "what_happened": f"Items in '{leaky['category']}' have an average discount of {leaky['avg_discount_rate_pct']}%, leaving almost no profit ({money(leaky['total_discount_given'])} given away in discounts).",
+            "why_it_matters": "Giving away big discounts without gaining extra sales is simply losing money.",
+            "recommended_action": f"Cut back on discounts for '{leaky['category']}' and only offer coupons to buyers who really need them to purchase.",
             "evidence": fmt_evidence(leaky), "confidence": 0.75, "data_status": "CALCULATED", "sample_count": leaky["lines"],
         }}
     finally:
@@ -137,10 +137,10 @@ def detect_freight_drag() -> dict:
         return {"finding": {
             "category": "FREIGHT_DRAG",
             "severity": "MEDIUM",
-            "title": f"Freight is {hf['freight_pct_of_price']}% of price in '{hf['category']}'",
-            "what_happened": f"'{hf['category']}' averages {money(hf['avg_price'])} price with {money(hf['avg_freight'])} freight ({hf['freight_pct_of_price']}%), {hf['units']:,} units.",
-            "why_it_matters": "High freight-to-price ratio quietly erases margin and inflates cart abandonment.",
-            "recommended_action": f"Bundle or raise the base price in '{hf['category']}' to absorb freight; renegotiate carrier rate for its typical weight band.",
+            "title": f"Shipping costs eat up sales for '{hf['category']}'",
+            "what_happened": f"In '{hf['category']}', shipping costs ({money(hf['avg_freight'])}) make up {hf['freight_pct_of_price']}% of the item price ({money(hf['avg_price'])}).",
+            "why_it_matters": "When shipping costs are too high, buyers leave their carts without paying, or shipping wipes out our earnings.",
+            "recommended_action": f"Sell items in pairs/bundles or adjust the item price to cover delivery costs.",
             "evidence": fmt_evidence(hf), "confidence": 0.8, "data_status": "CALCULATED", "sample_count": hf["units"],
         }}
     finally:

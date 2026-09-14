@@ -3,6 +3,8 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import "./DomainAgentView.css";
 import { renderMarkdown } from "./lib/markdown";
+import { AgentReportingControls } from "./AgentReportingControls";
+import { AgentReportData, ChartSeries } from "./lib/reportGenerator";
 
 type MetricCard = { label: string; value: unknown; unit?: string; description?: string; data_status?: string };
 type Finding = {
@@ -177,6 +179,60 @@ export default function DomainAgentView({
     );
   }, [data?.charts]);
 
+  const buildReportData = useCallback((): AgentReportData => {
+    const reportCharts: AgentReportData["charts"] = [];
+    if (data?.charts) {
+      Object.entries(data.charts).forEach(([name, val]) => {
+        if (Array.isArray(val) && val.length > 0 && typeof val[0] === "object") {
+          const series: ChartSeries[] = [];
+          val.slice(0, 8).forEach((item: Record<string, unknown>) => {
+            const label = String(item.carrier || item.lane || item.segment || item.category || item.name || item.id || Object.values(item)[0] || "Item");
+            const rawVal = item.units ?? item.revenue ?? item.volume ?? item.orders ?? item.late_pct ?? item.count ?? item.value ?? Object.values(item).find(v => typeof v === "number") ?? 0;
+            const num = typeof rawVal === "number" ? rawVal : parseFloat(String(rawVal)) || 0;
+            series.push({ label, value: Math.round(num) });
+          });
+          if (series.length > 0) {
+            reportCharts.push({
+              title: name.replace(/_/g, " ").toUpperCase(),
+              type: series.length <= 5 ? "donut" : "bar",
+              data: series,
+            });
+          }
+        }
+      });
+    }
+
+    return {
+      agentName: `${title} (${agentKey.toUpperCase()})`,
+      agentRole: subtitle,
+      timestamp: data?.timestamp ? new Date(data.timestamp).toLocaleString() : new Date().toLocaleString(),
+      health: data?.health ? HEALTH_LABEL[data.health] || data.health : "Operating",
+      confidencePct: data?.confidence ? Math.round(data.confidence * 100) : 85,
+      summary: data?.summary || "Operational analysis generated successfully.",
+      metrics: (data?.metrics || []).map((m) => ({
+        label: m.label,
+        value: fmt(m.value),
+        unit: m.unit,
+        description: m.description,
+      })),
+      findings: (data?.findings || []).map((f) => ({
+        title: f.title,
+        severity: f.severity,
+        category: f.category,
+        whatHappened: f.what_happened,
+        whyItMatters: f.why_it_matters,
+        recommendedAction: f.recommended_action,
+      })),
+      recommendations: (data?.recommendations || []).map((r) => ({
+        title: r.title,
+        detail: r.detail,
+        expectedImpact: r.expected_impact,
+        priority: r.priority,
+      })),
+      charts: reportCharts,
+    };
+  }, [data, title, agentKey, subtitle]);
+
   return (
     <section className="dav" style={{ ["--accent" as string]: accent }}>
       <div className="dav-header">
@@ -194,6 +250,11 @@ export default function DomainAgentView({
               <span className="dav-conf">{Math.round((data.confidence ?? 0) * 100)}% conf</span>
             </span>
           )}
+          <AgentReportingControls
+            agentName={title}
+            generateReportData={buildReportData}
+            disabled={!data || loading}
+          />
           <button className="dav-btn" onClick={load} disabled={loading}>
             {loading ? "Analysing…" : "Re-run Analysis"}
           </button>

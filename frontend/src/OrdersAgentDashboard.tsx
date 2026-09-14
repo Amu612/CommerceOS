@@ -4,6 +4,8 @@ import "./OrdersAgentDashboard.css";
 import "./DomainAgentView.css";
 import { renderMarkdown } from "./lib/markdown";
 import { humanizeToolName, humanizeMethod } from "./lib/format";
+import { AgentReportingControls } from "./AgentReportingControls";
+import { AgentReportData, ChartSeries } from "./lib/reportGenerator";
 
 const ORDERS_SUGGESTIONS = [
   "What is the delay rate?",
@@ -665,7 +667,7 @@ export default function OrdersAgentDashboard({
   }, [chat, queryLoading]);
 
   const maxAgeBucket = useMemo(() => {
-    if (!data?.pending_queue.age_distribution?.length) {
+    if (!data?.pending_queue?.age_distribution?.length) {
       return 1;
     }
 
@@ -675,6 +677,64 @@ export default function OrdersAgentDashboard({
       ),
       1,
     );
+  }, [data]);
+
+  const buildReportData = useCallback((): AgentReportData => {
+    const queueSeries: ChartSeries[] = (data?.pending_queue?.age_distribution || []).map((b) => ({
+      label: b.label || `${b.lower_bound_hours}h`,
+      value: b.order_count,
+      color: (b.label || "").includes("48") || (b.label || "").includes("72") ? "#ef4444" : "#6366f1",
+    }));
+
+    const statusSeries: ChartSeries[] = [
+      { label: "Completed Orders", value: Number(data?.summary?.total_orders || 0) - Number(data?.pending_queue?.pending_count || 0), color: "#10b981" },
+      { label: "Pending Orders", value: Number(data?.pending_queue?.pending_count || 0), color: "#f59e0b" },
+      { label: "Est. Cancellations", value: Number(data?.cancellation_risk?.predicted_cancellations || 0), color: "#ef4444" },
+    ];
+
+    const reportFindings = (data?.findings || []).map((f) => ({
+      title: f.category.replace(/_/g, " "),
+      severity: f.severity,
+      category: f.category,
+      whatHappened: f.what_happened,
+      whyItMatters: f.why_it_matters,
+      recommendedAction: f.recommended_action,
+      evidence: f.evidence,
+    }));
+
+    const recs = (data?.findings || [])
+      .filter((f) => f.recommended_action)
+      .map((f, i) => ({
+        title: `Action for ${f.category.replace(/_/g, " ")}`,
+        detail: f.recommended_action,
+        expectedImpact: `Mitigates ${f.severity.toLowerCase()} risk in order fulfillment.`,
+        priority: String(i + 1),
+      }));
+
+    const summaryText = data?.health?.summary_message ||
+      `Examined ${data?.summary?.total_orders || 0} orders with ${data?.pending_queue?.pending_count || 0} pending in backlog.`;
+
+    return {
+      agentName: "Orders Agent",
+      agentRole: "Order Lifecycle & Backlog Intelligence",
+      timestamp: data?.timestamp ? new Date(data.timestamp).toLocaleString() : new Date().toLocaleString(),
+      health: data?.health?.status || "Operating",
+      confidencePct: data?.confidence ? Math.round(data.confidence * 100) : 90,
+      summary: summaryText,
+      metrics: [
+        { label: "Total Orders", value: data?.summary?.total_orders?.toLocaleString() || 0 },
+        { label: "Pending Queue", value: data?.pending_queue?.pending_count?.toLocaleString() || 0 },
+        { label: "Cancellation Rate", value: `${data?.cancellation_risk?.cancellation_rate_pct ?? 0}%` },
+        { label: "Delay Rate", value: `${data?.fulfillment_health?.delay_rate_pct ?? 0}%` },
+        { label: "Fulfillment Rate", value: `${data?.fulfillment_health?.fulfillment_rate_pct ?? 0}%` },
+      ],
+      findings: reportFindings,
+      recommendations: recs,
+      charts: [
+        { title: "ORDER AGE DISTRIBUTION (BACKLOG)", type: "bar", data: queueSeries },
+        { title: "ORDER STATUS OVERVIEW", type: "donut", data: statusSeries },
+      ],
+    };
   }, [data]);
 
   if (loading && !data) {
@@ -722,7 +782,22 @@ export default function OrdersAgentDashboard({
   }
 
   if (!data) {
-    return null;
+    return (
+      <div className="orders-dashboard">
+        {!hideIngestionBar && (
+          <IngestionControlBar
+            status={ingestion}
+            loading={ingestionLoading}
+            onControl={sendIngestionControl}
+          />
+        )}
+        <div className="loading-screen">
+          <div className="loader" />
+          <h2>Orders Agent is initializing…</h2>
+          <p>Connecting to Orders Agent backend.</p>
+        </div>
+      </div>
+    );
   }
 
   const {
@@ -770,6 +845,12 @@ export default function OrdersAgentDashboard({
 
             <small>{new Date(data.timestamp).toLocaleString()}</small>
           </div>
+
+          <AgentReportingControls
+            agentName="Orders Agent"
+            generateReportData={buildReportData}
+            disabled={!data || running}
+          />
 
           <button
             className="primary-button"

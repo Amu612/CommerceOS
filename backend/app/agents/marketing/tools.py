@@ -8,12 +8,12 @@ from app.agents.marketing.data_layer import MarketingData
 from app.database.session import SessionLocal
 
 CAMPAIGN_PLAYS = {
-    "Champions": "VIP early-access + referral incentive — protect and amplify.",
-    "Loyal": "Cross-sell adjacent categories + loyalty tier nudge.",
-    "Promising": "Second-purchase offer within the recency window (time-boxed).",
-    "At Risk": "Win-back sequence: reminder + modest incentive + best-seller picks.",
-    "Hibernating": "Low-cost reactivation email; suppress paid spend.",
-    "New": "Onboarding series + first-repeat incentive.",
+    "Champions": "Give them VIP perks, early access, and thank-you rewards to keep them happy.",
+    "Loyal": "Recommend similar products and offer points for shopping again.",
+    "Promising": "Give a small coupon on their next order before they forget about us.",
+    "At Risk": "Send a friendly 'we miss you' email with top-selling items and a special discount.",
+    "Hibernating": "Send a simple reminder email; do not waste paid ad money on them.",
+    "New": "Welcome them with a thank-you note and an easy discount on their second order.",
 }
 
 
@@ -47,10 +47,11 @@ def category_demand() -> dict:
 
 @tool
 def customer_segment_mix() -> dict:
-    """DataCo customer-segment mix (Consumer / Corporate / Home Office) by order count, share, and revenue."""
+    """Customer segment mix breakdown for charts."""
     db = _db()
     try:
-        return MarketingData.segment_mix(db)
+        r = MarketingData.rfm(db)
+        return {"segments": r.get("segments", [])}
     finally:
         db.close()
 
@@ -66,10 +67,10 @@ def detect_low_retention() -> dict:
         return {"finding": {
             "category": "RETENTION",
             "severity": "HIGH" if r["repeat_rate_pct"] < 10 else "MEDIUM",
-            "title": "Repeat-purchase rate is low",
-            "what_happened": f"Only {r['repeat_rate_pct']}% of {r['total_customers']:,} customers have made a second purchase (AOV {money(r['avg_order_value'])}).",
-            "why_it_matters": "Acquisition is far more expensive than retention; a low repeat rate caps LTV and CAC payback.",
-            "recommended_action": "Launch a second-purchase program for 'Promising' + 'New' segments with a time-boxed incentive inside the observed inter-purchase window.",
+            "title": "Very few buyers are coming back to purchase again",
+            "what_happened": f"Only {r['repeat_rate_pct']}% of {r['total_customers']:,} buyers have placed a second order (average order is {money(r['avg_order_value'])}).",
+            "why_it_matters": "Finding brand new customers costs a lot more money than keeping the ones we already have. When buyers do not return, sales growth slows down.",
+            "recommended_action": "Send a special discount offer to new buyers shortly after their first order to encourage them to buy again.",
             "evidence": fmt_evidence({k: r[k] for k in ("repeat_customers", "repeat_rate_pct", "total_customers")}),
             "confidence": 0.8, "data_status": "CALCULATED", "sample_count": r["total_customers"],
         }}
@@ -92,10 +93,10 @@ def detect_churn_risk() -> dict:
         return {"finding": {
             "category": "CHURN_RISK",
             "severity": "HIGH" if lapsed >= 45 else "MEDIUM",
-            "title": "A large share of the base is lapsing",
-            "what_happened": f"'At Risk' ({by.get('At Risk', {}).get('share_pct', 0)}%) + 'Hibernating' ({by.get('Hibernating', {}).get('share_pct', 0)}%) = {round(lapsed, 1)}% of customers.",
-            "why_it_matters": "These customers already converted once; reactivation is cheaper than net-new acquisition.",
-            "recommended_action": "Run a staged win-back (reminder → best-sellers → modest incentive). Suppress paid retargeting for 'Hibernating' to protect ROAS.",
+            "title": "A large number of past buyers are stopping their purchases",
+            "what_happened": f"Past buyers in 'At Risk' ({by.get('At Risk', {}).get('share_pct', 0)}%) and 'Hibernating' ({by.get('Hibernating', {}).get('share_pct', 0)}%) make up {round(lapsed, 1)}% of all customers.",
+            "why_it_matters": "These people have bought from us before. Bringing them back costs much less than advertising to strangers.",
+            "recommended_action": "Send a friendly 'we miss you' message with our best products and a small discount. Stop paying for internet ads to people who have stopped buying.",
             "evidence": fmt_evidence({"at_risk": by.get("At Risk"), "hibernating": by.get("Hibernating")}),
             "confidence": 0.78, "data_status": "CALCULATED", "sample_count": r["total_customers"],
         }}
@@ -118,10 +119,10 @@ def detect_demand_concentration() -> dict:
         return {"finding": {
             "category": "DEMAND_CONCENTRATION",
             "severity": "MEDIUM",
-            "title": f"Demand concentrated in '{top['category']}'",
-            "what_happened": f"'{top['category']}' is {share}% of units in the top-{len(cats)} categories ({top['units']:,} units, {money(top['revenue'])}).",
-            "why_it_matters": "Concentration is a growth lever (double down) and a risk (exposure to that category's supply/seasonality).",
-            "recommended_action": f"Feature '{top['category']}' in acquisition creative; test cross-sell bundles into the #2–#4 categories to broaden the basket.",
+            "title": f"Most sales depend heavily on '{top['category']}'",
+            "what_happened": f"'{top['category']}' accounts for {share}% of all items sold among the top {len(cats)} categories ({top['units']:,} items sold, bringing in {money(top['revenue'])}).",
+            "why_it_matters": "It is great that this item sells well, but relying too much on one item is risky if supplies run low or interest drops.",
+            "recommended_action": f"Put '{top['category']}' in front of new buyers, and offer bundle deals with other popular items so customers buy more variety.",
             "evidence": fmt_evidence(cats[:4]), "confidence": 0.75, "data_status": "CALCULATED",
         }}
     finally:

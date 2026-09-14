@@ -89,22 +89,42 @@ def triage_node(state: OrdersAgentState) -> Dict[str, Any]:
                 intent = resp.get("intent", "general")
                 order_id = str(resp.get("order_id") or "")
                 product_id = str(resp.get("product_id") or "")
-                if order_id and not product_id:
+                search_query = str(resp.get("search_query") or "")
+
+                # Cross-table entity disambiguation for LLM triage:
+                target_check = order_id or product_id or search_query
+                if target_check and target_check not in ("None", ""):
                     try:
-                        from app.database.session import SessionLocal
-                        from app.models.olist import Product, Order
-                        with SessionLocal() as db_check:
-                            if db_check.query(Product.product_id).filter(Product.product_id == order_id).first() and not db_check.query(Order.order_id).filter(Order.order_id == order_id).first():
-                                intent = "product_lookup"
-                                product_id = order_id
+                        from app.agents.entity_resolver import entity_resolver
+                        resolved = entity_resolver.resolve_entity(target_check)
+                        if resolved.get("status") == "FOUND":
+                            etype = resolved.get("entity_type")
+                            if etype == "customer":
+                                intent = "search_orders"
+                                search_query = target_check
                                 order_id = ""
+                                product_id = ""
+                            elif etype == "seller":
+                                intent = "search_orders"
+                                search_query = target_check
+                                order_id = ""
+                                product_id = ""
+                            elif etype == "product":
+                                intent = "product_lookup"
+                                product_id = target_check
+                                order_id = ""
+                            elif etype == "order":
+                                intent = "order_status"
+                                order_id = target_check
+                                product_id = ""
                     except Exception:
                         pass
+
                 return {
                     "intent": intent,
                     "order_id": order_id,
                     "product_id": product_id,
-                    "search_query": str(resp.get("search_query") or ""),
+                    "search_query": search_query,
                     "tracking_number": str(resp.get("tracking_number") or ""),
                     "customer_email": str(resp.get("customer_email") or ""),
                     "period_group_by": str(resp.get("period_group_by") or "month"),
@@ -157,24 +177,24 @@ def triage_node(state: OrdersAgentState) -> Dict[str, Any]:
             elif "order" in lower_msg or "ord" in lower_msg:
                 extracted_order_id = candidate
             else:
-                # Disambiguate against database records
+                # Disambiguate against database records across all tables
                 try:
-                    from app.database.session import SessionLocal
-                    from app.models.olist import Product, Order
-                    with SessionLocal() as db_check:
-                        is_prod = db_check.query(Product.product_id).filter(Product.product_id == candidate).first()
-                        if is_prod:
+                    from app.agents.entity_resolver import entity_resolver
+                    resolved = entity_resolver.resolve_entity(candidate)
+                    if resolved.get("status") == "FOUND":
+                        etype = resolved.get("entity_type")
+                        if etype == "customer":
+                            extracted_customer_id = candidate
+                        elif etype == "product":
                             extracted_product_id = candidate
-                        else:
-                            is_ord = db_check.query(Order.order_id).filter(Order.order_id == candidate).first()
-                            if is_ord:
-                                extracted_order_id = candidate
-                            elif db_check.query(Order.customer_id).filter(Order.customer_id == candidate).first():
-                                extracted_customer_id = candidate
-                            else:
-                                extracted_product_id = candidate if len(candidate) == 32 else candidate
-                                if len(candidate) != 32:
-                                    extracted_order_id = candidate
+                        elif etype == "order":
+                            extracted_order_id = candidate
+                        elif etype == "seller":
+                            extracted_customer_id = candidate
+                        elif etype == "review":
+                            extracted_order_id = resolved.get("order_id") or candidate
+                    else:
+                        extracted_order_id = candidate
                 except Exception:
                     extracted_order_id = candidate
 
@@ -363,10 +383,15 @@ def tool_node(state: OrdersAgentState) -> Dict[str, Any]:
         elif intent == "search_orders":
             target = search_query or product_id or order_id
             if target:
-                res = tool_search_orders.invoke({"query": target})
-                tool_results["tool_search_orders"] = str(res)
+                from app.agents.entity_resolver import entity_resolver
+                resolved = entity_resolver.resolve_entity(target)
+                if resolved.get("status") == "FOUND" and resolved.get("entity_type") in ("customer", "seller"):
+                    tool_results["tool_search_orders"] = resolved.get("summary", "")
+                else:
+                    res = tool_search_orders.invoke({"query": target})
+                    tool_results["tool_search_orders"] = str(res)
             else:
-                tool_results["tool_search_orders"] = "Please provide search parameters (such as a Product ID, status, or date)."
+                tool_results["tool_search_orders"] = "Please provide search parameters (such as a Customer ID, Product ID, status, or date)."
 
         elif intent == "analytics_query":
             res = tool_get_analytics_summary.invoke({"metric_name": "all"})

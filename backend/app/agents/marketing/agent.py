@@ -20,9 +20,9 @@ class MarketingAgent(DomainAgent):
     detector_tools = DETECTOR_TOOLS
     recommendation_playbook = [
         Recommendation(
-            title="Shift budget from broad acquisition to lifecycle",
-            detail="Move a slice of top-of-funnel spend into second-purchase + win-back flows keyed off RFM.",
-            expected_impact="Improves blended CAC and LTV:CAC.",
+            title="Focus budget on bringing back past buyers",
+            detail="Spend less on showing ads to strangers and spend more on sending discounts to people who already bought from us.",
+            expected_impact="Brings back more paying customers at a lower cost.",
             priority="AUTO",
         ),
     ]
@@ -63,11 +63,11 @@ class MarketingAgent(DomainAgent):
                 db.close()
             if rfm.get("status") == "OK":
                 top3 = sorted(rfm["segments"], key=lambda s: -s["customers"])[:3]
-                detail = "; ".join(f"{s['segment']} ({s['customers']:,}): {CAMPAIGN_PLAYS.get(s['segment'], 'targeted offer')}" for s in top3)
+                detail = "; ".join(f"{s['segment']} ({s['customers']:,} buyers): {CAMPAIGN_PLAYS.get(s['segment'], 'send a special deal')}" for s in top3)
                 recs.insert(0, Recommendation(
-                    title=f"Prioritise the '{top3[0]['segment']}' segment",
+                    title=f"Give special attention to '{top3[0]['segment']}' buyers",
                     detail=detail,
-                    expected_impact="Higher repeat rate + reactivated revenue at lower CAC than paid acquisition.",
+                    expected_impact="Brings back more repeat orders and raises revenue without spending heavily on ads.",
                     priority="HIGH" if findings else "MEDIUM",
                 ))
         except Exception:  # noqa: BLE001

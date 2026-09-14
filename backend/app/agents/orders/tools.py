@@ -1325,12 +1325,23 @@ class OrdersTools:
             clean_q = str(query).strip().lower().replace("cust-", "").replace("customer:", "").replace("customer id", "").strip()
             orders_found = []
 
-            # 1. Check by Customer ID in Olist
+            # 1. Check by Customer ID or Unique Customer ID in Olist
+            linked_cust_ids = [
+                c.customer_id
+                for c in db.query(Customer.customer_id).filter(
+                    or_(
+                        Customer.customer_id == clean_q,
+                        Customer.customer_unique_id == clean_q,
+                        Customer.customer_id.ilike(f"{clean_q}%"),
+                        Customer.customer_unique_id.ilike(f"{clean_q}%"),
+                    )
+                ).all()
+            ]
+            if not linked_cust_ids:
+                linked_cust_ids = [clean_q]
+
             cust_orders = db.query(Order).filter(
-                or_(
-                    Order.customer_id == clean_q,
-                    Order.customer_id.ilike(f"{clean_q}%"),
-                )
+                Order.customer_id.in_(linked_cust_ids)
             ).limit(limit).all()
             for o in cust_orders:
                 orders_found.append({
@@ -1766,6 +1777,11 @@ def tool_lookup_order(order_id: str) -> str:
     clean_id = str(order_id).strip().replace("#", "").replace("ORD-", "").replace("ord-", "")
     detail = OrdersTools.lookup_order(clean_id)
     if not detail:
+        # Cross-table entity resolution fallback (customer, seller, product, review)
+        from app.agents.entity_resolver import entity_resolver
+        resolved = entity_resolver.resolve_entity(clean_id)
+        if resolved.get("status") == "FOUND":
+            return resolved.get("summary", "")
         # Cross-check if the user provided a Product ID
         prod_res = OrdersTools.lookup_product(clean_id)
         if prod_res.get("status") == "OK" and prod_res.get("products"):
@@ -1960,9 +1976,35 @@ def tool_initiate_return(order_id: str, reason: str) -> str:
         return f"❌ Failed to initiate return: {str(e)}"
 
 
+@tool
+def tool_lookup_customer(customer_id: str) -> str:
+    """Look up customer details, location, lifetime spend, and all associated orders using customer_id or customer_unique_id."""
+    from app.agents.entity_resolver import entity_resolver
+    clean = str(customer_id).strip().replace("#", "").replace("CUST-", "").replace("cust-", "")
+    res = entity_resolver.resolve_entity(clean)
+    if res.get("status") == "FOUND" and res.get("entity_type") == "customer":
+        return res.get("summary", "Customer found.")
+    cust_res = OrdersTools.search_orders(clean)
+    if cust_res.get("status") == "OK" and cust_res.get("orders"):
+        return tool_search_orders.invoke({"query": clean})
+    if res.get("status") == "FOUND":
+        return f"ID '{customer_id}' belongs to a {res.get('entity_type')}:\n" + res.get("summary", "")
+    return f"❌ Customer '{customer_id}' not found in database records."
+
+
+@tool
+def tool_resolve_entity(entity_id: str) -> str:
+    """Universal ID inspector: checks orders, customers, products, sellers, and reviews to identify what table an ID belongs to and returns all linked records."""
+    from app.agents.entity_resolver import entity_resolver
+    res = entity_resolver.resolve_entity(entity_id)
+    return res.get("summary", f"❌ No record matching ID '{entity_id}' found across any database table.")
+
+
 ALL_ORDERS_TOOLS = [
     tool_lookup_order,
     tool_lookup_product,
+    tool_lookup_customer,
+    tool_resolve_entity,
     tool_search_orders,
     tool_get_analytics_summary,
     tool_get_order_value_stats,

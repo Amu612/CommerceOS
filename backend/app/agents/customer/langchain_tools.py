@@ -9,6 +9,7 @@ from langchain_core.tools import tool
 
 from app.agents.customer.tools import CustomerSupportTools
 from app.agents.orders.tools import OrdersTools
+from app.agents.entity_resolver import entity_resolver
 
 
 @tool
@@ -16,6 +17,10 @@ def lookup_order(order_id: str) -> str:
     """Look up an order by its ID. Returns status, total, items, tracking number, customer city/state, and key dates."""
     detail = OrdersTools.lookup_order(order_id)
     if not detail:
+        # Cross-table fallback: if user provided a customer, seller, product, or review ID instead
+        fallback = entity_resolver.resolve_entity(order_id)
+        if fallback.get("status") == "FOUND":
+            return fallback.get("summary", f"Found entity of type {fallback.get('entity_type')}.")
         return f"Order '{order_id}' was not found."
     items = "; ".join(f"{it.product_name} x{it.quantity} (R${it.price:.2f})" for it in detail.items) or "fulfilment package"
     return (
@@ -23,6 +28,47 @@ def lookup_order(order_id: str) -> str:
         f"placed {(detail.purchase_timestamp or '')[:10]}, delivered {(detail.delivered_customer_date or 'not yet')[:10]}, "
         f"tracking {detail.tracking_number}, ships to {detail.customer_city or '?'}, {detail.customer_state or '?'}. Items: {items}."
     )
+
+
+@tool
+def lookup_customer(customer_id: str) -> str:
+    """Look up customer profile, location, lifetime spend, and all associated orders using customer_id or customer_unique_id (or DataCo customer ID)."""
+    res = entity_resolver.resolve_entity(customer_id)
+    if res.get("status") == "FOUND" and res.get("entity_type") == "customer":
+        return res.get("summary", "Customer found.")
+    # If not directly matched as customer, check if it resolves to any entity
+    if res.get("status") == "FOUND":
+        return f"ID '{customer_id}' is a {res.get('entity_type')}, not a customer:\n" + res.get("summary", "")
+    return f"Customer '{customer_id}' was not found in database records."
+
+
+@tool
+def lookup_seller(seller_id: str) -> str:
+    """Look up seller location, order items fulfilled, and catalog items using seller_id."""
+    res = entity_resolver.resolve_entity(seller_id)
+    if res.get("status") == "FOUND" and res.get("entity_type") == "seller":
+        return res.get("summary", "Seller found.")
+    if res.get("status") == "FOUND":
+        return f"ID '{seller_id}' is a {res.get('entity_type')}, not a seller:\n" + res.get("summary", "")
+    return f"Seller '{seller_id}' was not found in database records."
+
+
+@tool
+def lookup_review(review_id: str) -> str:
+    """Look up customer review details, star rating, comment title and message, and linked order using review_id."""
+    res = entity_resolver.resolve_entity(review_id)
+    if res.get("status") == "FOUND" and res.get("entity_type") == "review":
+        return res.get("summary", "Review found.")
+    if res.get("status") == "FOUND":
+        return f"ID '{review_id}' is a {res.get('entity_type')}, not a review:\n" + res.get("summary", "")
+    return f"Review '{review_id}' was not found in database records."
+
+
+@tool
+def resolve_unknown_id(entity_id: str) -> str:
+    """Universal entity lookup: inspects orders, customers, products, sellers, and reviews to identify what entity this ID belongs to and returns all linked data."""
+    res = entity_resolver.resolve_entity(entity_id)
+    return res.get("summary", f"No record matching ID '{entity_id}' found.")
 
 
 @tool
@@ -81,6 +127,10 @@ def store_health() -> str:
 
 CUSTOMER_TOOLS = [
     lookup_order,
+    lookup_customer,
+    lookup_seller,
+    lookup_review,
+    resolve_unknown_id,
     track_shipment,
     check_return_eligibility,
     get_return_policy,

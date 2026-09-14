@@ -22,6 +22,10 @@ def extract_order_id(message: str) -> str:
     """Pulls the most likely order identifier out of a free-text message."""
     if not message:
         return ""
+    # If the message specifically identifies the ID as belonging to another entity, don't hijack it
+    low = message.lower()
+    if any(k in low for k in ("customer", "seller", "vendor", "review")) and not any(k in low for k in ("order", "invoice", "tracking", "shipment", "rma")):
+        return ""
     # Prefer an explicit "order <id>" / "order #<id>" / "invoice <id>" mention
     m = re.search(
         r"(?:order|invoice|rma|tracking|shipment)\s*(?:id|number|no\.?|#)?\s*[:#]?\s*([0-9a-fA-F]{4,32}|\d{1,10})",
@@ -32,6 +36,34 @@ def extract_order_id(message: str) -> str:
         return m.group(1)
     m = _ORDER_ID_RE.search(message)
     return m.group(1) if m else ""
+
+
+def extract_entity_id(message: str) -> tuple[str, str]:
+    """
+    Extracts an ID and its probable entity type hint:
+    ('id_string', 'customer' | 'seller' | 'product' | 'review' | 'order' | 'unknown' | '')
+    """
+    if not message:
+        return "", ""
+    m_cust = re.search(r"(?:customer|cust|user|account)\s*(?:unique\s*)?(?:id|number|no\.?|#)?\s*[:#]?\s*([0-9a-fA-F]{8,32}|\d{1,10})", message, re.IGNORECASE)
+    if m_cust:
+        return m_cust.group(1), "customer"
+    m_seller = re.search(r"(?:seller|vendor|merchant)\s*(?:id|number|no\.?|#)?\s*[:#]?\s*([0-9a-fA-F]{8,32}|\d{1,10})", message, re.IGNORECASE)
+    if m_seller:
+        return m_seller.group(1), "seller"
+    m_prod = re.search(r"(?:product|item|catalog|sku)\s*(?:id|number|no\.?|#)?\s*[:#]?\s*([0-9a-fA-F]{8,32}|sku-[\w-]+|\d{1,10})", message, re.IGNORECASE)
+    if m_prod:
+        return m_prod.group(1), "product"
+    m_rev = re.search(r"(?:review|rating|feedback)\s*(?:id|number|no\.?|#)?\s*[:#]?\s*([0-9a-fA-F]{8,32}|\d{1,10})", message, re.IGNORECASE)
+    if m_rev:
+        return m_rev.group(1), "review"
+    m_ord = re.search(r"(?:order|invoice|rma|tracking|shipment)\s*(?:id|number|no\.?|#)?\s*[:#]?\s*([0-9a-fA-F]{4,32}|\d{1,10})", message, re.IGNORECASE)
+    if m_ord:
+        return m_ord.group(1), "order"
+    m_bare = _ORDER_ID_RE.search(message)
+    if m_bare:
+        return m_bare.group(1), "unknown"
+    return "", ""
 
 
 def extract_order_id_from_history(message: str, history: Optional[list] = None) -> str:

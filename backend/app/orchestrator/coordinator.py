@@ -228,31 +228,31 @@ class NexusOrchestrator:
             if has("customer", "") or by.get("customer", DomainSnapshot(agent="c", display_name="c")).health != "HEALTHY":
                 domains.append("customer")
             out.append(SystemicFinding(
-                title="Fulfilment strain is propagating downstream",
+                title="Orders and deliveries are running late together",
                 severity="HIGH",
                 domains=domains,
-                explanation="Order backlog / SLA misses in Orders coincide with carrier or lane delays in Logistics — the same shipments are slow end-to-end, which raises support contacts and cancellation risk.",
-                recommended_action="Treat as one incident: expedite the aged backlog on the worst lanes, pad promised dates for those lanes, and pre-empt affected customers.",
+                explanation="Unshipped orders and delivery delays are happening at the same time. When packages move slowly, more buyers call support or cancel orders.",
+                recommended_action="Speed up the oldest orders on the slowest routes. Give realistic delivery dates and text buyers before they have to ask.",
             ))
 
         # Cancellation + loss-making orders + discount leakage → margin-negative demand
         if has("orders", "CANCELLATION") and has("pricing", "LOSS_MAKING", "DISCOUNT", "SEGMENT_MARGIN"):
             out.append(SystemicFinding(
-                title="Discount-driven demand may be margin-negative",
+                title="Big discounts are causing money losses",
                 severity="MEDIUM",
                 domains=["orders", "pricing", "marketing"],
-                explanation="Elevated cancellations plus a loss-making / over-discounted order tail suggests promotions are pulling in low-intent, low-margin orders that then cancel.",
-                recommended_action="Tighten discount ceilings, add a minimum-margin floor, and retarget promo budget to retention segments identified by Marketing.",
+                explanation="Many orders with heavy discounts are losing money or getting cancelled. Big sales are bringing in buyers who quickly cancel or buy below cost.",
+                recommended_action="Stop giving discounts that are too big. Make sure every sale makes a basic profit, and send deals to repeat buyers instead.",
             ))
 
         # Inventory low stock + marketing demand concentration → stockout risk on the hero category
         if has("inventory", "STOCK") and has("marketing", "DEMAND_CONCENTRATION"):
             out.append(SystemicFinding(
-                title="Stockout risk on the demand-concentrated category",
+                title="Top selling items are running out of stock",
                 severity="HIGH",
                 domains=["inventory", "marketing"],
-                explanation="Demand is concentrated in one category while Inventory is flagging low stock — a stockout there would hit the majority of revenue and any acquisition campaign featuring it.",
-                recommended_action="Fast-track reorder for the hero category before scaling any campaign that features it; hold campaign spend until cover is confirmed.",
+                explanation="Most sales come from one main category, but warehouse stock for it is very low. If it runs out, sales will drop sharply.",
+                recommended_action="Order more items for this top category right away. Pause big ad spending on it until new stock arrives.",
             ))
 
         return out
@@ -320,10 +320,12 @@ class NexusOrchestrator:
 
             try:
                 txt = llm.generate_text(
-                    system="You are the Nexus Orchestrator. Write a 3-4 sentence executive briefing for an operations manager "
-                    "covering overall health, the most important cross-domain issue, and the single highest-priority action. "
+                    system="You are the Nexus Orchestrator. Write a 3-4 sentence briefing for the operations team. "
+                    "Use very simple, clear everyday words that anyone can easily understand. "
+                    "Do NOT use complex vocabulary, high-level English, or business jargon. "
+                    "Cover overall health, the biggest issue, and the main action to take. "
                     "Use ONLY the data provided.\n\n" + json.dumps(ctx, default=str)[:4000],
-                    user="Give me the cross-domain briefing.",
+                    user="Give me the cross-domain briefing in simple language.",
                     max_tokens=280,
                     untrusted=False,
                 )

@@ -209,18 +209,20 @@ class DomainAgent:
 
     def _react_chat(self, model, message: str, history: Optional[list] = None) -> str:
         from langgraph.prebuilt import create_react_agent
+        from app.agents.customer.langchain_tools import resolve_unknown_id
 
-        tools = list(self.metric_tools) + list(self.lookup_tools)
+        tools = list(self.metric_tools) + list(self.lookup_tools) + [resolve_unknown_id]
         agent = create_react_agent(
             model,
             tools,
             prompt=(
                 f"{self.persona}\n\nYou have tools that return live, verified data from the "
-                "e-commerce database — including any order-id lookup tools. Call the tools you "
-                "need, then answer the user's question concisely and quantitatively. Never invent "
-                "numbers, entities, or categories — only use tool output. If the tools don't cover "
-                "the question, say so. The conversation history is provided for context on "
-                "follow-up questions (e.g. resolving 'it'/'that order' to a previously-mentioned id)."
+                "e-commerce database — including domain lookup tools and a universal entity lookup tool "
+                "(`resolve_unknown_id`) for inspecting IDs from any table (orders, customers, products, "
+                "sellers, reviews). Call the tools you need, then answer the user's question concisely "
+                "and quantitatively. Never invent numbers, entities, or categories — only use tool output. "
+                "If the tools don't cover the question, say so. The conversation history is provided for "
+                "context on follow-up questions."
             ),
         )
         messages: list[Any] = []
@@ -244,10 +246,10 @@ class DomainAgent:
     def _deterministic_chat(self, message: str, analysis: AgentAnalysisOutput, history: Optional[list] = None) -> str:
         """
         No-LLM path: still runs the LangChain tools. If the question (or, failing
-        that, a recent turn in `history`) references an order id and this agent
-        has order-id-aware lookup tools, answers that specific order first.
-        Otherwise picks the tool(s) whose name/description best matches the
-        question, executes them, and renders their real output.
+        that, a recent turn in `history`) references an entity or order id,
+        answers that specific entity first using domain lookup tools or the
+        cross-table entity resolver. Otherwise picks the tool(s) whose
+        name/description best matches the question.
         """
         low = (message or "").lower().strip()
         lines = [f"**{self.display_name}** — {analysis.summary}", ""]
@@ -260,20 +262,36 @@ class DomainAgent:
 
         rendered = False
 
-        # entity-specific: an order id in this message or a recent follow-up turn
-        order_id = extract_order_id_from_history(message, history) if self.lookup_tools else ""
-        if order_id:
-            for t in self.lookup_tools:
-                try:
-                    out = _as_obj(t.invoke({"order_id": order_id}))
-                    if isinstance(out, dict) and out.get("status") == "NOT_FOUND":
-                        continue
-                    lines.append(f"**{_titleize(t.name)}** (order #{order_id}):")
-                    lines.extend(_render_rows(out))
-                    rendered = True
+        # entity-specific: an ID in this message or a recent follow-up turn
+        from app.agents._shared import extract_entity_id
+        from app.agents.entity_resolver import entity_resolver
+
+        cand_id, _ = extract_entity_id(message)
+        if not cand_id and history:
+            for turn in reversed(history):
+                txt = turn.get("text") if isinstance(turn, dict) else getattr(turn, "text", "")
+                cand_id, _ = extract_entity_id(txt or "")
+                if cand_id:
                     break
-                except Exception:  # noqa: BLE001
-                    continue
+
+        if cand_id:
+            resolved = entity_resolver.resolve_entity(cand_id)
+            if resolved.get("status") == "FOUND":
+                if resolved.get("entity_type") == "order" and self.lookup_tools:
+                    for t in self.lookup_tools:
+                        try:
+                            out = _as_obj(t.invoke({"order_id": cand_id}))
+                            if isinstance(out, dict) and out.get("status") == "NOT_FOUND":
+                                continue
+                            lines.append(f"**{_titleize(t.name)}** (order #{cand_id}):")
+                            lines.extend(_render_rows(out))
+                            rendered = True
+                            break
+                        except Exception:
+                            continue
+                if not rendered:
+                    lines.append(resolved.get("summary", ""))
+                    rendered = True
 
         # score tools by keyword overlap with the question
         if not rendered:
