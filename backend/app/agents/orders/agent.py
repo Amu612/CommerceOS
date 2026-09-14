@@ -643,7 +643,7 @@ class OrdersAgent:
             backlog_risk_label = "LOW"
 
         # Always build a data-driven forecast based on the current order history & volume rate
-        daily_rate = (total_orders / max(1, len(history_90))) if history_90 else float(total_orders or 12)
+        daily_rate = (total_orders / max(1, len(history_90))) if history_90 else float(total_orders)
         pred_vol = forecast_vol.get("predicted_daily_volume") if (forecast_vol and forecast_vol.get("predicted_daily_volume") is not None) else round(daily_rate, 1)
         pred_low = forecast_vol.get("lower_bound") if (forecast_vol and forecast_vol.get("lower_bound") is not None) else round(max(0.0, pred_vol * 0.82), 1)
         pred_high = forecast_vol.get("upper_bound") if (forecast_vol and forecast_vol.get("upper_bound") is not None) else round(pred_vol * 1.18, 1)
@@ -651,7 +651,7 @@ class OrdersAgent:
         forecast = OrdersForecast(
             title="Orders Forecast",
             order_trend=vol_trend if vol_trend != "INSUFFICIENT_DATA" else "STABLE",
-            trend_confidence=round(max(0.72, forecast_confidence), 3),
+            trend_confidence=round(forecast_confidence, 3),
             predicted_daily_volume=pred_vol,
             volume_lower_bound=pred_low,
             volume_upper_bound=pred_high,
@@ -668,7 +668,7 @@ class OrdersAgent:
                 findings[0].recommended_action if findings else
                 "Maintain current processing cadence. Monitor daily for anomalies."
             ),
-            confidence=round(max(0.70, overall_confidence), 3),
+            confidence=round(overall_confidence, 3),
             data_source=state.get("data_source", "BOTH"),
             forecast_method=forecast_method if forecast_method != "INSUFFICIENT_DATA" else "empirical_daily_rate_projection",
             sample_count=total_orders,

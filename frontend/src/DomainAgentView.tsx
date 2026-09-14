@@ -5,6 +5,71 @@ import "./DomainAgentView.css";
 import { renderMarkdown } from "./lib/markdown";
 import { AgentReportingControls } from "./AgentReportingControls";
 import { AgentReportData, ChartSeries } from "./lib/reportGenerator";
+import { CesiumRouteViewer } from "./components/CesiumRouteViewer";
+
+type OrderRouteData = {
+  status: string;
+  reason?: string;
+  order_id: string;
+  order_status: string;
+  purchase_date?: string;
+  estimated_delivery_date?: string;
+  actual_delivery_date?: string;
+  delivery_delay_days?: number | null;
+  transit_days?: number | null;
+  is_late?: boolean;
+  freight_value: number;
+  order_subtotal: number;
+  total_value: number;
+  review_score?: number | null;
+  review_comment?: string | null;
+  origin: {
+    seller_id: string;
+    zip_code_prefix: number;
+    city: string;
+    state: string;
+    lat: number;
+    lng: number;
+    item_count: number;
+  };
+  destination: {
+    customer_id: string;
+    customer_unique_id: string;
+    zip_code_prefix: number;
+    city: string;
+    state: string;
+    lat: number;
+    lng: number;
+  };
+  sellers: {
+    seller_id: string;
+    zip_code_prefix: number;
+    city: string;
+    state: string;
+    lat: number;
+    lng: number;
+    item_count: number;
+    freight_value: number;
+    subtotal_value: number;
+  }[];
+  selected_seller_id: string;
+  has_multiple_sellers: boolean;
+  route: {
+    status: string;
+    distance_km: number;
+    duration_hours: number;
+    duration_formatted: string;
+    geometry: [number, number][];
+    service: string;
+  };
+  logistics_intelligence: {
+    risk_level: string;
+    reasons: string[];
+    cross_state: boolean;
+    origin_state: string;
+    dest_state: string;
+  };
+};
 
 type MetricCard = { label: string; value: unknown; unit?: string; description?: string; data_status?: string };
 type Finding = {
@@ -42,6 +107,7 @@ export type DomainAgentViewProps = {
   accent: string; // hex
   analyzeUrl: string;
   queryUrl: string;
+  routeUrl?: string;
   refreshKey?: number;
   suggestions?: string[];
   /** Optional extra control rendered under the header — e.g. Pricing's
@@ -111,6 +177,7 @@ export default function DomainAgentView({
   accent,
   analyzeUrl,
   queryUrl,
+  routeUrl,
   refreshKey,
   suggestions = [],
   headerExtra,
@@ -118,6 +185,34 @@ export default function DomainAgentView({
   const [data, setData] = useState<AnalysisOutput | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+
+  // Logistics Route Intelligence state (used when agentKey === "logistics")
+  // Initially no order entered -> shows full interactive 3D globe
+  const [orderInput, setOrderInput] = useState("");
+  const [routeData, setRouteData] = useState<OrderRouteData | null>(null);
+  const [routeLoading, setRouteLoading] = useState(false);
+  const [routeError, setRouteError] = useState<string | null>(null);
+
+  const fetchRoute = useCallback(async (oid: string, sid?: string) => {
+    if (!routeUrl || !oid.trim()) return;
+    setRouteLoading(true);
+    setRouteError(null);
+    try {
+      const url = `${routeUrl}?order_id=${encodeURIComponent(oid.trim())}${sid ? `&seller_id=${encodeURIComponent(sid)}` : ""}`;
+      const res = await fetch(url, { method: "GET" });
+      if (!res.ok) throw new Error(`Route lookup failed (${res.status})`);
+      const json: OrderRouteData = await res.json();
+      if (json.status !== "OK") {
+        throw new Error(json.reason || "Unable to resolve route for this order.");
+      }
+      setRouteData(json);
+    } catch (err) {
+      setRouteError(err instanceof Error ? err.message : "Route lookup failed.");
+      setRouteData(null);
+    } finally {
+      setRouteLoading(false);
+    }
+  }, [routeUrl]);
 
   const [input, setInput] = useState("");
   const [chat, setChat] = useState<{ role: "user" | "agent"; text: string; llm?: boolean }[]>([]);
@@ -138,7 +233,16 @@ export default function DomainAgentView({
     }
   }, [analyzeUrl, title]);
 
+  // Nothing auto-runs on mount: the panel stays empty until the user
+  // explicitly runs the analysis (or a parent triggers refreshKey).
+  const firstLoad = useRef(true);
   useEffect(() => {
+    if (firstLoad.current && !refreshKey) {
+      firstLoad.current = false;
+      setLoading(false);
+      return;
+    }
+    firstLoad.current = false;
     load();
   }, [load, refreshKey]);
 
@@ -275,6 +379,13 @@ export default function DomainAgentView({
 
       {data && <p className="dav-summary">{data.summary}</p>}
 
+      {!data && !loading && !error && (
+        <div className="dav-empty">
+          No analysis has been run in this session yet — press <strong>Re-run Analysis</strong> to compute live
+          metrics, findings, and recommendations from the current data.
+        </div>
+      )}
+
       {/* Metrics */}
       {data && data.metrics.length > 0 && (
         <div className="dav-metrics">
@@ -290,6 +401,238 @@ export default function DomainAgentView({
           ))}
         </div>
       )}
+
+      {/* Dynamic Cesium Route-Intelligence Feature (Logistics Agent Only) */}
+      {agentKey === "logistics" && (
+        <div className="dav-section dav-route-section">
+          <div className="dav-route-header">
+            <div>
+              <div className="dav-badge">
+                <span className="dav-dot" /> 3D ROUTE INTELLIGENCE
+              </div>
+              <h3 className="dav-section-title" style={{ margin: "6px 0 2px" }}>
+                Order Shipment & Road Route Inspection
+              </h3>
+              <p className="dav-sub" style={{ fontSize: "12px", margin: 0 }}>
+                Trace any real Olist order from its seller fulfillment warehouse to customer delivery address on the 3D globe with live road geometry.
+              </p>
+            </div>
+            <div className="dav-route-quick-orders">
+              <span className="dav-quick-label">Sample Orders:</span>
+              <button
+                className="dav-quick-btn"
+                onClick={() => {
+                  setOrderInput("000229ec398224ef6ca0657da4fc703e");
+                  fetchRoute("000229ec398224ef6ca0657da4fc703e");
+                }}
+              >
+                000229ec… (Single Seller)
+              </button>
+              <button
+                className="dav-quick-btn"
+                onClick={() => {
+                  setOrderInput("00bcee890eba57a9767c7b5ca12d3a1b");
+                  fetchRoute("00bcee890eba57a9767c7b5ca12d3a1b");
+                }}
+              >
+                00bcee89… (Multi-Seller)
+              </button>
+              <button
+                className="dav-quick-btn"
+                onClick={() => {
+                  setOrderInput("013a98b3a668bcef05b98898177f6923");
+                  fetchRoute("013a98b3a668bcef05b98898177f6923");
+                }}
+              >
+                013a98b3… (Multi-Origin)
+              </button>
+            </div>
+          </div>
+
+          <div className="dav-route-search-bar">
+            <input
+              className="dav-route-input"
+              value={orderInput}
+              onChange={(e) => setOrderInput(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && fetchRoute(orderInput)}
+              placeholder="Enter real Olist Order ID (e.g. 000229ec398224ef6ca0657da4fc703e)..."
+            />
+            <button
+              className="dav-btn dav-btn-primary"
+              disabled={routeLoading || !orderInput.trim()}
+              onClick={() => fetchRoute(orderInput)}
+            >
+              {routeLoading ? "Calculating Route…" : "Inspect Route"}
+            </button>
+          </div>
+
+          {routeError && (
+            <div className="dav-error" style={{ margin: "10px 0" }}>
+              <strong>Route Error:</strong> {routeError}
+            </div>
+          )}
+
+          <div className="dav-route-workspace">
+            {/* Cesium 3D Globe Viewer - Always rendered to show interactive globe */}
+            <div className="dav-route-map-panel">
+              <CesiumRouteViewer
+                origin={routeData?.origin || null}
+                destination={routeData?.destination || null}
+                geometry={routeData?.route?.geometry || []}
+                distanceKm={routeData?.route?.distance_km}
+                durationFormatted={routeData?.route?.duration_formatted}
+                accentColor={accent}
+              />
+            </div>
+
+            {/* Order Information & Logistics Intelligence Panel */}
+            <div className="dav-route-info-panel">
+              {routeData ? (
+                <>
+                  <div className="dav-info-card dav-info-highlight">
+                    <div className="dav-info-row-between">
+                      <div>
+                        <span className="dav-info-sub">ORDER ID</span>
+                        <h4 className="dav-info-oid">{routeData.order_id}</h4>
+                      </div>
+                      <span
+                        className="dav-status-pill"
+                        style={{
+                          background:
+                            routeData.order_status === "delivered"
+                              ? "var(--status-success-bg)"
+                              : "var(--status-warning-bg)",
+                          color:
+                            routeData.order_status === "delivered"
+                              ? "var(--status-success)"
+                              : "var(--status-warning)",
+                        }}
+                      >
+                        {routeData.order_status.toUpperCase()}
+                      </span>
+                    </div>
+
+                    {/* Multiple Sellers Selection */}
+                    {routeData.has_multiple_sellers && (
+                      <div className="dav-multi-seller-box">
+                        <span className="dav-multi-seller-label">
+                          ⚠️ MULTIPLE SELLERS ({routeData.sellers.length} Fulfillment Sources):
+                        </span>
+                        <div className="dav-seller-pills">
+                          {routeData.sellers.map((s, idx) => (
+                            <button
+                              key={s.seller_id}
+                              className={`dav-seller-pill ${routeData.selected_seller_id === s.seller_id ? "active" : ""}`}
+                              onClick={() => fetchRoute(routeData.order_id, s.seller_id)}
+                            >
+                              Seller {idx + 1}: {s.city}, {s.state} ({s.item_count} items)
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Origin vs Destination Grid */}
+                  <div className="dav-lane-grid">
+                    <div className="dav-lane-box origin">
+                      <span className="dav-lane-label">📦 ORIGIN (SELLER)</span>
+                      <strong className="dav-lane-place">
+                        {routeData.origin.city.toUpperCase()}, {routeData.origin.state}
+                      </strong>
+                      <span className="dav-lane-sub">
+                        ZIP: {routeData.origin.zip_code_prefix} • ID: {routeData.origin.seller_id.slice(0, 10)}…
+                      </span>
+                    </div>
+                    <div className="dav-lane-arrow">➔</div>
+                    <div className="dav-lane-box destination">
+                      <span className="dav-lane-label">🏠 DESTINATION (CUSTOMER)</span>
+                      <strong className="dav-lane-place">
+                        {routeData.destination.city.toUpperCase()}, {routeData.destination.state}
+                      </strong>
+                      <span className="dav-lane-sub">
+                        ZIP: {routeData.destination.zip_code_prefix} • ID: {routeData.destination.customer_id.slice(0, 10)}…
+                      </span>
+                    </div>
+                  </div>
+
+                  {/* Road Route & Transit Metrics */}
+                  <div className="dav-route-metrics-grid">
+                    <div className="dav-metric-tile">
+                      <span className="tile-label">Road Distance</span>
+                      <strong className="tile-value">{routeData.route?.distance_km?.toLocaleString()} km</strong>
+                      <span className="tile-sub">{routeData.route?.service}</span>
+                    </div>
+                    <div className="dav-metric-tile">
+                      <span className="tile-label">Est. Drive Time</span>
+                      <strong className="tile-value">{routeData.route?.duration_formatted || "—"}</strong>
+                      <span className="tile-sub">Highway Transit</span>
+                    </div>
+                    <div className="dav-metric-tile">
+                      <span className="tile-label">Freight Value</span>
+                      <strong className="tile-value">
+                        {new Intl.NumberFormat("en-US", { style: "currency", currency: "BRL" }).format(routeData.freight_value)}
+                      </strong>
+                      <span className="tile-sub">Total: {new Intl.NumberFormat("en-US", { style: "currency", currency: "BRL" }).format(routeData.total_value)}</span>
+                    </div>
+                    <div className="dav-metric-tile">
+                      <span className="tile-label">Delivery SLA</span>
+                      <strong
+                        className="tile-value"
+                        style={{
+                          color: routeData.is_late ? "var(--status-danger)" : "var(--status-success)",
+                        }}
+                      >
+                        {routeData.is_late ? `Delayed +${routeData.delivery_delay_days}d` : "On Time"}
+                      </strong>
+                      <span className="tile-sub">
+                        Transit: {routeData.transit_days !== null ? `${routeData.transit_days} days` : "In flight"}
+                      </span>
+                    </div>
+                  </div>
+
+                  {/* Logistics Intelligence & Operational Risk */}
+                  <div className="dav-logistics-risk-card">
+                    <div className="dav-risk-head">
+                      <span className="dav-risk-title">Operational Risk Assessment:</span>
+                      <span
+                        className="dav-sev"
+                        style={{
+                          background:
+                            SEV_COLOR[routeData.logistics_intelligence?.risk_level] ||
+                            "var(--status-neutral)",
+                        }}
+                      >
+                        {routeData.logistics_intelligence?.risk_level}
+                      </span>
+                    </div>
+                    <ul className="dav-risk-reasons">
+                      {routeData.logistics_intelligence?.reasons?.map((reason, idx) => (
+                        <li key={idx}>{reason}</li>
+                      ))}
+                    </ul>
+                    {routeData.review_score && (
+                      <div className="dav-review-line">
+                        ⭐ <strong>Customer Review Score:</strong> {routeData.review_score} / 5
+                        {routeData.review_comment ? ` — "${routeData.review_comment}"` : ""}
+                      </div>
+                    )}
+                  </div>
+                </>
+              ) : (
+                <div className="dav-route-placeholder">
+                  <div className="dav-placeholder-icon">🌐</div>
+                  <h4>Interactive 3D Road Navigation Ready</h4>
+                  <p>
+                    Enter an Order ID above or pick a sample order to trace the origin-to-destination road route, navigation metrics, and delivery SLA.
+                  </p>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
 
       {/* Findings */}
       {data && (

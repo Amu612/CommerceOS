@@ -8,6 +8,11 @@ from __future__ import annotations
 from langchain_core.tools import tool
 
 from app.agents.customer.tools import CustomerSupportTools
+from app.database.session import SessionLocal
+from sqlalchemy import func
+
+from app.models.olist import CategoryTranslation, Customer, Order, OrderItem, OrderReview, Product, Seller
+
 from app.agents.orders.tools import OrdersTools
 from app.agents.entity_resolver import entity_resolver
 
@@ -139,3 +144,208 @@ CUSTOMER_TOOLS = [
     product_search,
     store_health,
 ]
+
+
+# ── Doc-grade customer-experience analytics ─────────────────────────────────
+@tool
+def customer_experience_analytics(metric: str) -> str:
+    """Review-score / complaint / delivery-experience analytics (customer-facing CX).
+
+    metric must be one of:
+    - "score_distribution"  : % of orders receiving each review score 1-5
+    - "delivered_vs_late"   : average review score for delivered-on-time vs delivered-late orders
+    - "late_low_score_pct"  : % of late-delivered orders rated 1 or 2
+    - "category_low_review" : % of low-rated (1-2) reviews per category; highest first
+    - "state_low_scores"    : average review score by customer state; 5 lowest
+    - "late_vs_ontime"      : average review score of customers whose orders were late vs on time
+    - "late_1_2_pct"        : % of customers who experienced a late delivery and then rated 1 or 2
+    - "seller_poor_reviews" : sellers (>=20 reviews) with the highest proportion of poor reviews
+    - "review_response_time": average hours between review creation and the review answer
+    - "delay_review_hotspots": categories where delays and poor reviews co-occur above the dataset average
+    - "issue_rank"          : CX issues most strongly associated with low scores, quantified and ranked
+    """
+    import statistics as st
+    from collections import defaultdict
+
+    from app.agents._shared import simulated_clock
+    from app.models.olist import CategoryTranslation, Order, OrderItem, OrderReview, Seller
+
+    db = SessionLocal()
+    try:
+        clock = simulated_clock(db)
+        rows = (
+            db.query(
+                Order.order_id,
+                Order.order_delivered_customer_date,
+                Order.order_estimated_delivery_date,
+                OrderReview.review_score,
+                OrderReview.review_creation_date,
+                OrderReview.review_answer_timestamp,
+                Customer.customer_state,
+                Seller.seller_id,
+                Product.product_category_name,
+            )
+            .join(OrderReview, OrderReview.order_id == Order.order_id)
+            .join(Customer, Customer.customer_id == Order.customer_id)
+            .outerjoin(OrderItem, OrderItem.order_id == Order.order_id)
+            .outerjoin(Seller, Seller.seller_id == OrderItem.seller_id)
+            .outerjoin(Product, Product.product_id == OrderItem.product_id)
+            .filter(Order.order_purchase_timestamp <= clock, OrderReview.review_score.isnot(None))
+            .all()
+        )
+        if not rows:
+            return "No review data observed yet."
+        cat_en = {
+            r[0]: r[1]
+            for r in db.query(CategoryTranslation.product_category_name, CategoryTranslation.product_category_name_english).all()
+        }
+
+        def disp(c):
+            return cat_en.get(c, (c or "unknown")).replace("_", " ").title()
+
+        seen_orders = set()
+        scores = []
+        late_scores, ontime_scores = [], []
+        cat_total: dict = defaultdict(int)
+        cat_low: dict = defaultdict(int)
+        state_scores: dict = defaultdict(list)
+        seller_total: dict = defaultdict(int)
+        seller_low: dict = defaultdict(int)
+        response_hours = []
+        cat_late_low: dict = defaultdict(int)
+        cat_late_total: dict = defaultdict(int)
+
+        for oid, deliv, est, score, created, answered, state, sid, cat in rows:
+            if oid in seen_orders:
+                # multi-item orders: aggregate seller/category stats only
+                if sid and cat:
+                    seller_total[sid] += 0
+                continue
+            seen_orders.add(oid)
+            scores.append(int(score))
+            is_late = bool(deliv and est and deliv > est)
+            if is_late:
+                late_scores.append(int(score))
+            else:
+                ontime_scores.append(int(score))
+            if state:
+                state_scores[state].append(int(score))
+            if created and answered:
+                response_hours.append((answered - created).total_seconds() / 3600.0)
+
+        # category/seller aggregates need item rows; do them separately per order
+        item_rows = (
+            db.query(OrderItem.order_id, Seller.seller_id, Product.product_category_name)
+            .join(Seller, Seller.seller_id == OrderItem.seller_id)
+            .join(Product, Product.product_id == OrderItem.product_id)
+            .all()
+        )
+        order_sellers: dict = defaultdict(set)
+        order_cats: dict = defaultdict(set)
+        for oid, sid, cat in item_rows:
+            if sid:
+                order_sellers[oid].add(sid)
+            if cat:
+                order_cats[oid].add(cat)
+
+        order_info = {}
+        for oid, deliv, est, score, created, answered, state, sid, cat in rows:
+            if oid in order_info:
+                continue
+            order_info[oid] = (bool(deliv and est and deliv > est), int(score))
+
+        for oid, (is_late, score) in order_info.items():
+            for sid in order_sellers.get(oid, set()):
+                seller_total[sid] += 1
+                if score <= 2:
+                    seller_low[sid] += 1
+            for cat in order_cats.get(oid, set()):
+                cat_total[cat] += 1
+                if score <= 2:
+                    cat_low[cat] += 1
+                if is_late:
+                    cat_late_total[cat] += 1
+                    if score <= 2:
+                        cat_late_low[cat] += 1
+
+        overall_low_pct = sum(1 for s in scores if s <= 2) / max(1, len(scores))
+
+        if metric == "score_distribution":
+            total = len(scores) or 1
+            parts = ", ".join(f"{k}★ {scores.count(k) / total * 100:.1f}%" for k in (1, 2, 3, 4, 5))
+            return f"Review score distribution across {total:,} reviewed orders: {parts}"
+        if metric in ("delivered_vs_late", "late_vs_ontime"):
+            avg_late = st.mean(late_scores) if late_scores else None
+            avg_ok = st.mean(ontime_scores) if ontime_scores else None
+            return (
+                f"Average review score — delivered late: {avg_late:.2f}/5 ({len(late_scores):,} orders) "
+                f"vs on-time/early: {avg_ok:.2f}/5 ({len(ontime_scores):,} orders)."
+            )
+        if metric == "late_low_score_pct":
+            low = sum(1 for s in late_scores if s <= 2)
+            return f"{low:,} of {len(late_scores):,} late-delivered orders ({low / max(1, len(late_scores)) * 100:.1f}%) were rated 1 or 2."
+        if metric == "category_low_review":
+            rows2 = sorted(
+                ((c, cat_low[c] / cat_total[c] * 100) for c in cat_total if cat_total[c] >= 20),
+                key=lambda x: -x[1],
+            )
+            parts = ", ".join(f"{disp(c)} {p:.1f}%" for c, p in rows2[:8])
+            return f"Categories with the highest share of low-rated (1-2) reviews: " + (parts or "none")
+        if metric == "state_low_scores":
+            rows2 = sorted(((s, st.mean(v)) for s, v in state_scores.items() if len(v) >= 20), key=lambda x: x[1])
+            parts = ", ".join(f"{s}: {v:.2f}/5" for s, v in rows2[:5])
+            return f"Five states with the lowest average review score: " + (parts or "none")
+        if metric == "late_1_2_pct":
+            late_n = len(late_scores) or 1
+            low = sum(1 for s in late_scores if s <= 2)
+            return f"{low / late_n * 100:.1f}% of customers who experienced a late delivery then rated it 1 or 2 ({low:,} of {late_n:,})."
+        if metric == "seller_poor_reviews":
+            rows2 = []
+            for sid, n in seller_total.items():
+                if n >= 20 and seller_low[sid]:
+                    rows2.append((sid, seller_low[sid] / n * 100, n))
+            rows2.sort(key=lambda x: -x[1])
+            parts = ", ".join(f"#{sid[:8]} {p:.0f}% of {n}" for sid, p, n in rows2[:6])
+            return f"Sellers with the highest poor-review proportion (min 20 reviews): " + (parts or "none")
+        if metric == "review_response_time":
+            if not response_hours:
+                return "No answered reviews observed yet."
+            return f"Average time between review creation and answer: {st.mean(response_hours):.1f} hours across {len(response_hours):,} answered reviews."
+        if metric == "delay_review_hotspots":
+            out = []
+            for cat in cat_late_total:
+                if cat_late_total[cat] < 20:
+                    continue
+                co = cat_late_low[cat] / cat_late_total[cat] * 100
+                base = overall_low_pct * 100
+                if co > base:
+                    out.append((cat, co, base))
+            out.sort(key=lambda x: -x[1])
+            parts = ", ".join(f"{disp(c)} ({co:.1f}% vs {b:.1f}% avg)" for c, co, b in out[:6])
+            return f"Categories where delay + poor reviews co-occur above average: " + (parts or "none")
+        if metric == "issue_rank":
+            late_avg = st.mean(late_scores) if late_scores else None
+            ok_avg = st.mean(ontime_scores) if ontime_scores else None
+            gaps = []
+            if late_avg is not None and ok_avg is not None:
+                gaps.append(("Late delivery", (ok_avg - late_avg) * len(late_scores), f"{(ok_avg - late_avg):.2f}-star drop across {len(late_scores):,} late orders"))
+            worst_cat = None
+            cat_rows = [(c, cat_low[c] / cat_total[c] * 100) for c in cat_total if cat_total[c] >= 20]
+            if cat_rows:
+                worst_cat = max(cat_rows, key=lambda x: x[1])
+                gaps.append(("Worst category " + disp(worst_cat[0]), (worst_cat[1] - overall_low_pct * 100) / 100 * cat_total[worst_cat[0]], f"{worst_cat[1]:.1f}% low-rated vs {overall_low_pct * 100:.1f}% overall"))
+            hotspots = [g for g in []]
+            gaps.sort(key=lambda x: -x[1])
+            parts = "; ".join(f"{i+1}. {name} — {detail}" for i, (name, _, detail) in enumerate(gaps[:4]))
+            return "CX issues ranked by impact on review scores: " + (parts or "no significant issues found")
+        return (
+            "Unknown metric. Use one of: score_distribution, delivered_vs_late, late_low_score_pct, "
+            "category_low_review, state_low_scores, late_vs_ontime, late_1_2_pct, seller_poor_reviews, "
+            "review_response_time, delay_review_hotspots, issue_rank"
+        )
+    except Exception as exc:  # noqa: BLE001
+        return f"❌ Analytics failed: {exc}"
+    finally:
+        db.close()
+
+CUSTOMER_TOOLS.append(customer_experience_analytics)

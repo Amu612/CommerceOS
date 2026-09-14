@@ -491,6 +491,9 @@ def response_node(state: OrdersAgentState) -> Dict[str, Any]:
             synth_prompt = (
                 "You are the Orders Operations Intelligence AI Assistant for an e-commerce platform. "
                 "Answer the user's question directly, clearly, and authoritatively using the verified database query results below.\n"
+                "Be CONCISE: lead with the direct answer (the number, status, or verdict asked for), "
+                "show the key calculation in one line when the question asks for a computed figure, and "
+                "add at most 2-3 short supporting bullets. Never pad with unrelated context.\n"
                 "Structure your response cleanly with markdown, bullet points, and emojis.\n\n"
                 f"User Query: {user_query}\n\n"
                 f"Database Retrieval Results:\n{tool_results_text}"
@@ -542,10 +545,16 @@ def should_use_tools(state: OrdersAgentState) -> str:
 
 
 def after_tools(state: OrdersAgentState) -> str:
-    """Router after tools: checks for retryable errors."""
+    """Router after tools: checks for retryable errors.
+
+    Only genuine transport/exception failures are retried — a legitimate
+    "not found"-style answer that happens to contain the word "error" must
+    flow straight to the response node (retrying identical input yields the
+    identical result).
+    """
     tool_results = state.get("tool_results", {})
     has_error = any(
-        str(v).startswith("❌ Error") or "error" in str(v).lower()
+        str(v).startswith("❌ Error") or str(v).startswith("Error:")
         for v in tool_results.values()
     )
     retries = state.get("retry_count", 0)

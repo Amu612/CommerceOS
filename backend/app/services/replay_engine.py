@@ -9,7 +9,7 @@ import pandas as pd
 from sqlalchemy.orm import Session
 
 from app.database.session import SessionLocal, init_db
-from app.models.olist import Customer, Order, OrderItem, Product, OrderPayment, OrderReview, Seller
+from app.models.olist import Customer, Geolocation, Order, OrderItem, Product, OrderPayment, OrderReview, Seller
 from app.models.dataco import DataCoOrder, DataCoOrderItem
 from app.services.event_bus import OperationalEvent, event_bus, publish_event
 from app.services.state_service import state_service
@@ -109,10 +109,63 @@ class ReplayEngine:
         # Concurrency lock ensuring atomic batch execution
         self._ingest_lock = threading.Lock()
 
+    def _seed_geolocation_reference(self) -> None:
+        """
+        Loads olist_geolocation_dataset.csv into the `geolocation` reference table
+        (median lat/lng per ZIP prefix — the same aggregation the logistics route
+        lookup expects). Idempotent: skipped when the table already has rows.
+        """
+        from app.database.session import SessionLocal
+        from sqlalchemy import func
+
+        db = SessionLocal()
+        try:
+            existing = db.query(func.count(Geolocation.id)).scalar() or 0
+            if existing > 0:
+                return
+            geo_path = find_dataset("olist_geolocation_dataset.csv")
+            if not geo_path:
+                logger.warning("geolocation_seed_skipped: olist_geolocation_dataset.csv not found")
+                return
+            df_geo = pd.read_csv(geo_path)
+            needed = {"geolocation_zip_code_prefix", "geolocation_lat", "geolocation_lng", "geolocation_city", "geolocation_state"}
+            if not needed.issubset(df_geo.columns):
+                logger.warning(f"geolocation_seed_skipped: unexpected columns {list(df_geo.columns)}")
+                return
+            agg = (
+                df_geo.groupby("geolocation_zip_code_prefix")
+                .agg(
+                    geolocation_lat=("geolocation_lat", "median"),
+                    geolocation_lng=("geolocation_lng", "median"),
+                    geolocation_city=("geolocation_city", "first"),
+                    geolocation_state=("geolocation_state", "first"),
+                )
+                .reset_index()
+            )
+            records = [
+                {
+                    "geolocation_zip_code_prefix": int(r.geolocation_zip_code_prefix),
+                    "geolocation_lat": float(r.geolocation_lat),
+                    "geolocation_lng": float(r.geolocation_lng),
+                    "geolocation_city": str(r.geolocation_city),
+                    "geolocation_state": str(r.geolocation_state),
+                }
+                for r in agg.itertuples(index=False)
+            ]
+            db.bulk_insert_mappings(Geolocation, records)
+            db.commit()
+            logger.info(f"geolocation_seeded: {len(records):,} ZIP-prefix medians from {geo_path}")
+        except Exception as exc:  # noqa: BLE001 — reference seeding must never block ingestion
+            db.rollback()
+            logger.warning(f"geolocation_seed_failed: {exc}")
+        finally:
+            db.close()
+
     def index_events_from_datasets(self, max_orders: int = 5000) -> int:
         """Loads and sorts historical orders chronologically from Nexus raw CSVs."""
         logger.info(f"Indexing Nexus order records (limit: {max_orders})...")
         start_time = time.time()
+        self._seed_geolocation_reference()
         raw_events: List[Dict[str, Any]] = []
 
         try:

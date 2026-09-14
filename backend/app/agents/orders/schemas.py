@@ -36,17 +36,51 @@ class OrderItemDetail(BaseModel):
     quantity: int = 1
     price: float = 0.0
     freight_value: float = 0.0
+    # Full olist_order_items + olist_products field coverage
+    shipping_limit_date: Optional[str] = None
+    seller_id: Optional[str] = None
+    product_category: Optional[str] = None
+    product_photos_qty: Optional[int] = None
+    product_name_length: Optional[int] = None
+    product_description_length: Optional[int] = None
+    product_weight_g: Optional[float] = None
+    product_length_cm: Optional[float] = None
+    product_height_cm: Optional[float] = None
+    product_width_cm: Optional[float] = None
+
+
+class OrderPaymentDetail(BaseModel):
+    """Full olist_order_payments row coverage."""
+    payment_sequential: int = 1
+    payment_type: Optional[str] = None
+    payment_installments: int = 1
+    payment_value: float = 0.0
+
+
+class OrderReviewDetail(BaseModel):
+    """Full olist_order_reviews row coverage."""
+    review_id: Optional[str] = None
+    review_score: Optional[int] = None
+    review_comment_title: Optional[str] = None
+    review_comment_message: Optional[str] = None
+    review_creation_date: Optional[str] = None
+    review_answer_timestamp: Optional[str] = None
 
 
 class OrderDetail(BaseModel):
     order_id: str
     customer_id: str
+    customer_unique_id: Optional[str] = None
     customer_city: Optional[str] = None
     customer_state: Optional[str] = None
+    customer_zip_code_prefix: Optional[int] = None
     status: str
     total: float
     items: List[OrderItemDetail] = Field(default_factory=list)
+    payments: List[OrderPaymentDetail] = Field(default_factory=list)
+    review: Optional[OrderReviewDetail] = None
     purchase_timestamp: Optional[str] = None
+    approved_at: Optional[str] = None
     delivered_carrier_date: Optional[str] = None
     delivered_customer_date: Optional[str] = None
     estimated_delivery_date: Optional[str] = None

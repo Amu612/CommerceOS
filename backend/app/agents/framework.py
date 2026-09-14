@@ -22,7 +22,7 @@ from datetime import datetime, timezone
 from typing import Any, Callable, Optional
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
-from langchain_core.tools import BaseTool
+from langchain_core.tools import BaseTool, tool
 
 from app.agents._shared import extract_order_id_from_history, money
 from app.agents.common_schemas import (
@@ -37,6 +37,39 @@ from app.intelligence.confidence.calculator import ConfidenceCalculator
 from app.services.llm import get_chat_model, get_llm
 
 logger = get_logger("agent.framework")
+
+
+@tool
+def calculator(expression: str) -> dict:
+    """Evaluate an arithmetic expression exactly (e.g. "(12450 / 38000) * 100").
+    Use this for ANY calculation on tool numbers — percentages, differences,
+    ratios, averages — so the result is mathematically correct, never estimated."""
+    import ast as _ast
+    import operator as _op
+
+    _SAFE_OPS = {
+        _ast.Add: _op.add, _ast.Sub: _op.sub, _ast.Mult: _op.mul,
+        _ast.Div: _op.truediv, _ast.Pow: _op.pow, _ast.Mod: _op.mod,
+        _ast.FloorDiv: _op.floordiv, _ast.USub: _op.neg, _ast.UAdd: _op.pos,
+    }
+
+    def _eval(node):
+        if isinstance(node, _ast.Constant) and isinstance(node.value, (int, float)):
+            return node.value
+        if isinstance(node, _ast.BinOp) and type(node.op) in _SAFE_OPS:
+            return _SAFE_OPS[type(node.op)](_eval(node.left), _eval(node.right))
+        if isinstance(node, _ast.UnaryOp) and type(node.op) in _SAFE_OPS:
+            return _SAFE_OPS[type(node.op)](_eval(node.operand))
+        raise ValueError("unsupported expression")
+
+    try:
+        return {"result": _eval(_ast.parse(expression, mode="eval").body)}
+    except Exception as exc:  # noqa: BLE001
+        return {"error": f"cannot evaluate '{expression}': {exc}"}
+
+
+# Reused across every chat turn (stateless).
+_CALCULATOR = [calculator]
 
 
 class DomainAgent:
@@ -74,8 +107,10 @@ class DomainAgent:
         charts: dict[str, Any] = {}
         tool_calls: list[dict] = []
         sample = 0
+        metric_ok = metric_total = 0
 
         for t in self.metric_tools:
+            metric_total += 1
             try:
                 raw = t.invoke({})
                 data = _as_obj(raw)
@@ -85,17 +120,21 @@ class DomainAgent:
                 if chart is not None:
                     charts[t.name] = chart
                 sample = max(sample, n)
+                metric_ok += 1
             except Exception as exc:  # noqa: BLE001
                 logger.warning("metric_tool_failed", tool=t.name, error=str(exc))
 
         findings: list[Finding] = []
+        detector_ok = detector_total = 0
         for t in self.detector_tools:
+            detector_total += 1
             try:
                 raw = _as_obj(t.invoke({}))
                 tool_calls.append({"tool": t.name, "output": raw})
                 f = raw.get("finding") if isinstance(raw, dict) else None
                 if f:
                     findings.append(Finding(**f))
+                detector_ok += 1
             except Exception as exc:  # noqa: BLE001
                 logger.warning("detector_tool_failed", tool=t.name, error=str(exc))
 
@@ -108,7 +147,34 @@ class DomainAgent:
                 tool_calls=[_tc(x) for x in tool_calls],
             )
 
-        confidence = ConfidenceCalculator.evaluate(sample_size=max(sample, 1), data_quality=0.82).confidence_score
+        # Data quality is measured, not assumed: the fraction of analysis tools
+        # that actually succeeded against the database this run.
+        ran = metric_ok + detector_ok
+        total = metric_total + detector_total
+        data_quality = round(ran / total, 3) if total else 0.5
+
+        # If every detector blew up we cannot claim "all dimensions healthy" —
+        # that would be a silent failure, not a healthy system.
+        if detector_total and detector_ok == 0:
+            return AgentAnalysisOutput(
+                agent=self.agent_name, execution_id=exec_id, timestamp=now,
+                status="NOT_ESTIMABLE", health="NOT_ESTIMABLE",
+                not_estimable_reason=f"All {self.agent_name} detectors failed this run — results would be silently incomplete, so no health verdict is issued.",
+                summary=f"{self.agent_name.title()} detectors unavailable.",
+                metrics=metrics, charts=charts, tool_calls=[_tc(x) for x in tool_calls],
+            )
+
+        confidence = ConfidenceCalculator.evaluate(sample_size=max(sample, 1), data_quality=data_quality).confidence_score
+
+        # Findings whose confidence was not derived from their own sample size
+        # (i.e. any hardcoded constant in a tool) are recalibrated here from the
+        # number of records the finding is actually grounded in.
+        for f in findings:
+            if f.sample_count:
+                f.confidence = ConfidenceCalculator.evaluate(
+                    sample_size=f.sample_count, data_quality=data_quality,
+                ).confidence_score
+
         severities = {f.severity for f in findings}
         health = (
             "CRITICAL" if "CRITICAL" in severities
@@ -162,10 +228,27 @@ class DomainAgent:
     def _select_recommendations(self, findings: list[Finding]) -> list[Recommendation]:
         if not findings:
             return []
-        prio = "HIGH" if any(f.severity in ("HIGH", "CRITICAL") for f in findings) else "MEDIUM"
-        out = []
+        out: list[Recommendation] = []
+        # Primary recommendations come straight from the live findings (real,
+        # data-driven actions for exactly what was observed), highest severity
+        # first.
+        for f in sorted(findings, key=lambda x: -_SEV_ORDER.get(x.severity, 0))[:4]:
+            out.append(Recommendation(
+                title=f.title,
+                detail=f.recommended_action,
+                expected_impact=f.why_it_matters,
+                priority="HIGH" if f.severity in ("HIGH", "CRITICAL") else "MEDIUM",
+            ))
+        # Playbook items are only appended when they actually relate to an
+        # observed finding (keyword overlap with the finding text) — never as a
+        # blanket dump of static copy.
         for r in self.recommendation_playbook:
-            out.append(r.model_copy(update={"priority": prio if r.priority == "AUTO" else r.priority}))
+            if len(out) >= 6:
+                break
+            hay = f"{r.title} {r.detail}".lower().split()
+            if any(w in hay for f in findings for w in f"{f.title} {f.what_happened}".lower().split() if len(w) > 3):
+                prio = "HIGH" if any(f.severity in ("HIGH", "CRITICAL") for f in findings) else "MEDIUM"
+                out.append(r.model_copy(update={"priority": prio if r.priority == "AUTO" else r.priority}))
         return out
 
     def _summary(self, metrics: list[MetricCard], findings: list[Finding]) -> str:
@@ -195,7 +278,7 @@ class DomainAgent:
         model = get_chat_model()
         if model is not None:
             try:
-                answer = self._react_chat(model, message, history=history)
+                answer = self._react_chat(model, message, history=history, analysis=analysis)
                 if answer:
                     return AgentQueryResponse(agent=self.agent_name, intent="react", answer=answer,
                                               data=context, llm_backed=True)
@@ -207,26 +290,50 @@ class DomainAgent:
             answer=self._deterministic_chat(message, analysis, history=history), data=context, llm_backed=False,
         )
 
-    def _react_chat(self, model, message: str, history: Optional[list] = None) -> str:
+    def _react_chat(self, model, message: str, history: Optional[list] = None, analysis: Optional[AgentAnalysisOutput] = None) -> str:
         from langgraph.prebuilt import create_react_agent
         from app.agents.customer.langchain_tools import resolve_unknown_id
 
-        tools = list(self.metric_tools) + list(self.lookup_tools) + [resolve_unknown_id]
+        tools = list(self.metric_tools) + list(self.lookup_tools) + [resolve_unknown_id] + _CALCULATOR
+        live = ""
+        if analysis is not None:
+            metric_lines = "; ".join(f"{m.label}={m.value}" for m in analysis.metrics[:8])
+            finding_lines = " | ".join(f"[{f.severity}] {f.title}" for f in analysis.findings[:4])
+            live = (
+                f"\n\nCurrent analysis snapshot for this agent (already computed from the live database — "
+                f"reuse these numbers instead of re-querying when they answer the question):\n"
+                f"Summary: {analysis.summary}\nMetrics: {metric_lines or 'none'}\n"
+                f"Findings: {finding_lines or 'none'}"
+            )
         agent = create_react_agent(
             model,
             tools,
             prompt=(
-                f"{self.persona}\n\nYou have tools that return live, verified data from the "
-                "e-commerce database — including domain lookup tools and a universal entity lookup tool "
-                "(`resolve_unknown_id`) for inspecting IDs from any table (orders, customers, products, "
-                "sellers, reviews). Call the tools you need, then answer the user's question concisely "
-                "and quantitatively. Never invent numbers, entities, or categories — only use tool output. "
-                "If the tools don't cover the question, say so. The conversation history is provided for "
-                "context on follow-up questions."
+                f"{self.persona}\n\n"
+                "You are a precise, professional assistant. Rules:\n"
+                "1. Answer EXACTLY what was asked — nothing more. No preamble, no filler, no "
+                "restating the question, no unsolicited extras. If the user asks one number, reply "
+                "with that number and its unit (plus one short clause of context at most).\n"
+                "2. For anything about the business data (orders, shipments, carriers, revenue, "
+                "prices, discounts, customers, products, reviews, SLA), call the relevant data tool "
+                "first. NEVER invent numbers, entities, or categories — every business figure must "
+                "come from tool output. Cite the key figures you used.\n"
+                "3. Use the `calculator` tool for ANY arithmetic on tool numbers (percentages, "
+                "differences, ratios, averages). Never do mental math on data.\n"
+                "4. You also have a universal entity lookup tool (`resolve_unknown_id`) for "
+                "inspecting any ID from any table (orders, customers, products, sellers, reviews).\n"
+                "5. The user may also ask general questions that need no database (definitions, "
+                "how something works, general knowledge, small talk). Answer those directly from "
+                "your own knowledge — do NOT call tools and do NOT refuse. If a question mixes "
+                "general context with business data, fetch the data and fold it in.\n"
+                "6. If a requested business figure genuinely doesn't exist in the data, say so in "
+                "one sentence and offer the closest available figure.\n"
+                "7. Use the conversation history to resolve follow-ups (\"what about its status?\")."
+                f"{live}"
             ),
         )
         messages: list[Any] = []
-        for turn in (history or [])[-6:]:
+        for turn in (history or [])[-8:]:
             role = turn.get("role") if isinstance(turn, dict) else getattr(turn, "role", "user")
             text = turn.get("text") if isinstance(turn, dict) else getattr(turn, "text", "")
             if not text:
@@ -235,7 +342,7 @@ class DomainAgent:
         messages.append(HumanMessage(content=message))
         result = agent.invoke(
             {"messages": messages},
-            config={"recursion_limit": 8},
+            config={"recursion_limit": 12},
         )
         msgs = result.get("messages", [])
         for m in reversed(msgs):
@@ -366,6 +473,8 @@ def _re_words(s: str) -> list[str]:
 
 
 _ACRONYMS = {"rfm", "sla", "rop", "eoq", "roi", "csat", "ltv", "cac", "sku"}
+
+_SEV_ORDER = {"CRITICAL": 4, "HIGH": 3, "MEDIUM": 2, "LOW": 1}
 
 
 def _titleize(name: str) -> str:

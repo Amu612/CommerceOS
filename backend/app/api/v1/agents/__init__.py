@@ -66,6 +66,26 @@ pricing_router = _make_router("/api/v1/agents/pricing", pricing_agent, "Pricing 
 marketing_router = _make_router("/api/v1/agents/marketing", marketing_agent, "Marketing Agent")
 
 
+class _RouteRequest(BaseModel):
+    order_id: str
+    seller_id: str | None = None
+
+
+@logistics_router.get("/route")
+@logistics_router.post("/route")
+def get_order_route(
+    order_id: str | None = None,
+    seller_id: str | None = None,
+    payload: _RouteRequest | None = None,
+    db: Session = Depends(get_db),
+):
+    from app.agents.logistics.data_layer import LogisticsData
+
+    target_order_id = (payload.order_id if payload else None) or order_id or ""
+    target_seller_id = (payload.seller_id if payload else None) or seller_id
+    return LogisticsData.order_route_lookup(db=db, order_id=target_order_id, seller_id=target_seller_id)
+
+
 # Pricing-only: the Apify competitor-price feed. Additive — works the same
 # regardless of which order data source (historic/live) is active.
 @pricing_router.get("/competitor-feed")

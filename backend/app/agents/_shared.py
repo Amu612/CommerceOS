@@ -158,6 +158,14 @@ def pct(n: float, d: float, digits: int = 2) -> float:
     return round((n / d) * 100.0, digits) if d else 0.0
 
 
+def sample_confidence(sample_count: int) -> float:
+    """Finding confidence derived from the number of records the finding is
+    grounded in — replaces hardcoded confidence constants in detector tools."""
+    from app.intelligence.confidence.calculator import ConfidenceCalculator
+
+    return ConfidenceCalculator.evaluate(sample_size=max(int(sample_count or 0), 1)).confidence_score
+
+
 def money(v: Any) -> str:
     try:
         return f"R${float(v):,.2f}"

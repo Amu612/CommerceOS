@@ -17,41 +17,43 @@ export type AuthUser = {
   is_super_admin: boolean;
 };
 
+// Sessions are MEMORY-ONLY by design: the system must start with the login
+// screen on every fresh app load (new tab, new deployment visit, restart) —
+// nothing auth-related is ever persisted to localStorage/webStorage. Any
+// legacy keys from older builds are wiped on first load below.
+let memoryToken: string | null = null;
+let memoryRefresh: string | null = null;
+let memoryUser: AuthUser | null = null;
+
+try {
+  localStorage.removeItem(TOKEN_KEY);
+  localStorage.removeItem(REFRESH_KEY);
+  localStorage.removeItem(USER_KEY);
+  sessionStorage.removeItem(TOKEN_KEY);
+  sessionStorage.removeItem(REFRESH_KEY);
+  sessionStorage.removeItem(USER_KEY);
+} catch {
+  /* noop */
+}
+
 export function getToken(): string | null {
-  try {
-    return localStorage.getItem(TOKEN_KEY);
-  } catch {
-    return null;
-  }
+  return memoryToken;
 }
 
 export function getUser(): AuthUser | null {
-  try {
-    const raw = localStorage.getItem(USER_KEY);
-    return raw ? (JSON.parse(raw) as AuthUser) : null;
-  } catch {
-    return null;
-  }
+  return memoryUser;
 }
 
 export function setSession(access: string, refresh: string, user: AuthUser) {
-  try {
-    localStorage.setItem(TOKEN_KEY, access);
-    localStorage.setItem(REFRESH_KEY, refresh);
-    localStorage.setItem(USER_KEY, JSON.stringify(user));
-  } catch {
-    /* private mode */
-  }
+  memoryToken = access;
+  memoryRefresh = refresh;
+  memoryUser = user;
 }
 
 export function clearSession() {
-  try {
-    localStorage.removeItem(TOKEN_KEY);
-    localStorage.removeItem(REFRESH_KEY);
-    localStorage.removeItem(USER_KEY);
-  } catch {
-    /* noop */
-  }
+  memoryToken = null;
+  memoryRefresh = null;
+  memoryUser = null;
 }
 
 let onUnauthorized: (() => void) | null = null;

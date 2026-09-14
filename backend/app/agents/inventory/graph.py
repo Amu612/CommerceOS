@@ -12,6 +12,7 @@ from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
 from app.agents.inventory.tools import (
     ALL_INVENTORY_TOOLS,
+    tool_demand_analytics,
     tool_query_inventory,
     tool_get_product_stock,
     tool_suggest_reorders,
@@ -29,6 +30,7 @@ class InventoryAgentState(TypedDict):
     intent: Optional[str]
     product_id: Optional[str]
     threshold: Optional[int]
+    metric: Optional[str]
     tool_name: Optional[str]
     tool_input: Optional[Dict[str, Any]]
     tool_result: Optional[str]
@@ -44,23 +46,31 @@ Your responsibilities:
 4. Sales Velocity Analysis: Analyze sales trends and daily averages to forecast stock depletion.
 5. Automated Action: Issue purchase orders and update reorder flags.
 
-Provide factual, data-driven responses with markdown bullet points and clear numbers.
+Provide factual, data-driven responses with clear numbers.
+
+Answer style: CONCISE and to the point - lead with the direct answer, show the key
+calculation in one line when a figure is requested, and add at most 2-3 short bullets
+of support. Restocking guidance is demand-based (Olist has no live warehouse stock
+feed) - say so when giving restock recommendations, never present it as a stockout
+prediction.
 """
 
 INVENTORY_TRIAGE_PROMPT = """You are an inventory management triage assistant.
 Classify the user message and extract entities as JSON:
 {
-    "intent": "<stock_monitoring | product_stock | reorder_suggestions | sales_analysis | reorder_action | general>",
+    "intent": "<stock_monitoring | product_stock | reorder_suggestions | sales_analysis | reorder_action | demand_analytics | general>",
     "product_id": "<product ID, SKU, or name if mentioned, empty otherwise>",
     "threshold": <integer threshold if specified, or 50>,
-    "quantity": <reorder quantity if specified, or null>
+    "quantity": <reorder quantity if specified, or null>,
+    "metric": "<if intent is demand_analytics, EXACTLY one of: volume_concentration | top20_share | monthly_velocity | category_yoy | volatility | seasonal_concentration | units_per_order_cat | seller_contribution | velocity_growth | restock_priority. Otherwise empty>"
 }
 
 Intent guide:
 - "stock_monitoring": user asks for low stock products, inventory overview, or items below threshold
 - "product_stock": user asks about stock, price, or details of a specific product ID / SKU
 - "reorder_suggestions": user asks for reorder recommendations, ROP, suggested order quantities
-- "sales_analysis": user asks about sales trends, sales velocity, or product demand
+- "sales_analysis": user asks about sales trends, sales velocity, or product demand for a specific product
+- "demand_analytics": aggregate/portfolio demand questions - top products share, concentration, monthly velocity rankings, category 2017 vs 2018 growth, demand volatility, seasonal concentration, units per order by category, seller contribution, velocity growth, or restocking priority rankings
 - "reorder_action": user requests to place an order, create a purchase order, or restock an item
 - "general": greetings, system capabilities, or advice
 
@@ -96,6 +106,7 @@ def inventory_triage_node(state: InventoryAgentState) -> Dict[str, Any]:
                     "intent": parsed.get("intent", "general"),
                     "product_id": parsed.get("product_id") or None,
                     "threshold": int(parsed.get("threshold") or 50),
+                    "metric": parsed.get("metric") or None,
                 }
         except Exception as e:
             logger.warning(f"LLM triage failed: {e}")
@@ -191,6 +202,10 @@ def inventory_tool_node(state: InventoryAgentState) -> Dict[str, Any]:
             tool_name = "tool_analyze_sales_trends"
             tool_input = {"product_id": pid, "days": 30}
             tool_result = tool_analyze_sales_trends.invoke(tool_input)
+        elif intent == "demand_analytics":
+            tool_name = "tool_demand_analytics"
+            tool_input = {"metric": state.get("metric") or "restock_priority"}
+            tool_result = tool_demand_analytics.invoke(tool_input)
         elif intent == "reorder_action" and pid:
             tool_name = "tool_create_reorder_action"
             tool_input = {"product_id": pid, "quantity": 50}

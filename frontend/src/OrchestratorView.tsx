@@ -66,7 +66,6 @@ export default function OrchestratorView({ refreshKey }: { refreshKey?: number }
   // Guards the one-time auto-sweep below so it never fires more than once per
   // mount — repeatedly auto-triggering the expensive sweep would reintroduce
   // the WS-event -> refresh -> re-sweep loop this view deliberately avoids.
-  const autoSweptRef = useRef(false);
 
   // Cheap: read the last persisted sweep. Used on mount and on every refresh tick.
   const loadLatest = useCallback(async () => {
@@ -77,15 +76,6 @@ export default function OrchestratorView({ refreshKey }: { refreshKey?: number }
       const d = (await r.json()) as OrchResult & { stale?: boolean };
       setData(d);
       setStale(Boolean(d.stale));
-      // If the persisted sweep is stale (or nothing has ever run) and we
-      // haven't already tried, run one fresh sweep automatically so the page
-      // doesn't look "stuck" after new data shows up — a manual "Re-run
-      // Sweep" click should never be required just to see current numbers.
-      const looksEmpty = !d || d.overall_health === "NOT_ESTIMABLE" || !d.domains?.length;
-      if (!autoSweptRef.current && (d?.stale || looksEmpty)) {
-        autoSweptRef.current = true;
-        runSweep();
-      }
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to load orchestrator");
     } finally {
@@ -111,7 +101,16 @@ export default function OrchestratorView({ refreshKey }: { refreshKey?: number }
     }
   }, []);
 
+  // Nothing auto-runs on mount: the sweep stays empty until the user explicitly
+  // runs one (or a WS/refresh event bumps refreshKey after a real run).
+  const mountedRef = useRef(false);
   useEffect(() => {
+    if (!mountedRef.current) {
+      mountedRef.current = true;
+      setLoading(false);
+      if (refreshKey !== undefined && refreshKey > 0) loadLatest();
+      return;
+    }
     loadLatest();
   }, [loadLatest, refreshKey]);
 
@@ -223,6 +222,13 @@ export default function OrchestratorView({ refreshKey }: { refreshKey?: number }
       )}
 
       {data && <p className="orch-summary">{data.summary}</p>}
+
+      {!data && !loading && !error && (
+        <div className="dav-empty">
+          No cross-domain sweep has been run in this session yet — press <strong>Run Sweep</strong> to execute all
+          six domain agents and compute the coordinated view.
+        </div>
+      )}
 
       {/* KPI strip */}
       {data && (

@@ -144,6 +144,15 @@ def _execute(db: Session, action: AutomationAction, *, use_langchain: bool = Tru
                 "automation_executed", action=action.action_type, verified=ok,
                 backend=result.get("automation_backend"), attempt=attempt,
             )
+            # Real-time proof push: the console's approval queue refreshes the
+            # moment an action actually executes (auto or human-approved).
+            publish_event("automation", {
+                "type": "automation_executed",
+                "action_type": action.action_type,
+                "status": action.status,
+                "verified": ok,
+                "backend": result.get("automation_backend"),
+            })
             return
         except OperationalError as exc:
             db.rollback()  # clear the failed flush so `db` is usable again

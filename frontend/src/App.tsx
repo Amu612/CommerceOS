@@ -382,6 +382,7 @@ export default function App() {
             accent="var(--agent-logistics)"
             analyzeUrl={API_ENDPOINTS.logistics.analyze}
             queryUrl={API_ENDPOINTS.logistics.query}
+            routeUrl={API_ENDPOINTS.logistics.route}
             refreshKey={refreshKey}
             suggestions={[
               "Which carrier is slowest?",

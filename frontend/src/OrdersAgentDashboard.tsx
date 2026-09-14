@@ -605,9 +605,9 @@ export default function OrdersAgentDashboard({
     return () => window.clearInterval(timer);
   }, [ingestion.status, fetchIngestionStatus, loadAnalysis]);
 
+  // Nothing auto-runs on mount: fields stay empty until the user explicitly
+  // runs an analysis (or starts the ingestion stream).
   useEffect(() => {
-    loadAnalysis();
-
     if (!refreshIntervalMs) {
       return;
     }

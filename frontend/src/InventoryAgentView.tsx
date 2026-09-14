@@ -293,9 +293,14 @@ export default function InventoryAgentView({
     chatRef.current?.scrollTo({ top: chatRef.current.scrollHeight, behavior: "smooth" });
   }, [chat, asking]);
 
+  // Nothing auto-runs on mount: fields stay empty until the user explicitly
+  // runs the watchdog inspection.
   useEffect(() => {
-    runMonitor();
-  }, [runMonitor]);
+    if (refreshKey !== undefined && refreshKey > 0) {
+      runMonitor();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   useEffect(() => {
     if (!refreshIntervalMs || refreshIntervalMs <= 0) {

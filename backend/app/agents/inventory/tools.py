@@ -39,11 +39,27 @@ _DEFAULT_LEAD_TIME = 7
 _RECENT_WINDOW_DAYS = 180
 
 
+# Full-dataset demand stats depend only on order_items + the simulated clock, so
+# they are cached per clock value — query_products, reorder recommendations,
+# alerts and trends all funnel through here and were re-running the same two
+# grouped SQL scans over every product on every call (the agent's multi-second
+# load time).
+_DEMAND_CACHE: Dict[Any, Dict[str, Dict[str, float]]] = {}
+
+
 def _demand_stats(db: Session, product_ids: Optional[List[str]] = None) -> Dict[str, Dict[str, float]]:
     """Real per-product demand: total units, units in the recent window, first/last sale."""
     from app.agents._shared import simulated_clock
 
     clock = simulated_clock(db)
+    cache_key = ("all", str(clock))
+    if cache_key in _DEMAND_CACHE:
+        full = _DEMAND_CACHE[cache_key]
+        if product_ids is None:
+            return full
+        wanted = {str(p) for p in product_ids}
+        return {pid: stats for pid, stats in full.items() if pid in wanted}
+
     cutoff = clock - timedelta(days=_RECENT_WINDOW_DAYS)
 
     q = (
@@ -57,8 +73,6 @@ def _demand_stats(db: Session, product_ids: Optional[List[str]] = None) -> Dict[
         .filter(Order.order_purchase_timestamp <= clock)
         .group_by(OrderItem.product_id)
     )
-    if product_ids:
-        q = q.filter(OrderItem.product_id.in_(product_ids))
 
     recent_q = (
         db.query(OrderItem.product_id, func.count(OrderItem.order_item_id))
@@ -66,8 +80,6 @@ def _demand_stats(db: Session, product_ids: Optional[List[str]] = None) -> Dict[
         .filter(Order.order_purchase_timestamp <= clock, Order.order_purchase_timestamp >= cutoff)
         .group_by(OrderItem.product_id)
     )
-    if product_ids:
-        recent_q = recent_q.filter(OrderItem.product_id.in_(product_ids))
     recent = {pid: int(n) for pid, n in recent_q.all()}
 
     out: Dict[str, Dict[str, float]] = {}
@@ -77,12 +89,18 @@ def _demand_stats(db: Session, product_ids: Optional[List[str]] = None) -> Dict[
         out[pid] = {
             "units_total": int(total),
             "units_recent": units_recent,
-            "units_recent_90d": units_recent,
+            "units_recent_180d": units_recent,
             "daily_demand": round(units_recent / float(_RECENT_WINDOW_DAYS), 4),
             "lifetime_daily_demand": round(int(total) / days_active, 4),
             "days_active": round(days_active, 1),
         }
-    return out
+    # Keep only the newest clock (the clock advances as ingestion streams).
+    _DEMAND_CACHE.clear()
+    _DEMAND_CACHE[cache_key] = out
+    if product_ids is None:
+        return out
+    wanted = {str(p) for p in product_ids}
+    return {pid: stats for pid, stats in out.items() if pid in wanted}
 
 
 def _turnover_band(daily_demand: float) -> str:
@@ -161,27 +179,41 @@ class InventoryTools:
         if not demand:
             return []
 
-        pid_list = list(demand.keys())
-        prod_rows = {p.product_id: p for p in db.query(Product).filter(Product.product_id.in_(pid_list)).all()}
-        price_rows = dict(
-            db.query(OrderItem.product_id, func.avg(OrderItem.price))
-            .filter(OrderItem.product_id.in_(pid_list))
-            .group_by(OrderItem.product_id)
-            .all()
-        )
         cat_en = {
             r[0]: r[1]
             for r in db.query(CategoryTranslation.product_category_name, CategoryTranslation.product_category_name_english).all()
         }
 
-        ranked = sorted(demand.items(), key=lambda kv: (-kv[1]["units_recent_90d"], -kv[1]["units_total"]))
-        out: List[InventoryProduct] = []
+        ranked = sorted(demand.items(), key=lambda kv: (-kv[1]["units_recent_180d"], -kv[1]["units_total"]))
+
+        # The low-stock test is a pure function of the (cached) demand stats, so
+        # it is applied BEFORE touching the database — only the handful of
+        # products actually returned get Product/price row lookups. This keeps
+        # the SQL `IN` clauses tiny instead of scanning the whole catalogue.
+        candidates: List[tuple] = []
         for pid, stats in ranked:
-            p = prod_rows.get(pid)
             pos = _modelled_stock(stats)
             is_low = pos["on_hand"] < pos["reorder_point"]
             if low_stock_only and not is_low:
                 continue
+            candidates.append((pid, stats, pos, is_low))
+            if len(candidates) >= limit and not category:
+                break
+        if not candidates:
+            return []
+
+        cand_ids = [c[0] for c in candidates]
+        prod_rows = {p.product_id: p for p in db.query(Product).filter(Product.product_id.in_(cand_ids)).all()}
+        price_rows = dict(
+            db.query(OrderItem.product_id, func.avg(OrderItem.price))
+            .filter(OrderItem.product_id.in_(cand_ids))
+            .group_by(OrderItem.product_id)
+            .all()
+        )
+
+        out: List[InventoryProduct] = []
+        for pid, stats, pos, is_low in candidates:
+            p = prod_rows.get(pid)
             if category:
                 cat_raw = (p.product_category_name if p else "") or ""
                 if category.lower() not in cat_raw.lower() and category.lower() not in cat_en.get(cat_raw, "").lower():
@@ -278,7 +310,7 @@ class InventoryTools:
         }
         pids = list(demand.keys())
         prod_rows = {p.product_id: p for p in db.query(Product).filter(Product.product_id.in_(pids)).all()}
-        ranked = sorted(demand.items(), key=lambda kv: (-kv[1]["units_recent_90d"], -kv[1]["units_total"]))
+        ranked = sorted(demand.items(), key=lambda kv: (-kv[1]["units_recent_180d"], -kv[1]["units_total"]))
         if not product_id:
             ranked = ranked[:limit]
 
@@ -314,7 +346,8 @@ class InventoryTools:
     ) -> List[ReorderRecommendation]:
         """
         Calculates optimal Reorder Point (ROP = d * L + SS) and suggested reorder quantities (EOQ-derived).
-        Safety Stock = Z * sigma_L (defaulting Z=1.65 for 95% service level).
+        Safety Stock is modelled as 40% of lead-time demand plus one unit — the documented
+        parametric assumption on top of the measured daily demand (Olist has no warehouse feed).
         """
         low_stock_prods = InventoryTools.query_products(
             db, threshold=threshold, limit=limit, low_stock_only=True
@@ -372,25 +405,37 @@ class InventoryTools:
         db: Session,
         threshold: int = 50,
         limit: int = 10,
+        recommendations: Optional[List[ReorderRecommendation]] = None,
     ) -> List[InventoryAlert]:
         """
         Generates alerts for low stock, impending stockouts, and high sales velocity.
+        Pass an already-computed `recommendations` list to avoid recomputing it.
         """
-        recs = InventoryTools.get_reorder_recommendations(db, threshold=threshold, limit=limit)
+        recs = (
+            recommendations[:limit] if recommendations is not None
+            else InventoryTools.get_reorder_recommendations(db, threshold=threshold, limit=limit)
+        )
         alerts: List[InventoryAlert] = []
         now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
 
         for idx, r in enumerate(recs):
             stock = r.current_stock or 0
-            if stock <= 15:
+            rop = r.reorder_point or 1
+            # Severity is relative to the SKU's own reorder point (its measured
+            # lead-time demand), never absolute unit counts — 20 units is plenty
+            # for a slow mover and critical for a fast one.
+            if stock <= 0:
                 severity = "CRITICAL"
-                msg = f"Critical stockout risk: only {stock} units remaining (ROP: {r.reorder_point}). Immediate reorder advised."
-            elif stock <= 30:
+                msg = f"Stockout: 0 units on hand while demand implies an ROP of {rop}. Immediate reorder advised."
+            elif stock <= rop * 0.5:
+                severity = "CRITICAL"
+                msg = f"Critical stockout risk: only {stock} units remaining against an ROP of {rop}. Immediate reorder advised."
+            elif stock <= rop:
                 severity = "HIGH"
-                msg = f"Low stock alert: {stock} units remaining (ROP: {r.reorder_point}). Reorder suggested."
+                msg = f"Low stock alert: {stock} units remaining (ROP: {rop}). Reorder suggested."
             else:
                 severity = "MEDIUM"
-                msg = f"Approaching reorder point: {stock} units remaining (ROP: {r.reorder_point})."
+                msg = f"Approaching reorder point: {stock} units remaining (ROP: {rop})."
 
             alerts.append(
                 InventoryAlert(
@@ -588,10 +633,251 @@ def tool_create_reorder_action(product_id: str, quantity: int) -> str:
         db.close()
 
 
+# ── Doc-grade demand analytics (velocity, concentration, restock priority) ──
+@tool
+def tool_demand_analytics(metric: str) -> str:
+    """Historical demand analytics derived from real order-item data (Olist has
+    NO real-time stock quantity — all restocking output is demand-based).
+
+    metric must be one of:
+    - "volume_concentration"   : avg units sold per product; products selling more than 2x the average
+    - "top20_share"            : the 20 products with the largest share of all units sold, and their combined share
+    - "monthly_velocity"       : 10 products with the highest average monthly sales velocity
+    - "category_yoy"           : categories with the largest unit increase 2017 -> 2018 (with %)
+    - "volatility"             : coefficient of variation of monthly sales for the top-selling products
+    - "seasonal_concentration" : high-demand products whose sales concentrate in only a few months
+    - "units_per_order_cat"    : average units sold per order for each category (highest first)
+    - "seller_contribution"    : sellers with the highest total units sold and their % contribution
+    - "velocity_growth"        : products whose sales velocity grew >= 50% between 2017 and 2018
+    - "restock_priority"       : top 10 demand-based restocking priorities with the demand metric behind each
+    """
+    from collections import defaultdict
+
+    from app.agents._shared import simulated_clock
+    from app.database.session import SessionLocal
+    from app.models.olist import CategoryTranslation, Order, OrderItem, Seller
+
+    # Triage LLMs sometimes paraphrase the metric; normalize and alias.
+    aliases = {
+        "top20": "top20_share", "top_products": "top20_share", "top20products": "top20_share",
+        "share": "top20_share", "concentration": "volume_concentration",
+        "volatility": "volatility", "cv": "volatility",
+        "restock": "restock_priority", "priority": "restock_priority",
+        "restocking": "restock_priority", "restocking_priority": "restock_priority",
+        "velocity": "monthly_velocity", "growth": "velocity_growth",
+        "yoy": "category_yoy", "category_growth": "category_yoy",
+        "seasonality": "seasonal_concentration", "units_per_order": "units_per_order_cat",
+        "sellers": "seller_contribution",
+    }
+    norm = str(metric or "").strip().lower().replace(" ", "_").replace("-", "_")
+    valid = {
+        "volume_concentration", "top20_share", "monthly_velocity", "category_yoy", "volatility",
+        "seasonal_concentration", "units_per_order_cat", "seller_contribution", "velocity_growth",
+        "restock_priority",
+    }
+    if norm in valid:
+        metric = norm
+    elif norm in aliases:
+        metric = aliases[norm]
+    else:
+        # Last resort: keyword scan of whatever text the triage passed through.
+        q = norm
+        if ("restock" in q or "priority" in q):
+            metric = "restock_priority"
+        elif ("volatil" in q or "coefficient" in q or " cv " in f" {q} "):
+            metric = "volatility"
+        elif ("20" in q or "share" in q or "percent" in q or "largest percentage" in q):
+            metric = "top20_share"
+        elif ("twice" in q or "2x" in q or "average" in q and "sold" in q):
+            metric = "volume_concentration"
+        elif ("2017" in q or "2018" in q or "yoy" in q):
+            metric = "category_yoy"
+        elif ("50" in q or "growth" in q):
+            metric = "velocity_growth"
+        elif ("per order" in q or "units_per_order" in q):
+            metric = "units_per_order_cat"
+        elif ("seller" in q):
+            metric = "seller_contribution"
+        elif ("velocity" in q or "monthly" in q):
+            metric = "monthly_velocity"
+        elif ("season" in q or "few months" in q or "concentrat" in q):
+            metric = "seasonal_concentration"
+
+    db = SessionLocal()
+    try:
+        clock = simulated_clock(db)
+        rows = (
+            db.query(
+                OrderItem.product_id,
+                func.strftime("%Y-%m", Order.order_purchase_timestamp),
+                func.count(OrderItem.order_item_id),
+            )
+            .join(Order, Order.order_id == OrderItem.order_id)
+            .filter(Order.order_purchase_timestamp <= clock)
+            .group_by(OrderItem.product_id, func.strftime("%Y-%m", Order.order_purchase_timestamp))
+            .all()
+        )
+        if not rows:
+            return "No demand data observed yet."
+        monthly: dict = defaultdict(lambda: defaultdict(int))
+        totals: dict = {}
+        for pid, ym, c in rows:
+            monthly[pid][ym] += int(c)
+            totals[pid] = totals.get(pid, 0) + int(c)
+        cat_en = {
+            r[0]: r[1]
+            for r in db.query(CategoryTranslation.product_category_name, CategoryTranslation.product_category_name_english).all()
+        }
+        prod_cat = {
+            r[0]: r[1]
+            for r in db.query(Product.product_id, Product.product_category_name).all()
+        }
+
+        def disp(pid):
+            raw = prod_cat.get(pid) or "unknown"
+            return cat_en.get(raw, raw).replace("_", " ").title()
+
+        avg_total = sum(totals.values()) / max(1, len(totals))
+
+        if metric == "volume_concentration":
+            hot = {pid: t for pid, t in totals.items() if t > 2 * avg_total}
+            share = sum(hot.values()) / max(1, sum(totals.values())) * 100
+            top = sorted(hot.items(), key=lambda kv: -kv[1])[:8]
+            parts = ", ".join(f"{disp(p)[:24]} ({t:,} units)" for p, t in top)
+            return (
+                f"Average units sold per product: {avg_total:.1f}. {len(hot)} product(s) sell more than "
+                f"2x that, representing {share:.1f}% of all units. Highest: {parts}"
+            )
+        if metric == "top20_share":
+            total_units = sum(totals.values()) or 1
+            top = sorted(totals.items(), key=lambda kv: -kv[1])[:20]
+            share = sum(t for _, t in top) / total_units * 100
+            parts = ", ".join(f"{disp(p)[:20]} {t / total_units * 100:.1f}%" for p, t in top[:8])
+            return f"Top 20 products hold {share:.1f}% of all {total_units:,} units sold. Largest: {parts}"
+        if metric == "monthly_velocity":
+            vel = {pid: t / max(1, len(monthly[pid])) for pid, t in totals.items()}
+            top = sorted(vel.items(), key=lambda kv: -kv[1])[:10]
+            parts = ", ".join(f"{disp(p)[:20]}: {v:.1f}/mo" for p, v in top)
+            return f"Top 10 products by average monthly velocity: {parts}"
+        if metric == "category_yoy":
+            per_year: dict = defaultdict(lambda: defaultdict(int))
+            for pid, m in monthly.items():
+                cat = disp(pid)
+                for ym, c in m.items():
+                    per_year[cat][ym[:4]] += c
+            diffs = []
+            for cat, y in per_year.items():
+                a, b = y.get("2017", 0), y.get("2018", 0)
+                if a > 0:
+                    diffs.append((cat, a, b, (b - a) / a * 100))
+            diffs.sort(key=lambda d: -d[3])
+            parts = ", ".join(f"{c} {a:,}→{b:,} (+{g:.0f}%)" for c, a, b, g in diffs[:8])
+            return "Largest unit-sold increase 2017→2018 by category: " + (parts or "no comparable data")
+        if metric == "volatility":
+            import statistics as st
+
+            top = sorted(totals.items(), key=lambda kv: -kv[1])[:25]
+            scored = []
+            for pid, _ in top:
+                vals = list(monthly[pid].values())
+                if len(vals) >= 3 and st.mean(vals) > 0:
+                    scored.append((pid, st.pstdev(vals) / st.mean(vals)))
+            scored.sort(key=lambda kv: -kv[1])
+            parts = ", ".join(f"{disp(p)[:20]} CV={cv:.2f}" for p, cv in scored[:8])
+            return f"Demand volatility (CV of monthly sales, top sellers): {parts}. Higher CV = more volatile demand."
+        if metric == "seasonal_concentration":
+            out = []
+            for pid, t in sorted(totals.items(), key=lambda kv: -kv[1])[:60]:
+                m = monthly[pid]
+                months_sorted = sorted(m.values(), reverse=True)
+                cum, k = 0, 0
+                for v in months_sorted:
+                    cum += v
+                    k += 1
+                    if cum >= t * 0.8:
+                        break
+                if k <= 3 and t >= avg_total:
+                    out.append((pid, t, k))
+            parts = ", ".join(f"{disp(p)[:20]} (80% of {t:,} units in {k} month(s))" for p, t, k in out[:8])
+            return "High-demand products concentrated in few months: " + (parts or "none in the current slice")
+        if metric == "units_per_order_cat":
+            items_per_order = (
+                db.query(
+                    Product.product_category_name,
+                    func.count(OrderItem.order_item_id),
+                    func.count(func.distinct(OrderItem.order_id)),
+                )
+                .join(Order, Order.order_id == OrderItem.order_id)
+                .join(Product, Product.product_id == OrderItem.product_id)
+                .filter(Order.order_purchase_timestamp <= clock)
+                .group_by(Product.product_category_name)
+                .all()
+            )
+            rows2 = [
+                (cat_en.get(c, (c or "unknown")).replace("_", " ").title(), n / max(1, d))
+                for c, n, d in items_per_order if c
+            ]
+            rows2.sort(key=lambda r: -r[1])
+            parts = ", ".join(f"{c}: {v:.2f}" for c, v in rows2[:8])
+            return f"Average units per order by category (highest first): {parts}"
+        if metric == "seller_contribution":
+            rows2 = (
+                db.query(Seller.seller_id, func.count(OrderItem.order_item_id))
+                .join(OrderItem, OrderItem.seller_id == Seller.seller_id)
+                .join(Order, Order.order_id == OrderItem.order_id)
+                .filter(Order.order_purchase_timestamp <= clock)
+                .group_by(Seller.seller_id)
+                .all()
+            )
+            total_units = sum(int(c) for _, c in rows2) or 1
+            top = sorted(rows2, key=lambda r: -int(r[1]))[:8]
+            parts = ", ".join(f"#{s[:8]} {int(c):,} ({int(c) / total_units * 100:.1f}%)" for s, c in top)
+            return f"Sellers by total units sold: {parts}"
+        if metric == "velocity_growth":
+            out = []
+            for pid, m in monthly.items():
+                n17 = max(1, len([1 for ym in m if ym.startswith("2017")]))
+                n18 = max(1, len([1 for ym in m if ym.startswith("2018")]))
+                v17 = sum(c for ym, c in m.items() if ym.startswith("2017")) / n17
+                v18 = sum(c for ym, c in m.items() if ym.startswith("2018")) / n18
+                if v17 > 0 and v18 >= v17 * 1.5:
+                    out.append((pid, v17, v18, (v18 - v17) / v17 * 100))
+            out.sort(key=lambda r: -r[3])
+            parts = ", ".join(f"{disp(p)[:18]} {a:.1f}→{b:.1f}/mo (+{g:.0f}%)" for p, a, b, g in out[:8])
+            return f"Products with ≥50% velocity growth 2017→2018: {len(out)} found. Highest: " + (parts or "none")
+        if metric == "restock_priority":
+            scored = []
+            for pid, t in totals.items():
+                m = monthly[pid]
+                recent = sum(c for ym, c in m.items() if ym in sorted(m)[-3:])
+                rec_vel = recent / max(1, min(3, len(m)))
+                vel = t / max(1, len(m))
+                score = rec_vel * 0.7 + vel * 0.3
+                scored.append((pid, score, rec_vel, vel, t))
+            scored.sort(key=lambda r: -r[1])
+            parts = "; ".join(
+                f"{disp(p)[:18]} (score {s:.1f} = 0.7*recent {rv:.1f}/mo + 0.3*overall {v:.1f}/mo; {t:,} units)"
+                for p, s, rv, v, t in scored[:10]
+            )
+            return (
+                "Demand-based restocking priority (NOT a stockout prediction — Olist provides no current "
+                "inventory quantities): " + parts
+            )
+        return (
+            "Unknown metric. Use one of: volume_concentration, top20_share, monthly_velocity, category_yoy, "
+            "volatility, seasonal_concentration, units_per_order_cat, seller_contribution, velocity_growth, restock_priority"
+        )
+    except Exception as exc:  # noqa: BLE001
+        return f"❌ Analytics failed: {exc}"
+    finally:
+        db.close()
+
+
 ALL_INVENTORY_TOOLS = [
     tool_query_inventory,
     tool_get_product_stock,
     tool_suggest_reorders,
     tool_analyze_sales_trends,
     tool_create_reorder_action,
+    tool_demand_analytics,
 ]

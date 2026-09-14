@@ -67,8 +67,9 @@ class InventoryWatchdogAgent:
             # 3. Sales trend analysis
             sales_trends = InventoryTools.analyze_sales_trends(db, days=30, limit=12)
 
-            # 4. Inventory alerts
-            alerts = InventoryTools.get_inventory_alerts(db, threshold=thresh, limit=10)
+            # 4. Inventory alerts (reuse the recommendations computed above — same
+            #    underlying ranking, no second pass over the catalogue)
+            alerts = InventoryTools.get_inventory_alerts(db, threshold=thresh, limit=10, recommendations=recs)
 
             # 5. High-level metrics
             metrics = InventoryTools.get_inventory_metrics(db, threshold=thresh)
@@ -96,7 +97,7 @@ class InventoryWatchdogAgent:
                 ToolCallRecord(
                     tool="get_reorder_recommendations",
                     name="get_reorder_recommendations",
-                    input={"threshold": thresh, "service_level": 0.95},
+                    input={"threshold": thresh},
                     output=f"Computed ROP and EOQ batches for {len(recs)} low-stock candidates.",
                 ),
                 ToolCallRecord(
@@ -112,10 +113,10 @@ class InventoryWatchdogAgent:
                 f"### 🛡️ Smart Inventory Watchdog Inspection Complete",
                 f"",
                 f"- **Catalog Overview**: Evaluated **{metrics.total_products:,}** products; **{len(low_stock_prods)}** items require restocking attention.",
-                f"- **Critical Alerts**: Dispatched **{len(alerts)}** automated alerts to inventory controllers.",
+                f"- **Critical Alerts**: Generated **{len(alerts)}** alert(s) for the current stock position.",
                 f"- **Demand Velocity**: Sales velocity analysis completed for {len(sales_trends)} top-selling categories.",
                 f"- **Capital Requirement**: Estimated reorder investment is **R${sum(r.estimated_cost or 0 for r in recs):,.2f}** across {len(recs)} purchase candidates.",
-                f"- **Watchdog Status**: 🟢 Active continuous guardian mode.",
+                f"- **Watchdog Status**: Monitoring on every inspection run (on-demand analysis, not a background daemon).",
             ]
             output_text = "\n".join(summary_lines)
 

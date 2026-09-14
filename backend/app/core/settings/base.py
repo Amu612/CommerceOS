@@ -122,6 +122,9 @@ class BaseAppSettings(BaseSettings):
     DATASET_DIR: Optional[str] = None  # local dir OR s3://bucket/prefix
     REPLAY_MAX_ORDERS: int = 15000
 
+    # ── TomTom (Logistics Route Intelligence) ──────────────────────
+    TOMTOM_API_KEY: Optional[str] = None  # set via env; never hardcode keys in source
+
     # ── Apify (competitor price feed — Pricing agent only) ──────────
     APIFY_TOKEN: Optional[str] = None
     APIFY_ACTOR_ID: Optional[str] = None

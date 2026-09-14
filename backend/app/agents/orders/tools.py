@@ -25,6 +25,8 @@ from app.agents.orders.schemas import (
     AgeDistributionBucket,
     OrderDetail,
     OrderItemDetail,
+    OrderPaymentDetail,
+    OrderReviewDetail,
     ReturnEligibilityResult,
     ReturnRequestResult,
     ShipmentTrackingResult,
@@ -60,7 +62,14 @@ def _lookup_order_review(order_id: str, db: Optional[Session] = None) -> Optiona
         rev = db.query(OrderReview).filter(OrderReview.order_id.ilike(f"{clean}%")).first()
         if not rev:
             return None
-        return {"review_score": rev.review_score, "review_comment": rev.review_comment_message}
+        return {
+            "review_id": str(rev.review_id) if rev.review_id else None,
+            "review_score": rev.review_score,
+            "review_comment_title": rev.review_comment_title,
+            "review_comment_message": rev.review_comment_message,
+            "review_creation_date": rev.review_creation_date.isoformat() if rev.review_creation_date else None,
+            "review_answer_timestamp": rev.review_answer_timestamp.isoformat() if rev.review_answer_timestamp else None,
+        }
     except Exception:  # noqa: BLE001
         return None
     finally:
@@ -1113,22 +1122,57 @@ class OrdersTools:
                                 quantity=1,
                                 price=float(it.price or 0.0),
                                 freight_value=float(it.freight_value or 0.0),
+                                shipping_limit_date=it.shipping_limit_date.isoformat() if it.shipping_limit_date else None,
+                                seller_id=str(it.seller_id) if it.seller_id else None,
+                                product_category=p.product_category_name if p else None,
+                                product_photos_qty=p.product_photos_qty if p else None,
+                                product_name_length=p.product_name_lenght if p else None,
+                                product_description_length=p.product_description_lenght if p else None,
+                                product_weight_g=float(p.product_weight_g) if p and p.product_weight_g else None,
+                                product_length_cm=float(p.product_length_cm) if p and p.product_length_cm else None,
+                                product_height_cm=float(p.product_height_cm) if p and p.product_height_cm else None,
+                                product_width_cm=float(p.product_width_cm) if p and p.product_width_cm else None,
                             )
                         )
+                    # Full payment breakdown (sequential rows, type, installments, value)
+                    from app.models.olist import OrderPayment
+                    pmts = db.query(OrderPayment).filter(OrderPayment.order_id == o.order_id).order_by(OrderPayment.payment_sequential).all()
+                    payments = [
+                        OrderPaymentDetail(
+                            payment_sequential=int(p.payment_sequential or 1),
+                            payment_type=str(p.payment_type) if p.payment_type else None,
+                            payment_installments=int(p.payment_installments or 1),
+                            payment_value=float(p.payment_value or 0.0),
+                        )
+                        for p in pmts
+                    ]
                     total = sum(it.price + it.freight_value for it in items) if items else 0.0
                     if total <= 0.0:
-                        from app.models.olist import OrderPayment
-                        pmts = db.query(OrderPayment).filter(OrderPayment.order_id == o.order_id).all()
-                        total = sum(float(p.payment_value or 0.0) for p in pmts) if pmts else 0.0
+                        total = sum(p.payment_value for p in payments)
+                    # Full review row (score, title, message, creation/answer timestamps)
+                    rev = db.query(OrderReview).filter(OrderReview.order_id == o.order_id).first()
+                    review = OrderReviewDetail(
+                        review_id=str(rev.review_id) if rev and rev.review_id else None,
+                        review_score=int(rev.review_score) if rev and rev.review_score is not None else None,
+                        review_comment_title=rev.review_comment_title if rev else None,
+                        review_comment_message=rev.review_comment_message if rev else None,
+                        review_creation_date=rev.review_creation_date.isoformat() if rev and rev.review_creation_date else None,
+                        review_answer_timestamp=rev.review_answer_timestamp.isoformat() if rev and rev.review_answer_timestamp else None,
+                    ) if rev else None
                     return OrderDetail(
                         order_id=str(o.order_id),
                         customer_id=str(o.customer_id or "unknown"),
+                        customer_unique_id=str(cust.customer_unique_id) if cust and cust.customer_unique_id else None,
                         customer_city=cust.customer_city if cust else None,
                         customer_state=cust.customer_state if cust else None,
+                        customer_zip_code_prefix=int(cust.customer_zip_code_prefix) if cust and cust.customer_zip_code_prefix else None,
                         status=str(o.order_status),
                         total=round(total, 2),
                         items=items,
+                        payments=payments,
+                        review=review,
                         purchase_timestamp=o.order_purchase_timestamp.isoformat() if o.order_purchase_timestamp else None,
+                        approved_at=o.order_approved_at.isoformat() if o.order_approved_at else None,
                         delivered_carrier_date=o.order_delivered_carrier_date.isoformat() if o.order_delivered_carrier_date else None,
                         delivered_customer_date=o.order_delivered_customer_date.isoformat() if o.order_delivered_customer_date else None,
                         estimated_delivery_date=o.order_estimated_delivery_date.isoformat() if o.order_estimated_delivery_date else None,
@@ -1794,17 +1838,50 @@ def tool_lookup_order(order_id: str) -> str:
 
     items_str = "\n".join(
         f"  • {it.product_name} x{it.quantity} — R${it.price:.2f}"
+        + (f" + freight R${it.freight_value:.2f}" if it.freight_value else "")
+        + (f", ship-by {it.shipping_limit_date[:10]}" if it.shipping_limit_date else "")
+        + (f", seller #{it.seller_id[:8]}" if it.seller_id else "")
+        + (
+            f" [{it.product_weight_g:g}g {it.product_length_cm:g}x{it.product_height_cm:g}x{it.product_width_cm:g}cm, {it.product_photos_qty} photo(s)]"
+            if it.product_weight_g
+            else ""
+        )
         for it in detail.items
     ) if detail.items else "  • 1x Order fulfillment package (itemized details pending in active batch)"
-    review = _lookup_order_review(detail.order_id)
-    review_line = f"⭐ Review: **{review['review_score']}/5**\n" if review and review.get("review_score") else ""
+
+    payments_str = ""
+    if detail.payments:
+        payment_lines = "; ".join(
+            f"{p.payment_type or 'unknown'} x{p.payment_sequential}: R${p.payment_value:.2f} in {p.payment_installments} installment(s)"
+            for p in detail.payments
+        )
+        payments_str = f"💳 Payments: {payment_lines}\n"
+
+    review = detail.review.model_dump() if detail.review else _lookup_order_review(detail.order_id)
+    review_line = ""
+    if review and review.get("review_score"):
+        review_line = f"⭐ Review: **{review['review_score']}/5**"
+        if review.get("review_comment_title"):
+            review_line += f" — \"{review['review_comment_title']}\""
+        if review.get("review_comment_message"):
+            review_line += f" — \"{review['review_comment_message']}\""
+        if review.get("review_creation_date"):
+            review_line += f" (created {review['review_creation_date'][:10]}"
+            if review.get("review_answer_timestamp"):
+                review_line += f", answered {review['review_answer_timestamp'][:10]}"
+            review_line += ")"
+        review_line += "\n"
+
+    approval_line = f"🗓️ Approved: {detail.approved_at[:10]}\n" if detail.approved_at else ""
     return (
         f"📦 **Order #{detail.order_id}**\n"
         f"👤 Customer: `#{detail.customer_id[:16]}` ({detail.customer_city or 'City'}, {detail.customer_state or 'ST'})\n"
         f"📌 Status: **{detail.status.upper()}**\n"
         f"💰 Total Value: **R${detail.total:.2f}**\n"
+        f"{payments_str}"
         f"🚚 Tracking Number: `{detail.tracking_number}`\n"
         f"📅 Placed: {detail.purchase_timestamp[:10] if detail.purchase_timestamp else 'N/A'}\n"
+        f"{approval_line}"
         f"{review_line}"
         f"🛒 Items ({len(detail.items)}):\n{items_str}"
     )
@@ -2000,6 +2077,181 @@ def tool_resolve_entity(entity_id: str) -> str:
     return res.get("summary", f"❌ No record matching ID '{entity_id}' found across any database table.")
 
 
+# ── Doc-grade order analytics (growth, value, payments, delivery) ──────────
+@tool
+def tool_order_analytics(metric: str) -> str:
+    """Compute order-volume/value/payment/delivery analytics from live data.
+
+    metric must be one of:
+    - "monthly_growth"      : monthly order counts, month-over-month growth %, 3 largest rises and falls
+    - "aov_by_year"         : average order value per year and the best year
+    - "status_breakdown"    : % of orders delivered / canceled / unavailable / shipped etc.
+    - "items_per_order"     : average items per order, 2017 vs 2018 comparison
+    - "payments_by_type"    : total payment value, share %, and average installments per payment method
+    - "multi_payment"       : % of orders with more than one payment record, their AOV vs single-payment orders
+    - "quarterly_revenue"   : revenue per quarter and the peak quarter
+    - "delivery_time_year"  : average purchase-to-delivery days for delivered orders, per year
+    - "top_months"          : 10 highest-volume months and their % share of all orders
+    """
+    from app.models.olist import Order, OrderItem, OrderPayment
+    from app.database.session import SessionLocal
+
+    db = SessionLocal()
+    try:
+        clock = get_simulated_clock(db)
+        base = db.query(Order).filter(Order.order_purchase_timestamp <= clock)
+
+        if metric == "monthly_growth" or metric == "top_months":
+            rows = (
+                base.with_entities(func.strftime("%Y-%m", Order.order_purchase_timestamp), func.count(Order.order_id))
+                .group_by(func.strftime("%Y-%m", Order.order_purchase_timestamp))
+                .order_by(func.strftime("%Y-%m", Order.order_purchase_timestamp))
+                .all()
+            )
+            months = [(m, int(c)) for m, c in rows]
+            if metric == "top_months":
+                total = sum(c for _, c in months) or 1
+                top = sorted(months, key=lambda mc: -mc[1])[:10]
+                parts = ", ".join(f"{m}: {c:,}" for m, c in sorted(top))
+                return f"Top 10 months by order volume: {parts} — together {sum(c for _, c in top) / total * 100:.1f}% of all {total:,} orders"
+            growth = []
+            for i in range(1, len(months)):
+                prev, cur = months[i - 1][1], months[i][1]
+                g = round((cur - prev) / prev * 100, 1) if prev else None
+                growth.append((months[i][0], cur, g))
+            ups = sorted((g for g in growth if g[2] is not None), key=lambda x: -x[2])[:3]
+            downs = sorted((g for g in growth if g[2] is not None), key=lambda x: x[2])[:3]
+            lines = [f"{m}: {c:,} ({'+' if g is not None and g > 0 else ''}{g}% MoM)" for m, c, g in growth[-6:]]
+            return (
+                "Monthly order volume (recent): " + " | ".join(lines)
+                + "\nLargest increases: " + (", ".join(f"{m} +{g}%" for m, _, g in ups) or "none")
+                + "\nLargest decreases: " + (", ".join(f"{m} {g}%" for m, _, g in downs) or "none")
+            )
+
+        if metric == "aov_by_year":
+            rows = (
+                db.query(
+                    func.strftime("%Y", Order.order_purchase_timestamp),
+                    func.count(func.distinct(Order.order_id)),
+                    func.sum(func.coalesce(OrderPayment.payment_value, 0.0)),
+                )
+                .outerjoin(OrderPayment, OrderPayment.order_id == Order.order_id)
+                .filter(Order.order_purchase_timestamp <= clock)
+                .group_by(func.strftime("%Y", Order.order_purchase_timestamp))
+                .all()
+            )
+            out = [f"{y}: R${float(rev or 0) / max(1, n):,.2f} AOV ({n:,} orders)" for y, n, rev in rows]
+            best = max(rows, key=lambda r: float(r[2] or 0) / max(1, r[1]))
+            return "Average order value by year: " + " | ".join(out) + f". Highest: {best[0]}"
+
+        if metric == "status_breakdown":
+            total = base.count() or 1
+            rows = base.with_entities(Order.order_status, func.count(Order.order_id)).group_by(Order.order_status).all()
+            parts = ", ".join(f"{s} {c / total * 100:.1f}%" for s, c in sorted(rows, key=lambda r: -r[1]))
+            return f"Order status distribution across {total:,} orders: {parts}"
+
+        if metric == "items_per_order":
+            out = []
+            for y in ("2017", "2018"):
+                n_orders = (
+                    db.query(func.count(func.distinct(OrderItem.order_id)))
+                    .join(Order, Order.order_id == OrderItem.order_id)
+                    .filter(Order.order_purchase_timestamp <= clock, func.strftime("%Y", Order.order_purchase_timestamp) == y)
+                    .scalar() or 1
+                )
+                n_items = (
+                    db.query(func.count(OrderItem.order_item_id))
+                    .join(Order, Order.order_id == OrderItem.order_id)
+                    .filter(Order.order_purchase_timestamp <= clock, func.strftime("%Y", Order.order_purchase_timestamp) == y)
+                    .scalar() or 0
+                )
+                out.append(f"{y} {n_items / n_orders:.2f}")
+            return f"Average items per order — " + " vs ".join(out)
+
+        if metric == "payments_by_type":
+            total_val = db.query(func.coalesce(func.sum(OrderPayment.payment_value), 0.0)).scalar() or 1.0
+            rows = (
+                db.query(
+                    OrderPayment.payment_type,
+                    func.sum(OrderPayment.payment_value),
+                    func.avg(OrderPayment.payment_installments),
+                )
+                .group_by(OrderPayment.payment_type)
+                .all()
+            )
+            parts = ", ".join(
+                f"{t} R${float(v or 0):,.0f} ({float(v or 0) / float(total_val) * 100:.1f}%, avg {float(a or 0):.1f}x installments)"
+                for t, v, a in sorted(rows, key=lambda r: -float(r[1] or 0))
+            )
+            top_val = max(rows, key=lambda r: float(r[1] or 0))
+            top_inst = max(rows, key=lambda r: float(r[2] or 0))
+            return f"Payment methods: {parts}. Highest value: {top_val[0]}; highest avg installments: {top_inst[0]}"
+
+        if metric == "multi_payment":
+            rows = (
+                db.query(OrderPayment.order_id, func.count(OrderPayment.payment_sequential), func.sum(OrderPayment.payment_value))
+                .group_by(OrderPayment.order_id)
+                .all()
+            )
+            multi = [float(v or 0) for _, cnt, v in rows if (cnt or 0) > 1]
+            single = [float(v or 0) for _, cnt, v in rows if not (cnt or 0) > 1]
+            total_orders = len(rows) or 1
+            multi_aov = sum(multi) / max(1, len(multi))
+            single_aov = sum(single) / max(1, len(single))
+            return (
+                f"Orders with more than one payment record: {len(multi):,} of {total_orders:,} "
+                f"({len(multi) / total_orders * 100:.1f}%). AOV multi-payment R${multi_aov:,.2f} "
+                f"vs single-payment R${single_aov:,.2f}."
+            )
+
+        if metric == "quarterly_revenue":
+            rows = (
+                db.query(
+                    func.strftime("%Y-%m", Order.order_purchase_timestamp),
+                    func.coalesce(func.sum(OrderPayment.payment_value), 0.0),
+                )
+                .outerjoin(OrderPayment, OrderPayment.order_id == Order.order_id)
+                .filter(Order.order_purchase_timestamp <= clock)
+                .group_by(func.strftime("%Y-%m", Order.order_purchase_timestamp))
+                .all()
+            )
+            quarterly: dict = {}
+            for ym, v in rows:
+                if not ym:
+                    continue
+                q = f"{ym[:4]}-Q{(int(ym[5:7]) - 1) // 3 + 1}"
+                quarterly[q] = quarterly.get(q, 0.0) + float(v or 0)
+            peak_q = max(quarterly, key=quarterly.get) if quarterly else "n/a"
+            parts = ", ".join(f"{q} R${v:,.0f}" for q, v in sorted(quarterly.items()))
+            return f"Quarterly revenue: {parts}. Peak quarter: {peak_q} (R${quarterly.get(peak_q, 0):,.0f})"
+
+        if metric == "delivery_time_year":
+            rows = (
+                db.query(
+                    func.strftime("%Y", Order.order_purchase_timestamp),
+                    func.avg(func.julianday(Order.order_delivered_customer_date) - func.julianday(Order.order_purchase_timestamp)),
+                )
+                .filter(
+                    Order.order_purchase_timestamp <= clock,
+                    Order.order_status == "delivered",
+                    Order.order_delivered_customer_date.isnot(None),
+                )
+                .group_by(func.strftime("%Y", Order.order_purchase_timestamp))
+                .all()
+            )
+            parts = ", ".join(f"{y} {float(a):.1f}d" for y, a in rows if a is not None)
+            return f"Average purchase→delivery days by year (delivered orders): {parts}"
+
+        return (
+            "Unknown metric. Use one of: monthly_growth, aov_by_year, status_breakdown, items_per_order, "
+            "payments_by_type, multi_payment, quarterly_revenue, delivery_time_year, top_months"
+        )
+    except Exception as exc:  # noqa: BLE001
+        return f"❌ Analytics failed: {exc}"
+    finally:
+        db.close()
+
+
 ALL_ORDERS_TOOLS = [
     tool_lookup_order,
     tool_lookup_product,
@@ -2013,4 +2265,5 @@ ALL_ORDERS_TOOLS = [
     tool_get_return_policy,
     tool_check_return_eligibility,
     tool_initiate_return,
+    tool_order_analytics,
 ]

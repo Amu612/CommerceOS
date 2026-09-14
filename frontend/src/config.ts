@@ -27,6 +27,7 @@ export const API_ENDPOINTS = {
   logistics: {
     analyze: `${API_BASE_URL}/api/v1/agents/logistics/analyze`,
     query: `${API_BASE_URL}/api/v1/agents/logistics/query`,
+    route: `${API_BASE_URL}/api/v1/agents/logistics/route`,
   },
   pricing: {
     analyze: `${API_BASE_URL}/api/v1/agents/pricing/analyze`,
