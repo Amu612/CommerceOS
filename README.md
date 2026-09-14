@@ -92,13 +92,13 @@ The platform is pre-seeded with dedicated role-based access control (RBAC) accou
 
 | Username | Role | Assigned Permissions | Default Password |
 | :--- | :--- | :--- | :--- |
-| **`admin`** | **Super Admin** | Full platform authority across all agents, users, and audit logs | `CommerceOS2024!` |
-| **`orders_admin`** | **Orders Admin** | Orders intelligence, backlog oversight, SLA metrics, and returns | `CommerceOS2024!` |
-| **`inventory_admin`** | **Inventory Admin** | Stock watchdog, catalog valuation, ROP, and purchase orders | `CommerceOS2024!` |
-| **`support_admin`** | **Support Admin** | Customer inquiries, order dispute resolutions, and RMAs | `CommerceOS2024!` |
-| **`pricing_admin`** | **Pricing Admin** | Catalog pricing benchmarks and margin optimization | `CommerceOS2024!` |
-| **`logistics_admin`** | **Logistics Admin** | Dispatch carrier tracking and milestone management | `CommerceOS2024!` |
-| **`marketing_admin`** | **Marketing Admin** | Demand forecasting and promotion velocity analysis | `CommerceOS2024!` |
+| **`admin`** | **Super Admin** | Full platform authority across all agents, users, and audit logs | `CommerceOS2026!` |
+| **`orders_admin`** | **Orders Admin** | Orders intelligence, backlog oversight, SLA metrics, and returns | `CommerceOS2026!` |
+| **`inventory_admin`** | **Inventory Admin** | Stock watchdog, catalog valuation, ROP, and purchase orders | `CommerceOS2026!` |
+| **`support_admin`** | **Support Admin** | Customer inquiries, order dispute resolutions, and RMAs | `CommerceOS2026!` |
+| **`pricing_admin`** | **Pricing Admin** | Catalog pricing benchmarks and margin optimization | `CommerceOS2026!` |
+| **`logistics_admin`** | **Logistics Admin** | Dispatch carrier tracking and milestone management | `CommerceOS2026!` |
+| **`marketing_admin`** | **Marketing Admin** | Demand forecasting and promotion velocity analysis | `CommerceOS2026!` |
 
 ---
 
