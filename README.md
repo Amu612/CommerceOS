@@ -286,7 +286,7 @@ Full stack — VPC, ECS Fargate (api + worker + frontend), RDS PostgreSQL, Elast
 
 | Pipeline | Trigger | Does |
 | :--- | :--- | :--- |
-| [`ci.yml`](.github/workflows/ci.yml) | every push/PR | Lint, type-check, backend tests (live Postgres), frontend build, Docker image build + Trivy scan |
+| [`ci.yml`](.github/workflows/ci.yml) | every push/PR | Lint, type-check, backend tests (live Postgres), frontend build, Docker image build |
 | [`deploy.yml`](.github/workflows/deploy.yml) | push to `main` (→ dev), tag `v*` (→ prod, approval-gated) | Build+push images to ECR → migrate DB → roll `api`/`worker`/`frontend` forward on ECS → smoke test → auto-rollback on failure |
 | [`infra.yml`](.github/workflows/infra.yml) | PR touching `infra/aws/**` (plan), manual dispatch (plan/apply) | Terraform plan/apply for `dev`/`prod`, prod gated by a required reviewer |
 
@@ -336,7 +336,7 @@ Terraform owns each ECS service's *shape* (CPU/memory, env vars, secrets, IAM); 
 │   ├── modules/                # network, ecr, datasets, secrets, rds, redis, alb, ecs, observability
 │   └── envs/{dev,prod}/        # per-environment Terraform root modules
 ├── .github/workflows/
-│   ├── ci.yml                  # lint, typecheck, tests, image build + Trivy scan
+│   ├── ci.yml                  # lint, typecheck, tests, image build
 │   ├── deploy.yml               # build+push -> migrate -> roll ECS forward -> smoke test
 │   └── infra.yml                 # Terraform plan (PR) / apply (manual, prod approval-gated)
 ├── docs/adr/                  # Architecture decision records

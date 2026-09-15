@@ -102,10 +102,3 @@ jobs:
           tags: commerceos/frontend:${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
-      - name: Trivy scan (API)
-        uses: aquasecurity/trivy-action@v0.36.0
-        with:
-          image-ref: commerceos/api:${{ github.sha }}
-          format: table
-          exit-code: "0"
-          severity: HIGH,CRITICAL

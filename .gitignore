@@ -73,7 +73,6 @@ Thumbs.db
 dist/
 build/
 eval/reports/
-Nexus Hackathon Documents/
 
 # ── IDE ──────────────────────────────────────────────────
 .idea/
