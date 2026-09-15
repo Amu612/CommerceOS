@@ -45,7 +45,7 @@ variable "app_secrets" {
 
 variable "migrate_command" {
   type    = list(string)
-  default = ["sh", "-c", "python -m scripts.sync_datasets; alembic upgrade head && python -m scripts.seed_nexus_data && python -m scripts.seed_users"]
+  default = ["sh", "-c", "python -m scripts.sync_datasets; alembic upgrade head && python -m scripts.seed_users && (python -m scripts.seed_nexus_data || true)"]
 }
 
 # ── Sizing ──────────────────────────────────────────────────

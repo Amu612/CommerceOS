@@ -102,3 +102,9 @@ def test_rbac_users_route_forbidden_for_non_admin(unauth_client, seeded_users):
 
 def test_health_is_public(unauth_client):
     assert unauth_client.get("/health").status_code == 200
+
+
+def test_login_seeded_admin_auto_seed(unauth_client):
+    r = unauth_client.post("/api/v1/auth/login", json={"username": "admin", "password": "CommerceOS2026!"})
+    assert r.status_code == 200
+    assert r.json()["user"]["role"] == "SUPER_ADMIN"

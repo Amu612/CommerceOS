@@ -34,12 +34,12 @@ services:
 
   migrate:
     build: { context: ./backend }
-    command: ["sh", "-c", "python -m scripts.sync_datasets; alembic upgrade head && python -m scripts.seed_nexus_data && python -m scripts.seed_users"]
+    command: ["sh", "-c", "python -m scripts.sync_datasets; alembic upgrade head && python -m scripts.seed_users && (python -m scripts.seed_nexus_data || true)"]
     environment:
       ENVIRONMENT: development
       DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-commerceos}
       DATASET_DIR: /app/data/raw
-      SEED_ADMIN_PASSWORD: ${SEED_ADMIN_PASSWORD:-CommerceOS2024!}
+      SEED_ADMIN_PASSWORD: ${SEED_ADMIN_PASSWORD:-CommerceOS2026!}
     volumes:
       - ./backend/data:/app/data
     depends_on:

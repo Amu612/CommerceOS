@@ -84,6 +84,15 @@ async def lifespan(app: FastAPI):
     finally:
         db.close()
 
+    # Ensure default admin and seeded role accounts exist and credentials match on startup
+    try:
+        from scripts.seed_users import seed_users
+
+        seed_users()
+        logger.info("users_seed_verified_on_startup")
+    except Exception as exc:
+        logger.warning("users_seed_on_startup_failed", error=str(exc))
+
     yield
     logger.info("shutdown")
 
