@@ -98,21 +98,20 @@ def find_dataset(filename: str) -> str:
             p_gz = os.path.join(d, gz_name)
             if os.path.exists(p_gz):
                 return p_gz
-    raise FileNotFoundError(f"Dataset {filename} (or .gz) not found in Nexus data paths: {_get_nexus_data_dirs()}")
+    raise FileNotFoundError(
+        f"Dataset {filename} (or .gz) not found in Nexus data paths: {_get_nexus_data_dirs()}"
+    )
 
 
 @contextlib.contextmanager
 def open_dataset_reader(filename: str, encoding: str = "utf-8"):
     path = find_dataset(filename)
     if path.endswith(".gz"):
-        f = gzip.open(path, mode="rt", encoding=encoding, errors="replace")
+        with gzip.open(path, mode="rt", encoding=encoding, errors="replace") as f:
+            yield csv.DictReader(f)
     else:
-        f = open(path, mode="r", encoding=encoding, errors="replace")
-    try:
-        reader = csv.DictReader(f)
-        yield reader
-    finally:
-        f.close()
+        with open(path, encoding=encoding, errors="replace") as f:
+            yield csv.DictReader(f)
 
 
 def parse_dt(v: Any) -> datetime | None:
@@ -301,7 +300,9 @@ def seed_data(
         try:
             geo_count = db.query(Geolocation.id).count()
             if geo_count == 0:
-                logger.info("Aggregating unique geolocation ZIP prefixes from olist_geolocation_dataset.csv...")
+                logger.info(
+                    "Aggregating unique geolocation ZIP prefixes from olist_geolocation_dataset.csv..."
+                )
                 geo_map: dict[int, dict[str, Any]] = {}
                 with open_dataset_reader("olist_geolocation_dataset.csv") as reader:
                     for row in reader:
@@ -364,7 +365,8 @@ def seed_data(
                         "order_approved_at": parse_dt(row.get("order_approved_at")),
                         "order_delivered_carrier_date": parse_dt(row.get("order_delivered_carrier_date")),
                         "order_delivered_customer_date": parse_dt(row.get("order_delivered_customer_date")),
-                        "order_estimated_delivery_date": parse_dt(row.get("order_estimated_delivery_date")) or purch_dt,
+                        "order_estimated_delivery_date": parse_dt(row.get("order_estimated_delivery_date"))
+                        or purch_dt,
                     }
                 )
                 if len(order_batch) >= 2000:
@@ -478,7 +480,8 @@ def seed_data(
                             "review_score": clean_int(row.get("review_score"), 3),
                             "review_comment_title": clean_str(row.get("review_comment_title")),
                             "review_comment_message": clean_str(row.get("review_comment_message")),
-                            "review_creation_date": parse_dt(row.get("review_creation_date")) or datetime.now(UTC),
+                            "review_creation_date": parse_dt(row.get("review_creation_date"))
+                            or datetime.now(UTC),
                             "review_answer_timestamp": parse_dt(row.get("review_answer_timestamp")),
                         }
                     )
@@ -534,7 +537,9 @@ def seed_data(
                             "delivery_status": clean_str(row.get("Delivery Status"), "Standard"),
                             "late_delivery_risk": clean_int(row.get("Late_delivery_risk"), 0),
                             "days_for_shipping_real": clean_float(row.get("Days for shipping (real)"), None),
-                            "days_for_shipment_scheduled": clean_float(row.get("Days for shipment (scheduled)"), None),
+                            "days_for_shipment_scheduled": clean_float(
+                                row.get("Days for shipment (scheduled)"), None
+                            ),
                             "payment_type": clean_str(row.get("Type")),
                             "order_total": clean_float(row.get("Order Item Total")),
                             "order_profit": clean_float(row.get("Order Profit Per Order")),

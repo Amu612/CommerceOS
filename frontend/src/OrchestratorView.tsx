@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useCallback, useEffect, useRef, useState } from "react";
+import React, { useCallback, useEffect, useState } from "react";
 import "./OrchestratorView.css";
 import { API_ENDPOINTS } from "./config";
 import { AgentReportingControls } from "./AgentReportingControls";

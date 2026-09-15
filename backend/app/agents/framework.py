@@ -17,6 +17,7 @@ distribution (Tukey fences / modified z-score / binomial SE) inside the tools.
 
 from __future__ import annotations
 
+import contextlib
 import contextvars
 import json
 import re
@@ -394,10 +395,11 @@ class DomainAgent:
             metric_lines = "; ".join(f"{m.label}={m.value}" for m in analysis.metrics[:5])
             finding_lines = " | ".join(f"[{f.severity}] {f.title}" for f in analysis.findings[:3])
             live = (
-                f"\n\nCurrent analysis snapshot for this agent (already computed from the live database — "
-                f"reuse these numbers instead of re-querying when they answer the question):\n"
-                f"Summary: {analysis.summary}\nMetrics: {metric_lines or 'none'}\n"
-                f"Findings: {finding_lines or 'none'}"
+                f"\n\nCurrent high-level operational health snapshot (from live DB): {analysis.summary}\n"
+                f"Metrics: {metric_lines or 'none'}\nFindings: {finding_lines or 'none'}\n"
+                f"NOTE: For specific analytical, historical, or comparative questions (e.g. order growth, AOV, "
+                f"payment methods, cancellations, inventory, pricing elasticity, marketing, delivery delays, CSAT/reviews), "
+                f"do NOT guess or use static numbers — ALWAYS call the relevant domain tool to query the tables directly."
             )
         agent = create_react_agent(
             model,
@@ -410,8 +412,9 @@ class DomainAgent:
                 "with that number and its unit (plus one short clause of context at most).\n"
                 "2. For anything about the business data (orders, shipments, carriers, revenue, "
                 "prices, discounts, customers, products, reviews, SLA), call the relevant data tool "
-                "first. NEVER invent numbers, entities, or categories — every business figure must "
-                "come from tool output. Cite the key figures you used.\n"
+                "first. You MUST work over the dataset tables only and NEVER rely on static, fabricated, "
+                "or assumed data. Every business figure must come directly from tool query results over "
+                "the real database tables. Cite the key figures you used.\n"
                 "3. Use the `calculator` tool for ANY arithmetic on tool numbers (percentages, "
                 "differences, ratios, averages). Never do mental math on data.\n"
                 "4. You also have a universal entity lookup tool (`resolve_unknown_id`) for "
@@ -419,7 +422,7 @@ class DomainAgent:
                 "5. The user may also ask general questions that need no database (definitions, "
                 "how something works, general knowledge, small talk). Answer those directly from "
                 "your own knowledge — do NOT call tools and do NOT refuse. If a question mixes "
-                "general context with business data, fetch the data and fold it in.\n"
+                "general context with business data, fetch the data from the tables and fold it in.\n"
                 "6. If a requested business figure genuinely doesn't exist in the data, say so in "
                 "one sentence and offer the closest available figure.\n"
                 '7. Use the conversation history to resolve follow-ups ("what about its status?").\n'
@@ -547,10 +550,8 @@ class DomainAgent:
             for _, t in scored[:2]:
                 out = None
                 # Try empty arguments first (for zero-arg metric tools)
-                try:
+                with contextlib.suppress(Exception):
                     out = _as_obj(t.invoke({}))
-                except Exception:
-                    pass
 
                 # If tool expects metric argument (e.g. analytics tools), select best metric
                 if out is None and "metric" in (t.description or "").lower():
@@ -566,10 +567,8 @@ class DomainAgent:
                             best_score = c_score
                             best_m = cand
                     if best_m:
-                        try:
+                        with contextlib.suppress(Exception):
                             out = _as_obj(t.invoke({"metric": best_m}))
-                        except Exception:
-                            pass
 
                 # If tool expects query parameter
                 if out is None:

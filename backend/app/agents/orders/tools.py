@@ -2424,12 +2424,7 @@ def tool_order_analytics(metric: str) -> str:
 
         if metric in ("monthly_growth", "top_months"):
             pb = period_bucket(db, Order.order_purchase_timestamp, "%Y-%m")
-            rows = (
-                base.with_entities(pb, func.count(Order.order_id))
-                .group_by(pb)
-                .order_by(pb)
-                .all()
-            )
+            rows = base.with_entities(pb, func.count(Order.order_id)).group_by(pb).order_by(pb).all()
             months = [(str(m), int(c)) for m, c in rows if m]
             if metric == "top_months":
                 total = sum(c for _, c in months) or 1
@@ -2471,7 +2466,11 @@ def tool_order_analytics(metric: str) -> str:
             rows = [r for r in rows if r[0]]
             out = [f"{y}: R${float(rev or 0) / max(1, n):,.2f} AOV ({n:,} orders)" for y, n, rev in rows]
             best = max(rows, key=lambda r: float(r[2] or 0) / max(1, r[1])) if rows else ("N/A", 0, 0)
-            return "Average order value by year: " + (" | ".join(out) if out else "none") + f". Highest: {best[0]}"
+            return (
+                "Average order value by year: "
+                + (" | ".join(out) if out else "none")
+                + f". Highest: {best[0]}"
+            )
 
         if metric == "status_breakdown":
             total = base.count() or 1
@@ -2593,11 +2592,7 @@ def tool_order_analytics(metric: str) -> str:
                     y = str(purch.year)
                     days = (deliv - purch).total_seconds() / 86400.0
                     year_days.setdefault(y, []).append(days)
-            parts = ", ".join(
-                f"{y} {sum(days)/len(days):.1f}d"
-                for y in sorted(year_days)
-                if year_days[y]
-            )
+            parts = ", ".join(f"{y} {sum(days)/len(days):.1f}d" for y in sorted(year_days) if year_days[y])
             return f"Average purchase→delivery days by year (delivered orders): {parts or 'none'}"
 
         return (
