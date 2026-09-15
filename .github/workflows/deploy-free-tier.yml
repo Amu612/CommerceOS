@@ -1,14 +1,24 @@
 name: Deploy (free tier — single EC2)
 
-# For the free-tier deployment in docs/deploy-free-tier.md: one EC2 instance
-# running docker-compose.free-tier.yml, talking to free-tier RDS + (optional)
-# ElastiCache. No ECR, no ECS, no Fargate, no ALB, no Secrets Manager — those
-# all cost money and this path is built to run at $0 on a free-tier account.
+# For the AWS Free Plan deployment: one EC2 instance runs the complete
+# CommerceOS stack using docker-compose.free-tier.yml.
 #
-# Unrelated to deploy.yml/infra.yml (the ECS/Fargate pipeline) — use this one
-# instead if you followed docs/deploy-free-tier.md. Both can coexist; this
-# one only needs EC2_HOST/EC2_USER/EC2_SSH_KEY, nothing AWS-IAM-related.
-
+# The EC2 instance runs:
+#   - Frontend
+#   - Backend
+#   - Worker
+#   - PostgreSQL
+#   - Redis
+#
+# This architecture avoids RDS, ElastiCache, ECS, Fargate, ALB, NAT Gateway,
+# ECR, CloudFront, WAF, and Secrets Manager to minimize AWS costs.
+#
+# This workflow uses SSH-based deployment and only requires:
+#   EC2_HOST
+#   EC2_USER
+#   EC2_SSH_KEY
+#
+# No AWS credentials are required in GitHub Actions for this deployment path.
 on:
   push:
     branches: [main]

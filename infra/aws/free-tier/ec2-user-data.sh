@@ -19,10 +19,9 @@ curl -fsSL "https://github.com/docker/compose/releases/latest/download/docker-co
   -o /usr/local/lib/docker/cli-plugins/docker-compose
 chmod +x /usr/local/lib/docker/cli-plugins/docker-compose
 
-# CHANGE THIS to your fork/repo before pasting as user-data.
-# If the repo is PRIVATE, https clone needs a token:
-#   https://<github-username>:<personal-access-token>@github.com/Amu612/CommerceOS.git
-# (classic PAT, repo scope) — or skip this clone and do it by hand over SSH instead.
+# CommerceOS repository used for the AWS Free Plan deployment.
+# Keep the repository public for this bootstrap method.
+# Do not put GitHub personal access tokens or other credentials in user-data.
 REPO_URL="https://github.com/Amu612/CommerceOS.git"
 
 sudo -u ec2-user git clone "$REPO_URL" /home/ec2-user/CommerceOS

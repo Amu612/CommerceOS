@@ -13,28 +13,73 @@
 name: commerceos
 
 services:
+  postgres:
+    image: postgres:15-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-commerceos}
+      POSTGRES_USER: ${POSTGRES_USER:-commerceos}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "pg_isready -U ${POSTGRES_USER:-commerceos} -d ${POSTGRES_DB:-commerceos}",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--save", "60", "1", "--appendonly", "no"]
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
   migrate:
-    build: { context: ./backend }
-    command: ["sh", "-c", "python -m scripts.sync_datasets; alembic upgrade head && python -m scripts.seed_nexus_data && python -m scripts.seed_users"]
+    build:
+      context: ./backend
+    command:
+      [
+        "sh",
+        "-c",
+        "python -m scripts.sync_datasets; alembic upgrade head && python -m scripts.seed_nexus_data && python -m scripts.seed_users",
+      ]
     environment:
       ENVIRONMENT: production
-      DATABASE_URL: ${DATABASE_URL}
-      DATASET_DIR: ${DATASET_DIR:-}
+      DATABASE_URL: postgresql://${POSTGRES_USER:-commerceos}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-commerceos}
+      REDIS_URL: redis://redis:6379/0
+      REDIS_ENABLED: "true"
+      DATASET_DIR: ${DATASET_DIR:-/app/data/raw}
       SEED_ADMIN_PASSWORD: ${SEED_ADMIN_PASSWORD}
     volumes:
       - ./backend/data:/app/data
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
     restart: "no"
 
   backend:
-    build: { context: ./backend }
+    build:
+      context: ./backend
     restart: unless-stopped
     environment:
       ENVIRONMENT: production
       PORT: 8000
-      WORKERS: 2
-      DATABASE_URL: ${DATABASE_URL}
-      REDIS_URL: ${REDIS_URL:-redis://localhost:6379/0}
-      REDIS_ENABLED: ${REDIS_ENABLED:-false}
+      WORKERS: ${BACKEND_WORKERS:-1}
+      DATABASE_URL: postgresql://${POSTGRES_USER:-commerceos}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-commerceos}
+      REDIS_URL: redis://redis:6379/0
+      REDIS_ENABLED: "true"
       JWT_SECRET: ${JWT_SECRET}
       SEED_ADMIN_PASSWORD: ${SEED_ADMIN_PASSWORD}
       LLM_PROVIDER: ${LLM_PROVIDER:-deterministic}
@@ -45,11 +90,16 @@ services:
       TRUSTED_HOSTS: "*"
       AUTH_ENFORCED: ${AUTH_ENFORCED:-false}
       EXPOSE_DOCS: "true"
-      DATASET_DIR: ${DATASET_DIR:-}
+      DATASET_DIR: ${DATASET_DIR:-/app/data/raw}
     ports:
       - "8000:8000"
     volumes:
       - ./backend/data:/app/data
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://localhost:8000/health"]
       interval: 10s
@@ -58,16 +108,20 @@ services:
       start_period: 20s
 
   worker:
-    build: { context: ./backend }
+    build:
+      context: ./backend
     restart: unless-stopped
     command: ["python", "-m", "app.worker.main"]
     environment:
       ENVIRONMENT: production
-      DATABASE_URL: ${DATABASE_URL}
-      REDIS_URL: ${REDIS_URL:-redis://localhost:6379/0}
-      REDIS_ENABLED: ${REDIS_ENABLED:-false}
+      DATABASE_URL: postgresql://${POSTGRES_USER:-commerceos}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-commerceos}
+      REDIS_URL: redis://redis:6379/0
+      REDIS_ENABLED: "true"
       JWT_SECRET: ${JWT_SECRET}
       LLM_PROVIDER: ${LLM_PROVIDER:-deterministic}
+      LLM_MODEL: ${LLM_MODEL:-}
+      GROQ_API_KEY: ${GROQ_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
     volumes:
       - ./backend/data:/app/data
     depends_on:
@@ -86,3 +140,7 @@ services:
     depends_on:
       backend:
         condition: service_healthy
+
+volumes:
+  postgres_data:
+  redis_data:
