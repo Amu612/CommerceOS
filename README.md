@@ -1,9 +1,9 @@
 <div align="center">
 
-# ⚡ CommerceOS 
+# ⚡ CommerceOS
 ### Autonomous Multi-Agent Operating System for Intelligent E-Commerce Operations
 
-[![FastAPI](https://img.shields.io/badge/FastAPI-0.110+-009688.svg?style=for-the-badge&logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com)
+[![FastAPI](https://img.shields.io/badge/FastAPI-0.141-009688.svg?style=for-the-badge&logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com)
 [![React](https://img.shields.io/badge/React-18-61DAFB.svg?style=for-the-badge&logo=react&logoColor=black)](https://react.dev)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.6-3178C6.svg?style=for-the-badge&logo=typescript&logoColor=white)](https://www.typescriptlang.org)
 [![Python](https://img.shields.io/badge/Python-3.11+-3776AB.svg?style=for-the-badge&logo=python&logoColor=white)](https://www.python.org)
@@ -12,10 +12,10 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg?style=for-the-badge)](https://opensource.org/licenses/MIT)
 
 <p align="center">
-  <b>CommerceOS</b> replaces fragmented, manual e-commerce administration with autonomous, specialized AI agents. Operating over real transaction and supply chain data, it continuously detects anomalies, optimizes inventory replenishment, accelerates order fulfillment, and autonomously mitigates operational risks.
+  <b>CommerceOS</b> replaces fragmented, manual e-commerce administration with six autonomous, specialized AI agents — Orders, Inventory, Customer Support, Pricing, Marketing, and Logistics. Operating over real transaction and supply-chain data, they continuously audit pipelines, detect anomalies, forecast demand, and propose (or, with human approval, execute) corrective actions.
 </p>
 
-[Key Features](#-key-features) • [Architecture](#-system-architecture) • [Getting Started](#-getting-started) • [Default Credentials](#-default-credentials) • [API Reference](#-api-reference) • [Tech Stack](#-tech-stack)
+[Key Features](#-key-features) • [Architecture](#-system-architecture) • [Getting Started](#-getting-started) • [Default Credentials](#-default-credentials) • [API Reference](#-api-reference) • [Tech Stack](#-tech-stack) • [Testing](#-testing--quality) • [Repository Structure](#-repository-structure)
 
 ---
 
@@ -23,120 +23,251 @@
 
 ## 🌟 Key Features
 
-### 📦 Orders Operations Intelligence Agent
-- **Empirical Pipeline Auditing**: Real-time evaluation of delay rates, fulfillment ratios, and backlog aging across 13,000+ orders.
-- **Autonomous Query Triage**: Identifies Order IDs, Product SKUs, Customer IDs, and natural language analytics queries with instant database entity verification.
-- **Milestone Shipment Tracking**: Multi-carrier event timeline synthesis (`[ORDER_PLACED]` → `[IN_TRANSIT]` → `[DELIVERED]`).
-- **Automated RMA & Returns**: Algorithmic 30-day policy enforcement and RMA authorization without false positives.
+### 🧠 Six Domain Agents, One Shared Framework
+Every agent is built on a common LangGraph `DomainAgent` framework (`backend/app/agents/framework.py`): LangChain `@tool` functions do the real, data-driven computation (SQL aggregates + statistical fences — the LLM never does the math), and a `create_react_agent` ReAct loop (or a deterministic tool-router when no LLM is configured) drives conversational queries over that same tool surface.
 
-### 🛡️ Smart Inventory Watchdog Agent
-- **Continuous Stock Monitoring**: 24/7 autonomous guardian evaluating inventory across 11,000+ products.
-- **Predictive Replenishment**: Dynamic **Reorder Point (ROP = Lead Time Demand + Safety Stock)** and **Economic Order Quantity (EOQ)** batch estimation.
-- **Sales Velocity Profiling**: 30-day moving window velocity analysis and demand trajectory classification (`INCREASING`, `STABLE`, `DECREASING`).
-- **Proactive Anomaly Alerts**: Real-time dispatch of `CRITICAL`, `HIGH`, and `MEDIUM` priority stockout risk notifications.
+| Agent | Focus |
+| :--- | :--- |
+| 📦 **Orders** | Empirical pipeline auditing (delay rates, fulfillment ratios, backlog aging) across 13,000+ orders; order/SKU/customer entity resolution; milestone shipment timelines; 30-day RMA/return-policy enforcement. |
+| 🛡️ **Inventory** | Continuous stockout-risk monitoring across 11,000+ products; Reorder Point (ROP = lead-time demand + safety stock) and Economic Order Quantity (EOQ) estimation; 30-day sales-velocity trend classification. |
+| 💬 **Customer Support** | Conversational order/RMA/shipment lookups with entity verification, grounded in the same live database the other agents read. |
+| 💲 **Pricing** | Catalog pricing benchmarks and margin analysis, optionally enriched with a live competitor price feed via **Apify**. |
+| 📣 **Marketing** | Demand forecasting and promotion-velocity analysis on top of the `app.intelligence.forecasting` engine. |
+| 🚚 **Logistics** | Carrier dispatch tracking, milestone management, and route intelligence (TomTom routing API with a keyless OSRM fallback), visualized in 3D via Cesium. |
+
+### 🧭 Orchestrator & Human-in-the-Loop Automation
+- **Cross-Domain Sweep**: A `SUPER_ADMIN`-only orchestrator (`app/orchestrator/coordinator.py`) runs every agent in one pass and correlates findings across domains.
+- **Automation Engine**: Policy-driven action proposals (`app/automation/`) that route through an **Approvals** queue — a domain admin reviews and approves/rejects actions scoped to their own agent before anything executes.
+- **Full Audit Trail**: An append-only `AuditLog` records every authenticated mutating request plus explicit security events, exposed via `/api/v1/audit`.
+
+### 🔁 Live Data Replay & Streaming
+- **Replay Engine**: Indexes the bundled Olist + DataCo datasets and streams them into the database at a controllable speed (start/pause/resume/stop/step/reset) so the whole platform can demo against a live-feeling order stream instead of a static snapshot.
+- **WebSocket Stream**: Real-time push of agent findings, notifications, and ingestion progress to the frontend (`app/api/v1/stream.py`).
+
+### 🔐 Role-Based Access Control
+- **7 roles**, one `SUPER_ADMIN` plus one domain-admin role per agent (`ORDERS_ADMIN`, `INVENTORY_ADMIN`, `CUSTOMER_SUPPORT_ADMIN`, `PRICING_ADMIN`, `MARKETING_ADMIN`, `LOGISTICS_ADMIN`) — centralized in `app/core/rbac.py` as the single source of truth read by every route dependency, per-record check, and the frontend's own nav rendering.
+- Domain admins get `200` on their own agent's routes and `403` everywhere else; only `SUPER_ADMIN` can reach the Orchestrator, user management, and the audit log.
 
 ### 🤖 Multi-Provider LLM Resilience
-- **Automated Failover Architecture**:
-  1. Local Gemini Web2API proxy (`http://localhost:8081/v1`)
-  2. Google Gemini REST API (`gemini-2.5-flash`, `gemini-2.0-flash`, `gemini-pro`)
-  3. OpenAI API (`gpt-4o-mini`, `gpt-4o`)
-  4. Groq Cloud Engine (`llama-3.1-8b-instant`)
-  5. Local Ollama (`llama3.2`)
-- **Deterministic Natural Language Synthesizer**: Fallback conversational engine that formats data into structured, actionable insights even when external cloud APIs are unreachable.
+- **`LLM_PROVIDER=auto`** picks the first provider with credentials, in order: **Groq** (`openai/gpt-oss-120b`) → **OpenAI** (`gpt-4o-mini`) → **Anthropic** (`claude-3-5-sonnet`) → **AWS Bedrock** → otherwise falls back to a **deterministic**, dependency-free synthesizer that still formats real tool output into structured, actionable answers — the platform never goes offline just because an external LLM API is unreachable.
+- Token-budget guardrails and a monthly spend cap (`LLM_REQUEST_TOKEN_BUDGET`, `LLM_MONTHLY_BUDGET_USD`) live in `app/services/llm/guardrails.py`.
+
+### 📊 Statistical Intelligence (no black-box thresholds)
+- Custom **Modified Z-Score**, **IQR/Tukey fences**, **MAD**, and **binomial standard error** profilers (`app/intelligence/`) drive every anomaly finding and confidence score — nothing is hardcoded; every threshold comes from the observed data distribution.
+
+---
+
+## 🏗️ System Architecture
+
+```text
+┌─────────────┐      HTTPS / WebSocket      ┌───────────────────┐
+│   React +   │ ───────────────────────────▶│   FastAPI Backend │
+│  TypeScript │ ◀─────────────────────────── │   (Uvicorn/       │
+│  Dashboard  │                              │    Gunicorn)      │
+└─────────────┘                              └─────────┬─────────┘
+                                                         │
+                     ┌───────────────────────────────────┼───────────────────────────────────┐
+                     ▼                                   ▼                                   ▼
+           ┌─────────────────┐                 ┌──────────────────┐                ┌──────────────────┐
+           │  6 Domain Agents │                 │   Orchestrator   │                │  Automation +     │
+           │ (LangGraph ReAct│                 │  (cross-domain    │                │  Approvals engine │
+           │  + tools + stats)│                 │   sweep)          │                │  (human-in-loop)  │
+           └────────┬────────┘                 └──────────────────┘                └──────────────────┘
+                     │
+        ┌────────────┼────────────┐
+        ▼            ▼            ▼
+ ┌────────────┐ ┌───────────┐ ┌──────────────┐
+ │ PostgreSQL │ │   Redis   │ │ Multi-provider│
+ │ / SQLite   │ │ (cache /  │ │ LLM factory   │
+ │ (Olist +   │ │  events)  │ │ (Groq/OpenAI/ │
+ │  DataCo)   │ │           │ │ Anthropic/... │
+ └────────────┘ └───────────┘ └──────────────┘
+```
 
 ---
 
 ## 🚀 Getting Started
 
 ### Prerequisites
-- **Python 3.11+**
+- **Python 3.11+** (< 3.13)
 - **Node.js 18+** and **npm**
-- *(Optional)* **Docker & Docker Compose**
+- *(Optional)* **Docker & Docker Compose** for the full production-like stack
+- *(Optional)* PostgreSQL — a bundled **SQLite** database (`orders.db`) is used automatically when `DATABASE_URL` is left blank, so Postgres isn't required for local dev
 
 ---
 
 ### Option 1: Quick Start on Windows (Recommended)
 
-1. **Start the Backend**:
-   Double-click `start_backend.bat` (or run in terminal):
+1. **Configure environment** (optional — sensible defaults ship without it):
+   ```powershell
+   copy backend\.env.example backend\.env
+   copy frontend\.env.example frontend\.env
+   ```
+
+2. **Start the Backend**:
+   Double-click `start_backend.bat` (or run in a terminal):
    ```powershell
    python run_backend.py
    ```
    - Server running at: **`http://127.0.0.1:8000`**
    - Interactive Swagger API docs: **`http://127.0.0.1:8000/docs`**
+   - On first boot it auto-creates tables, indexes the replay dataset, and seeds the database from the bundled Olist + DataCo CSVs if empty.
 
-2. **Start the Frontend**:
-   Double-click `start_frontend.bat` (or run in terminal):
+3. **Start the Frontend**:
+   Double-click `start_frontend.bat` (or run in a terminal):
    ```powershell
    cd frontend
    npm install
    npm run dev
    ```
-   - Dashboard running at: **`http://localhost:3000`**
+   - Dashboard running at: **`http://localhost:3000`** (Vite dev server)
 
 ---
 
-### Option 2: Docker Compose (Full Stack)
+### Option 2: Manual setup (macOS/Linux/Windows, any shell)
 
-Run the full production stack including PostgreSQL, Redis, backend, workers, and frontend:
+```bash
+# Backend
+cd backend
+python -m pip install -r requirements-dev.txt
+python -m uvicorn app.main:app --reload --port 8000
+
+# Frontend (separate terminal)
+cd frontend
+npm install
+npm run dev
+```
+
+Or via the repo `Makefile` (from the repo root):
+```bash
+make setup   # install backend + frontend deps
+make dev     # run the backend with reload
+make seed    # build the warehouse + seed the 7 role accounts
+```
+
+---
+
+### Option 3: Docker Compose (Full Stack)
+
+Runs the full production-shaped stack: PostgreSQL, Redis, backend API, background worker, a one-shot `migrate` job (Alembic + warehouse build + user seed), and the frontend behind Nginx.
 
 ```bash
 docker compose up --build
 ```
 
+- Frontend: **`http://localhost:3000`**
+- Backend API: **`http://localhost:8000`**
+
 ---
 
 ## 🔐 Default Credentials
 
-The platform is pre-seeded with dedicated role-based access control (RBAC) accounts:
+The platform is pre-seeded (via `make seed` / `python -m scripts.seed_users`, or automatically in the `migrate` Compose job) with one dedicated role-based access control (RBAC) account per domain:
 
-| Username | Role | Assigned Permissions | Default Password |
+| Username | Role | Scope | Default Password |
 | :--- | :--- | :--- | :--- |
-| **`admin`** | **Super Admin** | Full platform authority across all agents, users, and audit logs | `CommerceOS2026!` |
-| **`orders_admin`** | **Orders Admin** | Orders intelligence, backlog oversight, SLA metrics, and returns | `CommerceOS2026!` |
-| **`inventory_admin`** | **Inventory Admin** | Stock watchdog, catalog valuation, ROP, and purchase orders | `CommerceOS2026!` |
-| **`support_admin`** | **Support Admin** | Customer inquiries, order dispute resolutions, and RMAs | `CommerceOS2026!` |
-| **`pricing_admin`** | **Pricing Admin** | Catalog pricing benchmarks and margin optimization | `CommerceOS2026!` |
-| **`logistics_admin`** | **Logistics Admin** | Dispatch carrier tracking and milestone management | `CommerceOS2026!` |
-| **`marketing_admin`** | **Marketing Admin** | Demand forecasting and promotion velocity analysis | `CommerceOS2026!` |
+| **`admin`** | `SUPER_ADMIN` | Full platform authority: all six agents, the Orchestrator, user management, audit log | `CommerceOS2026!` |
+| **`orders_admin`** | `ORDERS_ADMIN` | Orders intelligence, backlog oversight, SLA metrics, returns | `CommerceOS2026!` |
+| **`inventory_admin`** | `INVENTORY_ADMIN` | Stock watchdog, catalog valuation, ROP/EOQ, purchase orders | `CommerceOS2026!` |
+| **`support_admin`** | `CUSTOMER_SUPPORT_ADMIN` | Customer inquiries, order dispute resolutions, RMAs | `CommerceOS2026!` |
+| **`pricing_admin`** | `PRICING_ADMIN` | Catalog pricing benchmarks, margin optimization, competitor feed | `CommerceOS2026!` |
+| **`marketing_admin`** | `MARKETING_ADMIN` | Demand forecasting and promotion velocity analysis | `CommerceOS2026!` |
+| **`logistics_admin`** | `LOGISTICS_ADMIN` | Dispatch carrier tracking, milestone management, route intelligence | `CommerceOS2026!` |
+
+Password is controlled by `SEED_ADMIN_PASSWORD` in `backend/.env` — **change it before any non-local deployment.** In production, `AUTH_ENFORCED` is always on; in development it's soft-enforced so the demo dashboard works without a login wall.
 
 ---
 
 ## 📡 API Reference
 
-Interactive OpenAPI documentation is generated at **`/docs`** or **`/redoc`**. Key endpoints:
+Interactive OpenAPI documentation is generated at **`/docs`** and **`/redoc`** (disabled automatically in production via `EXPOSE_DOCS`). Key endpoint groups:
 
-### Orders Intelligence
+### Orders Agent (`/api/orders`)
 | Method | Endpoint | Description |
 | :--- | :--- | :--- |
-| `POST` | `/api/orders/analyze` | Triggers a full empirical pipeline analysis cycle |
-| `POST` | `/api/orders/query` | Interactive natural language / ReAct tool query |
-| `GET` | `/api/orders/latest` | Retrieves cached analysis snapshot |
-| `GET` | `/api/orders/health` | Pipeline health scorecard and active anomalies |
+| `POST` | `/api/orders/analyze` | Full empirical pipeline analysis cycle |
+| `POST` | `/api/orders/query` | Interactive natural-language / ReAct tool query |
+| `GET` | `/api/orders/latest` | Cached analysis snapshot |
+| `GET` | `/api/orders/health` | Pipeline health scorecard and active issue count |
+| `POST` | `/api/orders/reset` | Resets agent cache and active notifications |
+| `GET` | `/api/orders/ingestion/status` | Replay/ingestion status |
+| `POST` | `/api/orders/ingestion/control` | Start/pause/resume/stop/step/reset the data replay |
 
-### Smart Inventory Watchdog
+### Inventory Agent (`/api/v1/agents/inventory`, alias `/api/inventory`)
 | Method | Endpoint | Description |
 | :--- | :--- | :--- |
-| `GET / POST` | `/api/v1/agents/inventory/monitor` | Runs watchdog cycle (stock, alerts, ROP, valuation) |
-| `POST` | `/api/v1/agents/inventory/query` | Conversational query for inventory status and trends |
-| `POST` | `/api/v1/agents/inventory/reorder` | Triggers restocking purchase order |
+| `GET`/`POST` | `/monitor` | Runs the watchdog cycle (stock, alerts, ROP, valuation) |
+| `POST` | `/query` | Conversational query for inventory status and trends |
+| `POST` | `/reorder` | Triggers a restocking purchase order |
+
+### Customer Support Agent (`/api/customer`, alias `/api/v1/agents/customer`)
+### Logistics, Pricing, Marketing Agents (`/api/v1/agents/{logistics,pricing,marketing}`)
+| Method | Endpoint | Description |
+| :--- | :--- | :--- |
+| `GET`/`POST` | `/analyze` | Runs that agent's analysis cycle |
+| `POST` | `/query` | Conversational query against that agent's tools |
+| `GET` | `/runs` | Recent analysis run history |
+| `GET`/`POST` | `/logistics/route` | Route lookup for an order (TomTom, OSRM fallback) |
+| `GET` | `/pricing/competitor-feed` | Apify competitor price feed status |
+| `POST` | `/pricing/competitor-feed/sync` | Triggers a competitor price sync |
+
+### Orchestrator, Automation & Audit
+| Method | Endpoint | Description |
+| :--- | :--- | :--- |
+| `POST`/`GET` | `/api/v1/orchestrator/*` | Cross-domain sweep across all six agents (`SUPER_ADMIN` only) |
+| `*` | `/api/v1/automation/*` | Automation policies and the human-in-the-loop approvals queue |
+| `GET` | `/api/v1/runs` | Agent run history |
+| `GET` | `/api/v1/audit` | Append-only audit log (`SUPER_ADMIN` only) |
 
 ### Authentication & System
 | Method | Endpoint | Description |
 | :--- | :--- | :--- |
-| `POST` | `/api/v1/auth/login` | Issues JWT bearer token |
-| `GET` | `/api/v1/system/health` | Comprehensive infrastructure and database healthcheck |
+| `POST` | `/api/v1/auth/login` | Issues a JWT bearer token |
+| `GET` | `/api/v1/auth/me` | Current user + permitted agents |
+| `GET` | `/api/v1/users` | User management (`SUPER_ADMIN` only) |
+| `GET` | `/api/v1/system/health` | LLM provider health / infra status (public) |
+| `GET` | `/health`, `/health/ready` | Liveness / readiness (database check) |
+| `WS` | `/ws/*` | Real-time stream of findings, notifications, and ingestion progress |
 
 ---
 
 ## 🛠️ Tech Stack
 
-- **Backend Framework**: [FastAPI](https://fastapi.tiangolo.com/), [Uvicorn](https://www.uvicorn.org/), [Pydantic v2](https://docs.pydantic.dev/)
-- **Agent Orchestration**: [LangGraph](https://langchain-ai.github.io/langgraph/), [LangChain Core](https://python.langchain.com/)
-- **Database & ORM**: [SQLAlchemy 2.0](https://www.sqlalchemy.org/), [Alembic](https://alembic.sqlalchemy.org/), PostgreSQL / SQLite
-- **Statistical Intelligence**: Custom Modified Z-Score, IQR, MAD, and Percentile distribution profilers
-- **Frontend Architecture**: [React 18](https://react.dev/), [TypeScript](https://www.typescriptlang.org/), [Vite](https://vitejs.dev/)
-- **DevOps & Cloud**: Docker, Docker Compose, Terraform (AWS ECS Fargate, RDS, ElastiCache, S3, CloudFront)
+**Backend**
+- [FastAPI](https://fastapi.tiangolo.com/) 0.141 + [Uvicorn](https://www.uvicorn.org/)/[Gunicorn](https://gunicorn.org/), [Pydantic v2](https://docs.pydantic.dev/) & pydantic-settings
+- [LangChain](https://python.langchain.com/) 1.4 + [LangGraph](https://langchain-ai.github.io/langgraph/) 1.2 (`create_react_agent`, Postgres checkpointing) for agent orchestration
+- [SQLAlchemy 2.0](https://www.sqlalchemy.org/) + [Alembic](https://alembic.sqlalchemy.org/) — PostgreSQL (prod/compose) or SQLite (local fallback)
+- Redis (cache / event bus), `websockets` for real-time streaming
+- pandas / numpy — statistical intelligence (Modified Z-Score, IQR/Tukey, MAD, binomial SE)
+- `python-jose` + `passlib[bcrypt]` — JWT auth and password hashing
+- `structlog`, `prometheus-client` + `prometheus-fastapi-instrumentator`, OpenTelemetry — structured logging & observability
+- `boto3` — AWS integration; `httpx` — outbound HTTP (Apify, TomTom, OSRM)
+
+**Frontend**
+- [React 18](https://react.dev/) + [TypeScript 5.6](https://www.typescriptlang.org/) + [Vite 6](https://vitejs.dev/)
+- [CesiumJS](https://cesium.com/platform/cesiumjs/) (`vite-plugin-cesium`) for 3D logistics route visualization
+- ESLint + Prettier + Vitest for linting, formatting, and unit tests
+
+**Data & DevOps**
+- Bundled **Olist** and **DataCo** e-commerce datasets, streamed via a custom replay engine
+- Docker + Docker Compose (backend, worker, Postgres, Redis, Nginx-served frontend)
+- Terraform modules under `infra/aws/` (ECS Fargate, RDS, ElastiCache, S3, CloudFront — see `docs/adr/`)
+- GitHub Actions CI (`.github/workflows/ci.yml`) running backend tests against a live Postgres service container, plus a separate deploy workflow
+- `pre-commit` + `detect-secrets` baseline for secret scanning
+
+---
+
+## ✅ Testing & Quality
+
+```bash
+make test        # backend pytest + frontend vitest
+make test-cov     # backend tests with coverage report
+make lint         # ruff + black + isort (backend), eslint (frontend)
+make typecheck    # mypy (backend), tsc --noEmit (frontend)
+make security     # pip-audit, npm audit, detect-secrets scan
+```
+
+Backend test suite (`backend/tests/`) covers auth, RBAC boundaries, automation/approvals, and each domain agent (`test_orders_agent.py`, `test_inventory_agent.py`, `test_customer_agent.py`, `test_domain_agents.py`, `test_llm.py`). CI runs these against a real PostgreSQL service container on every push/PR to `main`.
 
 ---
 
@@ -145,24 +276,36 @@ Interactive OpenAPI documentation is generated at **`/docs`** or **`/redoc`**. K
 ```text
 ├── backend/
 │   ├── app/
-│   │   ├── agents/            # Domain agents (orders, inventory, customer, etc.)
-│   │   ├── api/               # FastAPI routers, middleware, and dependencies
-│   │   ├── core/              # Security, settings, and structured logging
-│   │   ├── database/          # SQLAlchemy session factories and initialization
-│   │   ├── intelligence/      # Anomaly detectors, statistics, and confidence scoring
-│   │   ├── models/            # SQLAlchemy database models
-│   │   └── services/          # Multi-provider LLM service, replay engine, event bus
-│   ├── scripts/               # Warehouse builders and user seeding scripts
-│   └── requirements.txt       # Python dependencies
+│   │   ├── agents/            # 6 domain agents (orders, inventory, customer, pricing, marketing, logistics)
+│   │   │                      #   + framework.py (shared LangGraph ReAct/tool runner)
+│   │   ├── api/                # FastAPI routers (per-agent + v1), middleware (audit, security headers, request context)
+│   │   ├── automation/         # Policy-driven action proposals + human-in-the-loop executor
+│   │   ├── core/                # Settings, structured logging, security, centralized RBAC
+│   │   ├── database/            # SQLAlchemy session factory + init
+│   │   ├── intelligence/        # Anomaly detection, statistics, forecasting, confidence scoring
+│   │   ├── models/               # SQLAlchemy models (Olist, DataCo, competitor, operations, security)
+│   │   ├── orchestrator/         # Cross-domain sweep coordinator
+│   │   ├── services/              # Multi-provider LLM factory, replay engine, event bus, Apify, auth
+│   │   ├── worker/                 # Background worker entrypoint
+│   │   └── main.py                 # FastAPI app entrypoint (routers, middleware, lifespan/auto-seed)
+│   ├── alembic/                     # DB migrations
+│   ├── scripts/                      # Warehouse builder + user seeding
+│   └── tests/                         # pytest suite (agents, auth, RBAC, automation)
 ├── frontend/
 │   ├── src/
-│   │   ├── pages/             # Login, dashboard, and agent views
-│   │   ├── App.tsx            # Main application root and navigation
-│   │   └── config.ts          # API endpoints configuration
-│   └── package.json           # Frontend dependencies
-├── infra/                     # AWS Terraform infrastructure modules
+│   │   ├── OrchestratorView.tsx, OrdersAgentDashboard.tsx, InventoryAgentView.tsx,
+│   │   │   CustomerAgentView.tsx, DomainAgentView.tsx   # per-agent dashboards
+│   │   ├── ApprovalsView.tsx, AgentReportingControls.tsx, IngestionControlBar.tsx,
+│   │   │   CompetitorFeedControl.tsx                    # automation, reporting & data-control panels
+│   │   ├── components/CesiumRouteViewer.tsx              # 3D logistics route map
+│   │   ├── auth/AuthContext.tsx, pages/Login.tsx          # auth flow
+│   │   └── lib/{api,ws,format,markdown,reportGenerator}.ts # API/WS clients & helpers
+│   └── package.json
+├── infra/aws/                 # Terraform modules (network, …) — see docs/adr/0001-cloud-aws.md
+├── docs/adr/                  # Architecture decision records
+├── run_backend.py             # Uvicorn backend runner
 ├── start_backend.bat          # 1-click Windows backend launcher
 ├── start_frontend.bat         # 1-click Windows frontend launcher
-├── run_backend.py             # Uvicorn backend runner
+├── Makefile                   # setup/dev/test/lint/deploy shortcuts
 └── docker-compose.yml         # Containerized full-stack definition
 ```
