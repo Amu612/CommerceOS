@@ -2,8 +2,7 @@ import enum
 import uuid
 from datetime import UTC, datetime
 
-from sqlalchemy import JSON, Boolean, Column, DateTime, Float, Index, Integer, String, Text
-from sqlalchemy import Enum as SAEnum
+from sqlalchemy import JSON, Boolean, Column, DateTime, Enum as SAEnum, Float, Index, Integer, String, Text
 
 from app.models.olist import Base
 

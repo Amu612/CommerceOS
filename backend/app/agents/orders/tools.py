@@ -18,8 +18,7 @@ from sqlalchemy.orm import Session
 # The one canonical clock implementation lives in `app.agents._shared` (it also
 # handles the live-Shopify-source case); kept as `get_simulated_clock` here
 # since that's the name every call site in this file already uses.
-from app.agents._shared import period_bucket
-from app.agents._shared import simulated_clock as get_simulated_clock
+from app.agents._shared import period_bucket, simulated_clock as get_simulated_clock
 from app.agents.orders.schemas import (
     DataCategory,
     OrderDetail,

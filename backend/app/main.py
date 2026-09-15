@@ -118,14 +118,10 @@ register_error_handlers(app)
 # ── Routers ──────────────────────────────────────────────────────
 from fastapi import Depends  # noqa: E402
 
-from app.api.customer_routes import alias_router as customer_alias_router  # noqa: E402
-from app.api.customer_routes import customer_router  # noqa: E402
-from app.api.inventory_routes import alias_router as inventory_alias_router  # noqa: E402
-from app.api.inventory_routes import inventory_router  # noqa: E402
+from app.api.customer_routes import alias_router as customer_alias_router, customer_router  # noqa: E402
+from app.api.inventory_routes import alias_router as inventory_alias_router, inventory_router  # noqa: E402
 from app.api.routes import ingestion_router, nexus_sim_router, orders_router, simulation_router  # noqa: E402
-from app.api.v1 import audit as v1_audit  # noqa: E402
-from app.api.v1 import auth as v1_auth  # noqa: E402
-from app.api.v1 import users as v1_users  # noqa: E402
+from app.api.v1 import audit as v1_audit, auth as v1_auth, users as v1_users  # noqa: E402
 from app.api.v1.deps import (  # noqa: E402
     agent_dependency,
     auth_dependency,
@@ -146,11 +142,13 @@ app.include_router(v1_audit.router, prefix=settings.API_V1_PREFIX, dependencies=
 # so the demo dashboard works without a login wall.
 _agent_auth = [Depends(auth_dependency())]
 
-from app.api.v1 import automation as v1_automation  # noqa: E402
-from app.api.v1 import orchestrator as v1_orchestrator  # noqa: E402
-from app.api.v1 import runs as v1_runs  # noqa: E402
-from app.api.v1 import stream as v1_stream  # noqa: E402
-from app.api.v1 import system as v1_system  # noqa: E402
+from app.api.v1 import (  # noqa: E402
+    automation as v1_automation,
+    orchestrator as v1_orchestrator,
+    runs as v1_runs,
+    stream as v1_stream,
+    system as v1_system,
+)
 from app.api.v1.agents import logistics_router, marketing_router, pricing_router  # noqa: E402
 
 # RBAC — see app.core.rbac for the single source of truth these dependencies
