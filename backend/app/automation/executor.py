@@ -5,11 +5,12 @@ Automation executor + proposal service.
                                       the AUTO ones (+ verify), queues the rest.
   decide(approval_id, approved, user) → executes an approved action, or rejects it.
 """
+
 from __future__ import annotations
 
 import time
-from datetime import datetime, timezone
-from typing import Any, Optional
+from datetime import UTC, datetime
+from typing import Any
 
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
@@ -40,7 +41,7 @@ def propose_for_run(
     *,
     agent: str,
     findings: list[dict[str, Any]],
-    decision_id: Optional[str] = None,
+    decision_id: str | None = None,
 ) -> list[AutomationAction]:
     """One proposed action per finding that maps to an action type."""
     created: list[AutomationAction] = []
@@ -78,8 +79,11 @@ def propose_for_run(
             status="BLOCKED" if decision.mode == Mode.BLOCKED else "PROPOSED",
             confidence=confidence,
             payload={
-                "agent": agent, "severity": severity, "category": cat,
-                "title": f.get("title"), "detail": f.get("recommended_action"),
+                "agent": agent,
+                "severity": severity,
+                "category": cat,
+                "title": f.get("title"),
+                "detail": f.get("recommended_action"),
                 "evidence": f.get("evidence"),
             },
         )
@@ -102,19 +106,28 @@ def propose_for_run(
             # just approved exactly one action and is already waiting on it.
             _execute(db, action, use_langchain=False)
         elif decision.mode == Mode.NEEDS_APPROVAL:
-            db.add(Approval(
-                id=_uuid(), action_id=action.id, required_role=decision.required_role, status="PENDING",
-            ))
+            db.add(
+                Approval(
+                    id=_uuid(),
+                    action_id=action.id,
+                    required_role=decision.required_role,
+                    status="PENDING",
+                )
+            )
         created.append(action)
 
     db.commit()
     if created:
-        publish_event("automation", {
-            "type": "actions_proposed", "agent": agent,
-            "count": len(created),
-            "auto": sum(1 for a in created if a.mode == "AUTO"),
-            "pending": sum(1 for a in created if a.mode == "NEEDS_APPROVAL"),
-        })
+        publish_event(
+            "automation",
+            {
+                "type": "actions_proposed",
+                "agent": agent,
+                "count": len(created),
+                "auto": sum(1 for a in created if a.mode == "AUTO"),
+                "pending": sum(1 for a in created if a.mode == "NEEDS_APPROVAL"),
+            },
+        )
     return created
 
 
@@ -136,30 +149,39 @@ def _execute(db: Session, action: AutomationAction, *, use_langchain: bool = Tru
                 result["automation_backend"] = "deterministic"
             action.result = result
             action.status = "EXECUTED"
-            action.executed_at = datetime.now(timezone.utc)
+            action.executed_at = datetime.now(UTC)
             ok = bool(verify_fn(payload, result))
-            action.verification = {"verified": ok, "at": datetime.now(timezone.utc).isoformat()}
+            action.verification = {"verified": ok, "at": datetime.now(UTC).isoformat()}
             action.status = "VERIFIED" if ok else "EXECUTED"
             logger.info(
-                "automation_executed", action=action.action_type, verified=ok,
-                backend=result.get("automation_backend"), attempt=attempt,
+                "automation_executed",
+                action=action.action_type,
+                verified=ok,
+                backend=result.get("automation_backend"),
+                attempt=attempt,
             )
             # Real-time proof push: the console's approval queue refreshes the
             # moment an action actually executes (auto or human-approved).
-            publish_event("automation", {
-                "type": "automation_executed",
-                "action_type": action.action_type,
-                "status": action.status,
-                "verified": ok,
-                "backend": result.get("automation_backend"),
-            })
+            publish_event(
+                "automation",
+                {
+                    "type": "automation_executed",
+                    "action_type": action.action_type,
+                    "status": action.status,
+                    "verified": ok,
+                    "backend": result.get("automation_backend"),
+                },
+            )
             return
         except OperationalError as exc:
             db.rollback()  # clear the failed flush so `db` is usable again
             transient = "locked" in str(exc).lower() or "busy" in str(exc).lower()
             if transient and attempt < _MAX_EXECUTE_ATTEMPTS:
                 logger.warning(
-                    "automation_execute_retry", action=action.action_type, attempt=attempt, error=str(exc),
+                    "automation_execute_retry",
+                    action=action.action_type,
+                    attempt=attempt,
+                    error=str(exc),
                 )
                 time.sleep(0.3 * attempt)
                 continue
@@ -167,7 +189,7 @@ def _execute(db: Session, action: AutomationAction, *, use_langchain: bool = Tru
             action.result = {"error": str(exc)}
             logger.warning("automation_execute_failed", action=action.action_type, error=str(exc))
             return
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             db.rollback()
             action.status = "FAILED"
             action.result = {"error": str(exc)}
@@ -185,7 +207,7 @@ def decide(db: Session, approval_id: str, *, approved: bool, actor: dict) -> Aut
 
     approval.status = "APPROVED" if approved else "REJECTED"
     approval.decided_by = actor.get("username")
-    approval.decided_at = datetime.now(timezone.utc)
+    approval.decided_at = datetime.now(UTC)
     # Commit the human decision itself before attempting execution — `_execute`
     # shares this session with its handler and rolls it back on failure, which
     # must never also erase the fact that a human already approved/rejected.
@@ -197,17 +219,23 @@ def decide(db: Session, approval_id: str, *, approved: bool, actor: dict) -> Aut
         else:
             # No executable handler (e.g. CREATE_PURCHASE_ORDER_REQUEST) — mark actioned.
             action.status = "EXECUTED"
-            action.executed_at = datetime.now(timezone.utc)
+            action.executed_at = datetime.now(UTC)
             action.result = {"note": "Approved — handed to the domain team (no in-system handler)."}
     else:
         action.status = "REJECTED"
 
     log_audit(
-        db, action=f"AUTOMATION_{'APPROVE' if approved else 'REJECT'}",
-        actor_id=actor.get("sub"), actor_username=actor.get("username"), actor_role=actor.get("role"),
-        target_type="automation_action", target_id=action.id,
+        db,
+        action=f"AUTOMATION_{'APPROVE' if approved else 'REJECT'}",
+        actor_id=actor.get("sub"),
+        actor_username=actor.get("username"),
+        actor_role=actor.get("role"),
+        target_type="automation_action",
+        target_id=action.id,
         details={"action_type": action.action_type},
     )
     db.commit()
-    publish_event("automation", {"type": "approval_decided", "approved": approved, "action_type": action.action_type})
+    publish_event(
+        "automation", {"type": "approval_decided", "approved": approved, "action_type": action.action_type}
+    )
     return action

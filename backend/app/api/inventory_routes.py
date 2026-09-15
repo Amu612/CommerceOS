@@ -6,19 +6,16 @@ Exposes:
 - POST /api/v1/agents/inventory/query
 - POST /api/v1/agents/inventory/reorder
 """
+
 import logging
-from typing import Optional
+
 from fastapi import APIRouter, Depends, Request
 from sqlalchemy.orm import Session
 
-from app.database.session import get_db
-from app.agents.inventory import inventory_agent, InventoryAgentResponse
-from app.agents.inventory.schemas import (
-    InventoryQueryRequest,
-    InventoryReorderRequest,
-    InventoryAction,
-)
+from app.agents.inventory import InventoryAgentResponse, inventory_agent
+from app.agents.inventory.schemas import InventoryAction, InventoryQueryRequest, InventoryReorderRequest
 from app.agents.inventory.tools import InventoryTools
+from app.database.session import get_db
 
 logger = logging.getLogger(__name__)
 
@@ -35,7 +32,7 @@ alias_router = APIRouter(prefix="/api/inventory", tags=["Inventory Agent"])
 @alias_router.get("/monitor", response_model=InventoryAgentResponse)
 def monitor_inventory(
     request: Request,
-    threshold: Optional[int] = 50,
+    threshold: int | None = 50,
     db: Session = Depends(get_db),
 ):
     """

@@ -1,18 +1,18 @@
 import hashlib
 import json
 import logging
-from datetime import datetime, timezone
-from typing import Optional, List, Dict, Any
+from typing import Any
 
 from sqlalchemy.orm import Session
+
 from app.models.security import (
-    Notification,
-    NotificationStatus,
-    NotificationSeverity,
-    UserRole,
     AGENT_ROLE_MAP,
-    _uuid,
+    Notification,
+    NotificationSeverity,
+    NotificationStatus,
+    UserRole,
     _utcnow,
+    _uuid,
 )
 
 logger = logging.getLogger(__name__)
@@ -24,18 +24,21 @@ class NotificationService:
     @staticmethod
     def generate_fingerprint(
         agent: str,
-        entity_type: Optional[str] = None,
-        entity_id: Optional[str] = None,
+        entity_type: str | None = None,
+        entity_id: str | None = None,
         notification_type: str = "OPERATIONAL",
-        title: Optional[str] = None,
+        title: str | None = None,
     ) -> str:
-        raw = json.dumps({
-            "agent": (agent or "").lower(),
-            "entity_type": entity_type or "",
-            "entity_id": str(entity_id) or "",
-            "notification_type": notification_type,
-            "title": title or "",
-        }, sort_keys=True)
+        raw = json.dumps(
+            {
+                "agent": (agent or "").lower(),
+                "entity_type": entity_type or "",
+                "entity_id": str(entity_id) or "",
+                "notification_type": notification_type,
+                "title": title or "",
+            },
+            sort_keys=True,
+        )
         return hashlib.sha256(raw.encode()).hexdigest()
 
     @classmethod
@@ -48,12 +51,12 @@ class NotificationService:
         severity: str = "INFO",
         priority: str = "LOW",
         notification_type: str = "OPERATIONAL",
-        source: Optional[str] = None,
-        entity_type: Optional[str] = None,
-        entity_id: Optional[str] = None,
-        execution_id: Optional[str] = None,
-        snapshot_id: Optional[str] = None,
-        metadata_json: Optional[Dict[str, Any]] = None,
+        source: str | None = None,
+        entity_type: str | None = None,
+        entity_id: str | None = None,
+        execution_id: str | None = None,
+        snapshot_id: str | None = None,
+        metadata_json: dict[str, Any] | None = None,
     ) -> Notification:
         fingerprint = cls.generate_fingerprint(
             agent=responsible_agent,
@@ -74,14 +77,20 @@ class NotificationService:
         target_role = AGENT_ROLE_MAP.get(responsible_agent, UserRole.ORDERS_ADMIN)
 
         # Check existing active notification for deduplication
-        existing = db.query(Notification).filter(
-            Notification.fingerprint == fingerprint,
-            Notification.status.in_([
-                NotificationStatus.UNREAD,
-                NotificationStatus.READ,
-                NotificationStatus.ACKNOWLEDGED,
-            ])
-        ).first()
+        existing = (
+            db.query(Notification)
+            .filter(
+                Notification.fingerprint == fingerprint,
+                Notification.status.in_(
+                    [
+                        NotificationStatus.UNREAD,
+                        NotificationStatus.READ,
+                        NotificationStatus.ACKNOWLEDGED,
+                    ]
+                ),
+            )
+            .first()
+        )
 
         if existing:
             if existing.severity != sev_enum:

@@ -3,6 +3,7 @@ Competitor price benchmarks — fed by the Apify competitor-price scrape
 (`app.services.apify_service`). Additive to the Pricing agent only; unrelated
 to which order data source (historic/live) is active.
 """
+
 from __future__ import annotations
 
 from sqlalchemy import Column, DateTime, Float, Integer, String

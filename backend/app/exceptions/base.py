@@ -5,9 +5,10 @@ Every deliberately-raised error is one of these; the API error handlers turn the
 into RFC-7807 problem responses. Unhandled exceptions become a generic 500 with
 no internals leaked in production.
 """
+
 from __future__ import annotations
 
-from typing import Any, Optional
+from typing import Any
 
 
 class AppException(Exception):
@@ -19,11 +20,11 @@ class AppException(Exception):
 
     def __init__(
         self,
-        message: Optional[str] = None,
+        message: str | None = None,
         *,
-        error_code: Optional[str] = None,
-        status_code: Optional[int] = None,
-        details: Optional[dict[str, Any]] = None,
+        error_code: str | None = None,
+        status_code: int | None = None,
+        details: dict[str, Any] | None = None,
     ) -> None:
         self.message = message or self.default_message
         self.error_code = error_code or self.error_code
@@ -68,7 +69,7 @@ class RateLimitException(AppException):
     error_code = "rate_limited"
     default_message = "Too many requests."
 
-    def __init__(self, message: Optional[str] = None, *, retry_after: int = 60, **kwargs: Any) -> None:
+    def __init__(self, message: str | None = None, *, retry_after: int = 60, **kwargs: Any) -> None:
         super().__init__(message, **kwargs)
         self.retry_after = retry_after
 

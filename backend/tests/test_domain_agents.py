@@ -1,4 +1,5 @@
 """Smoke + contract tests for the logistics / pricing / marketing agents + orchestrator."""
+
 import pytest
 
 from app.agents.logistics import logistics_agent

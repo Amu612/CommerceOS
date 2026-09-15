@@ -4,26 +4,28 @@ Resolves ambiguous or cross-table IDs (customer_id, customer_unique_id, seller_i
 product_id, review_id, order_id) across both Olist and DataCo schemas.
 Provides rich, relational context for agent LLMs and deterministic tools.
 """
+
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, List, Optional
-from sqlalchemy import func, or_
+from typing import Any
+
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from app.database.session import SessionLocal
+from app.models.dataco import DataCoOrder, DataCoOrderItem
 from app.models.olist import (
+    CategoryTranslation,
     Customer,
+    Inventory,
     Order,
     OrderItem,
+    OrderPayment,
+    OrderReview,
     Product,
     Seller,
-    OrderReview,
-    OrderPayment,
-    Inventory,
-    CategoryTranslation,
 )
-from app.models.dataco import DataCoOrder, DataCoOrderItem
 
 logger = logging.getLogger(__name__)
 
@@ -33,9 +35,24 @@ def clean_identifier(val: str) -> str:
     if not val:
         return ""
     s = str(val).strip()
-    for prefix in ("#", "ORD-", "ord-", "CUST-", "cust-", "PROD-", "prod-", "SELLER-", "seller-", "REV-", "rev-", "TRK-", "BR-", "DC-"):
+    for prefix in (
+        "#",
+        "ORD-",
+        "ord-",
+        "CUST-",
+        "cust-",
+        "PROD-",
+        "prod-",
+        "SELLER-",
+        "seller-",
+        "REV-",
+        "rev-",
+        "TRK-",
+        "BR-",
+        "DC-",
+    ):
         if s.startswith(prefix):
-            s = s[len(prefix):]
+            s = s[len(prefix) :]
     return s.strip()
 
 
@@ -46,7 +63,7 @@ class EntityResolver:
     """
 
     @staticmethod
-    def resolve_entity(entity_id: str, db: Optional[Session] = None) -> Dict[str, Any]:
+    def resolve_entity(entity_id: str, db: Session | None = None) -> dict[str, Any]:
         """
         Inspects all major tables to determine the entity type and returns
         relational details and a formatted markdown summary.
@@ -71,9 +88,11 @@ class EntityResolver:
             # ── 1. CHECK ORDERS TABLE ─────────────────────────────────
             order_match = None
             if is_hex32 or len(clean_id) >= 6:
-                order_match = db.query(Order).filter(
-                    or_(Order.order_id == clean_id, Order.order_id.ilike(f"{clean_id}%"))
-                ).first()
+                order_match = (
+                    db.query(Order)
+                    .filter(or_(Order.order_id == clean_id, Order.order_id.ilike(f"{clean_id}%")))
+                    .first()
+                )
             if not order_match and is_int:
                 try:
                     dc_order = db.query(DataCoOrder).filter(DataCoOrder.order_id == int(clean_id)).first()
@@ -89,17 +108,23 @@ class EntityResolver:
             # Check by customer_id or customer_unique_id
             cust_match = None
             if is_hex32 or len(clean_id) >= 6:
-                cust_match = db.query(Customer).filter(
-                    or_(
-                        Customer.customer_id == clean_id,
-                        Customer.customer_unique_id == clean_id,
-                        Customer.customer_id.ilike(f"{clean_id}%"),
-                        Customer.customer_unique_id.ilike(f"{clean_id}%"),
+                cust_match = (
+                    db.query(Customer)
+                    .filter(
+                        or_(
+                            Customer.customer_id == clean_id,
+                            Customer.customer_unique_id == clean_id,
+                            Customer.customer_id.ilike(f"{clean_id}%"),
+                            Customer.customer_unique_id.ilike(f"{clean_id}%"),
+                        )
                     )
-                ).first()
+                    .first()
+                )
             if not cust_match and is_int:
                 try:
-                    dc_cust_orders = db.query(DataCoOrder).filter(DataCoOrder.customer_id == int(clean_id)).limit(10).all()
+                    dc_cust_orders = (
+                        db.query(DataCoOrder).filter(DataCoOrder.customer_id == int(clean_id)).limit(10).all()
+                    )
                     if dc_cust_orders:
                         return EntityResolver._format_dataco_customer(int(clean_id), dc_cust_orders)
                 except Exception:
@@ -111,12 +136,19 @@ class EntityResolver:
             # ── 3. CHECK PRODUCTS TABLE ───────────────────────────────
             prod_match = None
             if is_hex32 or len(clean_id) >= 6:
-                prod_match = db.query(Product).filter(
-                    or_(Product.product_id == clean_id, Product.product_id.ilike(f"{clean_id}%"))
-                ).first()
+                prod_match = (
+                    db.query(Product)
+                    .filter(or_(Product.product_id == clean_id, Product.product_id.ilike(f"{clean_id}%")))
+                    .first()
+                )
             if not prod_match and is_int:
                 try:
-                    dc_prod_items = db.query(DataCoOrderItem).filter(DataCoOrderItem.product_card_id == int(clean_id)).limit(10).all()
+                    dc_prod_items = (
+                        db.query(DataCoOrderItem)
+                        .filter(DataCoOrderItem.product_card_id == int(clean_id))
+                        .limit(10)
+                        .all()
+                    )
                     if dc_prod_items:
                         return EntityResolver._format_dataco_product(int(clean_id), dc_prod_items)
                 except Exception:
@@ -128,18 +160,24 @@ class EntityResolver:
             # ── 4. CHECK SELLERS TABLE ────────────────────────────────
             seller_match = None
             if is_hex32 or len(clean_id) >= 6:
-                seller_match = db.query(Seller).filter(
-                    or_(Seller.seller_id == clean_id, Seller.seller_id.ilike(f"{clean_id}%"))
-                ).first()
+                seller_match = (
+                    db.query(Seller)
+                    .filter(or_(Seller.seller_id == clean_id, Seller.seller_id.ilike(f"{clean_id}%")))
+                    .first()
+                )
             if seller_match:
                 return EntityResolver._format_olist_seller(seller_match, db)
 
             # ── 5. CHECK REVIEWS TABLE ────────────────────────────────
             review_match = None
             if is_hex32 or len(clean_id) >= 6:
-                review_match = db.query(OrderReview).filter(
-                    or_(OrderReview.review_id == clean_id, OrderReview.review_id.ilike(f"{clean_id}%"))
-                ).first()
+                review_match = (
+                    db.query(OrderReview)
+                    .filter(
+                        or_(OrderReview.review_id == clean_id, OrderReview.review_id.ilike(f"{clean_id}%"))
+                    )
+                    .first()
+                )
             if review_match:
                 return EntityResolver._format_olist_review(review_match, db)
 
@@ -156,8 +194,12 @@ class EntityResolver:
     # ── Formatter Helpers ─────────────────────────────────────────────
 
     @staticmethod
-    def _format_olist_order(o: Order, db: Session) -> Dict[str, Any]:
-        cust = db.query(Customer).filter(Customer.customer_id == o.customer_id).first() if o.customer_id else None
+    def _format_olist_order(o: Order, db: Session) -> dict[str, Any]:
+        cust = (
+            db.query(Customer).filter(Customer.customer_id == o.customer_id).first()
+            if o.customer_id
+            else None
+        )
         items = db.query(OrderItem).filter(OrderItem.order_id == o.order_id).all()
         payments = db.query(OrderPayment).filter(OrderPayment.order_id == o.order_id).all()
         review = db.query(OrderReview).filter(OrderReview.order_id == o.order_id).first()
@@ -167,24 +209,35 @@ class EntityResolver:
         for it in items:
             p = db.query(Product).filter(Product.product_id == it.product_id).first()
             cat = p.product_category_name if p else "general"
-            item_list.append({
-                "product_id": it.product_id,
-                "category": cat,
-                "price": float(it.price or 0.0),
-                "freight": float(it.freight_value or 0.0),
-                "seller_id": it.seller_id,
-            })
+            item_list.append(
+                {
+                    "product_id": it.product_id,
+                    "category": cat,
+                    "price": float(it.price or 0.0),
+                    "freight": float(it.freight_value or 0.0),
+                    "seller_id": it.seller_id,
+                }
+            )
             if it.seller_id:
                 sellers.add(it.seller_id)
 
-        total_value = sum(float(p.payment_value or 0.0) for p in payments) if payments else sum(i["price"] + i["freight"] for i in item_list)
+        total_value = (
+            sum(float(p.payment_value or 0.0) for p in payments)
+            if payments
+            else sum(i["price"] + i["freight"] for i in item_list)
+        )
 
-        items_desc = "\n".join(
-            f"  • Product `{i['product_id'][:8]}...` ({i['category']}) — R${i['price']:.2f} (Seller: `{i['seller_id'][:8]}...`)"
-            for i in item_list
-        ) or "  • Items pending itemization"
+        items_desc = (
+            "\n".join(
+                f"  • Product `{i['product_id'][:8]}...` ({i['category']}) — R${i['price']:.2f} (Seller: `{i['seller_id'][:8]}...`)"
+                for i in item_list
+            )
+            or "  • Items pending itemization"
+        )
 
-        review_desc = f"⭐ Review Score: **{review.review_score}/5**" if review else "No review submitted yet."
+        review_desc = (
+            f"⭐ Review Score: **{review.review_score}/5**" if review else "No review submitted yet."
+        )
         if review and (review.review_comment_title or review.review_comment_message):
             review_desc += f"\n  💬 Comment: \"{review.review_comment_title or ''} {review.review_comment_message or ''}\"".strip()
 
@@ -218,7 +271,7 @@ class EntityResolver:
         }
 
     @staticmethod
-    def _format_dataco_order(dc: DataCoOrder, db: Session) -> Dict[str, Any]:
+    def _format_dataco_order(dc: DataCoOrder, db: Session) -> dict[str, Any]:
         items = db.query(DataCoOrderItem).filter(DataCoOrderItem.order_id == dc.order_id).all()
         item_list = [
             {
@@ -231,10 +284,13 @@ class EntityResolver:
             }
             for it in items
         ]
-        items_desc = "\n".join(
-            f"  • {i['product_name']} x{i['quantity']} — ${i['total']:.2f} ({i['category']})"
-            for i in item_list
-        ) or "  • Details pending"
+        items_desc = (
+            "\n".join(
+                f"  • {i['product_name']} x{i['quantity']} — ${i['total']:.2f} ({i['category']})"
+                for i in item_list
+            )
+            or "  • Details pending"
+        )
 
         summary = (
             f"📦 **DataCo Order #{dc.order_id}**\n"
@@ -262,7 +318,7 @@ class EntityResolver:
         }
 
     @staticmethod
-    def _format_olist_customer(cust: Customer, db: Session) -> Dict[str, Any]:
+    def _format_olist_customer(cust: Customer, db: Session) -> dict[str, Any]:
         linked_cust_ids = [
             c.customer_id
             for c in db.query(Customer.customer_id)
@@ -285,17 +341,27 @@ class EntityResolver:
             pmts = db.query(OrderPayment).filter(OrderPayment.order_id == o.order_id).all()
             o_val = sum(float(p.payment_value or 0.0) for p in pmts) if pmts else 0.0
             total_spent += o_val
-            order_summaries.append({
-                "order_id": o.order_id,
-                "status": o.order_status,
-                "date": o.order_purchase_timestamp.strftime("%Y-%m-%d") if o.order_purchase_timestamp else "N/A",
-                "value": round(o_val, 2),
-            })
+            order_summaries.append(
+                {
+                    "order_id": o.order_id,
+                    "status": o.order_status,
+                    "date": (
+                        o.order_purchase_timestamp.strftime("%Y-%m-%d")
+                        if o.order_purchase_timestamp
+                        else "N/A"
+                    ),
+                    "value": round(o_val, 2),
+                }
+            )
 
-        orders_desc = "\n".join(
-            f"  • Order `#{o['order_id'][:8]}...` — **{o['status'].upper()}** on {o['date']} (R${o['value']:.2f})"
-            for o in order_summaries[:5]
-        ) if order_summaries else "  • No orders placed yet."
+        orders_desc = (
+            "\n".join(
+                f"  • Order `#{o['order_id'][:8]}...` — **{o['status'].upper()}** on {o['date']} (R${o['value']:.2f})"
+                for o in order_summaries[:5]
+            )
+            if order_summaries
+            else "  • No orders placed yet."
+        )
 
         summary = (
             f"👤 **Customer Profile**\n"
@@ -323,7 +389,7 @@ class EntityResolver:
         }
 
     @staticmethod
-    def _format_dataco_customer(cust_id: int, orders: List[DataCoOrder]) -> Dict[str, Any]:
+    def _format_dataco_customer(cust_id: int, orders: list[DataCoOrder]) -> dict[str, Any]:
         first = orders[0]
         total_spent = sum(float(o.order_total or 0.0) for o in orders)
         order_summaries = [
@@ -365,12 +431,14 @@ class EntityResolver:
         }
 
     @staticmethod
-    def _format_olist_product(p: Product, db: Session) -> Dict[str, Any]:
+    def _format_olist_product(p: Product, db: Session) -> dict[str, Any]:
         cat_en = None
         if p.product_category_name:
-            trans = db.query(CategoryTranslation).filter(
-                CategoryTranslation.product_category_name == p.product_category_name
-            ).first()
+            trans = (
+                db.query(CategoryTranslation)
+                .filter(CategoryTranslation.product_category_name == p.product_category_name)
+                .first()
+            )
             if trans:
                 cat_en = trans.product_category_name_english
 
@@ -407,7 +475,7 @@ class EntityResolver:
         }
 
     @staticmethod
-    def _format_dataco_product(card_id: int, items: List[DataCoOrderItem]) -> Dict[str, Any]:
+    def _format_dataco_product(card_id: int, items: list[DataCoOrderItem]) -> dict[str, Any]:
         first = items[0]
         prices = [float(it.product_price or 0.0) for it in items]
         avg_price = round(sum(prices) / len(prices), 2) if prices else 0.0
@@ -435,7 +503,7 @@ class EntityResolver:
         }
 
     @staticmethod
-    def _format_olist_seller(seller: Seller, db: Session) -> Dict[str, Any]:
+    def _format_olist_seller(seller: Seller, db: Session) -> dict[str, Any]:
         items = db.query(OrderItem).filter(OrderItem.seller_id == seller.seller_id).limit(50).all()
         unique_prods = list({it.product_id for it in items})
         unique_orders = list({it.order_id for it in items})
@@ -466,7 +534,7 @@ class EntityResolver:
         }
 
     @staticmethod
-    def _format_olist_review(review: OrderReview, db: Session) -> Dict[str, Any]:
+    def _format_olist_review(review: OrderReview, db: Session) -> dict[str, Any]:
         order = db.query(Order).filter(Order.order_id == review.order_id).first()
 
         summary = (

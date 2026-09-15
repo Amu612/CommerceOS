@@ -14,18 +14,18 @@ provider's `Retry-After` hint instead of surfacing a 429 to the user.
 it frequently and a live "ping" on every poll would burn the token budget that
 real agent queries need.
 """
+
 from __future__ import annotations
 
 import time
 from functools import lru_cache
-from typing import Optional
 
 from app.core.logging import get_logger
 from app.core.settings import settings
 
 logger = get_logger("llm.chat")
 
-_LAST_ERROR: Optional[str] = None
+_STATE: dict = {"last_error": None}
 
 # Reachability probe cache — holder dict avoids a module-level `global`.
 # The ping costs real tokens on metered providers, so it runs at most once per
@@ -35,11 +35,11 @@ _STATUS_TTL_ERROR = 30.0
 _status_cache: dict = {"entry": None, "expires_at": 0.0}  # {"entry": dict|None, "expires_at": float}
 
 
-def last_error() -> Optional[str]:
-    return _LAST_ERROR
+def last_error() -> str | None:
+    return _STATE["last_error"]
 
 
-def _groq_reasoning_effort() -> Optional[str]:
+def _groq_reasoning_effort() -> str | None:
     """gpt-oss models emit hidden reasoning tokens that consume a large share
     of the free-tier TPM budget; "low" trims them. ChatGroq (langchain-groq)
     takes this as a first-class constructor field, and only for models that
@@ -52,9 +52,8 @@ def _groq_reasoning_effort() -> Optional[str]:
 
 @lru_cache
 def get_chat_model():  # -> Optional[BaseChatModel]
-    global _LAST_ERROR
     provider, model = settings.resolve_llm()
-    _LAST_ERROR = None
+    _STATE["last_error"] = None
 
     try:
         if provider == "groq":
@@ -111,10 +110,10 @@ def get_chat_model():  # -> Optional[BaseChatModel]
             return ChatBedrockConverse(model=model, region_name=settings.BEDROCK_REGION, temperature=0.2)
 
     except ImportError as exc:  # pragma: no cover - optional deps
-        _LAST_ERROR = f"missing package for provider '{provider}': {exc}"
+        _STATE["last_error"] = f"missing package for provider '{provider}': {exc}"
         logger.warning("chat_model_import_failed", provider=provider, error=str(exc))
-    except Exception as exc:  # noqa: BLE001
-        _LAST_ERROR = f"{type(exc).__name__}: {exc}"
+    except Exception as exc:
+        _STATE["last_error"] = f"{type(exc).__name__}: {exc}"
         logger.warning("chat_model_init_failed", provider=provider, error=str(exc))
 
     return None
@@ -136,14 +135,14 @@ def chat_model_status() -> dict:
             reachable = True
         except Exception as exc:
             reachable = False
-            globals()["_LAST_ERROR"] = f"invoke failed: {exc}"
+            _STATE["last_error"] = f"invoke failed: {exc}"
     status = {
         "configured_provider": settings.LLM_PROVIDER,
         "resolved_provider": provider if ok else "deterministic",
         "model": model if ok else None,
         "chat_model_available": ok,
         "reachable": reachable,
-        "last_error": _LAST_ERROR,
+        "last_error": _STATE["last_error"],
     }
     # A probe that errors may just be a transient 429 — retry sooner than a
     # healthy probe so the dashboard recovers quickly.

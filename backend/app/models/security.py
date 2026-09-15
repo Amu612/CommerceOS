@@ -1,7 +1,10 @@
-import uuid
 import enum
-from datetime import datetime, timezone
-from sqlalchemy import Column, String, Boolean, DateTime, Text, Integer, Float, Index, Enum as SAEnum, JSON
+import uuid
+from datetime import UTC, datetime
+
+from sqlalchemy import JSON, Boolean, Column, DateTime, Float, Index, Integer, String, Text
+from sqlalchemy import Enum as SAEnum
+
 from app.models.olist import Base
 
 
@@ -63,7 +66,7 @@ def _uuid() -> str:
 
 
 def _utcnow() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 class User(Base):
@@ -89,17 +92,29 @@ class Notification(Base):
     title = Column(String(500), nullable=False)
     message = Column(Text, nullable=False)
     notification_type = Column(String(100), nullable=False, default="OPERATIONAL")
-    severity = Column(SAEnum(NotificationSeverity, name="notification_severity_enum", create_constraint=True), nullable=False, default=NotificationSeverity.INFO)
+    severity = Column(
+        SAEnum(NotificationSeverity, name="notification_severity_enum", create_constraint=True),
+        nullable=False,
+        default=NotificationSeverity.INFO,
+    )
     priority = Column(String(20), nullable=False, default="LOW")
     responsible_agent = Column(String(50), nullable=True, index=True)
-    target_role = Column(SAEnum(UserRole, name="notification_target_role_enum", create_constraint=True), nullable=True, index=True)
+    target_role = Column(
+        SAEnum(UserRole, name="notification_target_role_enum", create_constraint=True),
+        nullable=True,
+        index=True,
+    )
     target_user_id = Column(String(36), nullable=True, index=True)
     source = Column(String(100), nullable=True)
     entity_type = Column(String(100), nullable=True)
     entity_id = Column(String(255), nullable=True)
     metadata_json = Column(JSON, nullable=True)
     fingerprint = Column(String(64), unique=False, nullable=True, index=True)
-    status = Column(SAEnum(NotificationStatus, name="notification_status_enum", create_constraint=True), nullable=False, default=NotificationStatus.UNREAD)
+    status = Column(
+        SAEnum(NotificationStatus, name="notification_status_enum", create_constraint=True),
+        nullable=False,
+        default=NotificationStatus.UNREAD,
+    )
     created_at = Column(DateTime(timezone=True), default=_utcnow, nullable=False)
     read_at = Column(DateTime(timezone=True), nullable=True)
     acknowledged_at = Column(DateTime(timezone=True), nullable=True)
@@ -126,9 +141,7 @@ class AgentPrediction(Base):
     metrics_json = Column(JSON, nullable=True)
     created_at = Column(DateTime(timezone=True), default=_utcnow, nullable=False)
 
-    __table_args__ = (
-        Index("ix_agent_predictions_exec_agent", "execution_id", "agent_id"),
-    )
+    __table_args__ = (Index("ix_agent_predictions_exec_agent", "execution_id", "agent_id"),)
 
 
 class AuditLog(Base):

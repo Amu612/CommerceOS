@@ -3,18 +3,16 @@ LangChain tools for the customer support ReAct agent. Every tool reads the same
 transaction database as the other agents, source-aware to the simulated clock.
 Used by `create_react_agent` when a chat model is configured.
 """
+
 from __future__ import annotations
 
 from langchain_core.tools import tool
 
 from app.agents.customer.tools import CustomerSupportTools
-from app.database.session import SessionLocal
-from sqlalchemy import func
-
-from app.models.olist import CategoryTranslation, Customer, Order, OrderItem, OrderReview, Product, Seller
-
-from app.agents.orders.tools import OrdersTools
 from app.agents.entity_resolver import entity_resolver
+from app.agents.orders.tools import OrdersTools
+from app.database.session import SessionLocal
+from app.models.olist import CategoryTranslation, Customer, Order, OrderItem, OrderReview, Product, Seller
 
 
 @tool
@@ -27,7 +25,10 @@ def lookup_order(order_id: str) -> str:
         if fallback.get("status") == "FOUND":
             return fallback.get("summary", f"Found entity of type {fallback.get('entity_type')}.")
         return f"Order '{order_id}' was not found."
-    items = "; ".join(f"{it.product_name} x{it.quantity} (R${it.price:.2f})" for it in detail.items) or "fulfilment package"
+    items = (
+        "; ".join(f"{it.product_name} x{it.quantity} (R${it.price:.2f})" for it in detail.items)
+        or "fulfilment package"
+    )
     return (
         f"Order {detail.order_id}: status {detail.status.upper()}, total R${detail.total:.2f}, "
         f"placed {(detail.purchase_timestamp or '')[:10]}, delivered {(detail.delivered_customer_date or 'not yet')[:10]}, "
@@ -82,7 +83,10 @@ def track_shipment(order_id: str) -> str:
     r = OrdersTools.track_shipment(order_id)
     if r.status == "NOT_FOUND":
         return f"No shipment found for order '{order_id}'."
-    events = "; ".join(f"{e.status} @ {e.location} ({e.timestamp[:10]})" for e in r.events) or "registered with carrier"
+    events = (
+        "; ".join(f"{e.status} @ {e.location} ({e.timestamp[:10]})" for e in r.events)
+        or "registered with carrier"
+    )
     return f"Carrier {r.carrier}, tracking {r.tracking_number}, status {r.status}, ETA {(r.estimated_delivery or 'on schedule')[:10]}. Milestones: {events}."
 
 
@@ -168,7 +172,6 @@ def customer_experience_analytics(metric: str) -> str:
     from collections import defaultdict
 
     from app.agents._shared import simulated_clock
-    from app.models.olist import CategoryTranslation, Order, OrderItem, OrderReview, Seller
 
     db = SessionLocal()
     try:
@@ -197,7 +200,9 @@ def customer_experience_analytics(metric: str) -> str:
             return "No review data observed yet."
         cat_en = {
             r[0]: r[1]
-            for r in db.query(CategoryTranslation.product_category_name, CategoryTranslation.product_category_name_english).all()
+            for r in db.query(
+                CategoryTranslation.product_category_name, CategoryTranslation.product_category_name_english
+            ).all()
         }
 
         def disp(c):
@@ -249,7 +254,7 @@ def customer_experience_analytics(metric: str) -> str:
                 order_cats[oid].add(cat)
 
         order_info = {}
-        for oid, deliv, est, score, created, answered, state, sid, cat in rows:
+        for oid, deliv, est, score, _created, _answered, _state, _sid, _cat in rows:
             if oid in order_info:
                 continue
             order_info[oid] = (bool(deliv and est and deliv > est), int(score))
@@ -290,11 +295,13 @@ def customer_experience_analytics(metric: str) -> str:
                 key=lambda x: -x[1],
             )
             parts = ", ".join(f"{disp(c)} {p:.1f}%" for c, p in rows2[:8])
-            return f"Categories with the highest share of low-rated (1-2) reviews: " + (parts or "none")
+            return "Categories with the highest share of low-rated (1-2) reviews: " + (parts or "none")
         if metric == "state_low_scores":
-            rows2 = sorted(((s, st.mean(v)) for s, v in state_scores.items() if len(v) >= 20), key=lambda x: x[1])
+            rows2 = sorted(
+                ((s, st.mean(v)) for s, v in state_scores.items() if len(v) >= 20), key=lambda x: x[1]
+            )
             parts = ", ".join(f"{s}: {v:.2f}/5" for s, v in rows2[:5])
-            return f"Five states with the lowest average review score: " + (parts or "none")
+            return "Five states with the lowest average review score: " + (parts or "none")
         if metric == "late_1_2_pct":
             late_n = len(late_scores) or 1
             low = sum(1 for s in late_scores if s <= 2)
@@ -306,35 +313,46 @@ def customer_experience_analytics(metric: str) -> str:
                     rows2.append((sid, seller_low[sid] / n * 100, n))
             rows2.sort(key=lambda x: -x[1])
             parts = ", ".join(f"#{sid[:8]} {p:.0f}% of {n}" for sid, p, n in rows2[:6])
-            return f"Sellers with the highest poor-review proportion (min 20 reviews): " + (parts or "none")
+            return "Sellers with the highest poor-review proportion (min 20 reviews): " + (parts or "none")
         if metric == "review_response_time":
             if not response_hours:
                 return "No answered reviews observed yet."
             return f"Average time between review creation and answer: {st.mean(response_hours):.1f} hours across {len(response_hours):,} answered reviews."
         if metric == "delay_review_hotspots":
             out = []
-            for cat in cat_late_total:
-                if cat_late_total[cat] < 20:
+            for cat, late_n in cat_late_total.items():
+                if late_n < 20:
                     continue
-                co = cat_late_low[cat] / cat_late_total[cat] * 100
+                co = cat_late_low[cat] / late_n * 100
                 base = overall_low_pct * 100
                 if co > base:
                     out.append((cat, co, base))
             out.sort(key=lambda x: -x[1])
             parts = ", ".join(f"{disp(c)} ({co:.1f}% vs {b:.1f}% avg)" for c, co, b in out[:6])
-            return f"Categories where delay + poor reviews co-occur above average: " + (parts or "none")
+            return "Categories where delay + poor reviews co-occur above average: " + (parts or "none")
         if metric == "issue_rank":
             late_avg = st.mean(late_scores) if late_scores else None
             ok_avg = st.mean(ontime_scores) if ontime_scores else None
             gaps = []
             if late_avg is not None and ok_avg is not None:
-                gaps.append(("Late delivery", (ok_avg - late_avg) * len(late_scores), f"{(ok_avg - late_avg):.2f}-star drop across {len(late_scores):,} late orders"))
+                gaps.append(
+                    (
+                        "Late delivery",
+                        (ok_avg - late_avg) * len(late_scores),
+                        f"{(ok_avg - late_avg):.2f}-star drop across {len(late_scores):,} late orders",
+                    )
+                )
             worst_cat = None
             cat_rows = [(c, cat_low[c] / cat_total[c] * 100) for c in cat_total if cat_total[c] >= 20]
             if cat_rows:
                 worst_cat = max(cat_rows, key=lambda x: x[1])
-                gaps.append(("Worst category " + disp(worst_cat[0]), (worst_cat[1] - overall_low_pct * 100) / 100 * cat_total[worst_cat[0]], f"{worst_cat[1]:.1f}% low-rated vs {overall_low_pct * 100:.1f}% overall"))
-            hotspots = [g for g in []]
+                gaps.append(
+                    (
+                        "Worst category " + disp(worst_cat[0]),
+                        (worst_cat[1] - overall_low_pct * 100) / 100 * cat_total[worst_cat[0]],
+                        f"{worst_cat[1]:.1f}% low-rated vs {overall_low_pct * 100:.1f}% overall",
+                    )
+                )
             gaps.sort(key=lambda x: -x[1])
             parts = "; ".join(f"{i+1}. {name} — {detail}" for i, (name, _, detail) in enumerate(gaps[:4]))
             return "CX issues ranked by impact on review scores: " + (parts or "no significant issues found")
@@ -343,9 +361,10 @@ def customer_experience_analytics(metric: str) -> str:
             "category_low_review, state_low_scores, late_vs_ontime, late_1_2_pct, seller_poor_reviews, "
             "review_response_time, delay_review_hotspots, issue_rank"
         )
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         return f"❌ Analytics failed: {exc}"
     finally:
         db.close()
+
 
 CUSTOMER_TOOLS.append(customer_experience_analytics)

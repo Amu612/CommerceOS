@@ -4,6 +4,7 @@ Confirmation gate for side-effecting agent tools.
 State-changing tools (purchase-order creation, RMA initiation) may only run
 after the USER — never the model — explicitly affirmed in the conversation.
 """
+
 from app.agents.framework import register_user_message, user_explicitly_confirmed
 from app.agents.inventory.tools import tool_create_reorder_action
 

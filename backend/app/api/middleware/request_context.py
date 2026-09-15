@@ -3,6 +3,7 @@ Assigns a request id + correlation id to every request, binds them into the
 logging context, echoes `X-Request-ID` back, and logs one structured line per
 request with method, path, status, and latency.
 """
+
 from __future__ import annotations
 
 import time

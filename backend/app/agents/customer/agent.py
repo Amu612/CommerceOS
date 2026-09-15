@@ -6,18 +6,13 @@ specialists -> supervisor) and returns a structured CustomerAgentResponse.
 Data comes exclusively from the shared transaction database used by the
 Orders and Inventory agents.
 """
+
 import logging
-from typing import Optional
 
 from sqlalchemy.orm import Session
 
 from app.agents.customer.graph import customer_graph
-from app.agents.customer.schemas import (
-    AGENT_MANIFEST,
-    AgentTrace,
-    CustomerAgentResponse,
-    ToolCallRecord,
-)
+from app.agents.customer.schemas import AGENT_MANIFEST, AgentTrace, CustomerAgentResponse, ToolCallRecord
 
 logger = logging.getLogger(__name__)
 
@@ -32,7 +27,7 @@ class CustomerSupportAgent:
     def manifest(self):
         return AGENT_MANIFEST
 
-    def _react(self, message: str, history: Optional[list] = None) -> Optional[CustomerAgentResponse]:
+    def _react(self, message: str, history: list | None = None) -> CustomerAgentResponse | None:
         """LangGraph ReAct agent over the customer tools. Returns None if no chat model."""
         from app.services.llm import get_chat_model
 
@@ -69,7 +64,9 @@ class CustomerSupportAgent:
                 if not txt:
                     continue
                 prior.append(HumanMessage(content=txt) if role == "user" else AIMessage(content=txt))
-            result = agent.invoke({"messages": prior + [HumanMessage(content=message)]}, config={"recursion_limit": 10})
+            result = agent.invoke(
+                {"messages": [*prior, HumanMessage(content=message)]}, config={"recursion_limit": 10}
+            )
             msgs = result.get("messages", [])
             answer = ""
             tools_used: list[str] = []
@@ -83,18 +80,30 @@ class CustomerSupportAgent:
             if not answer:
                 return None
             return CustomerAgentResponse(
-                response=answer, final_response=answer, category="react", status="SUCCESS",
+                response=answer,
+                final_response=answer,
+                category="react",
+                status="SUCCESS",
                 agents_involved=["triage", "react", "supervisor"],
-                traces=[AgentTrace(id="react", name="Support ReAct Agent", role="Specialist",
-                                   output=answer, used_tools=tools_used)],
+                traces=[
+                    AgentTrace(
+                        id="react",
+                        name="Support ReAct Agent",
+                        role="Specialist",
+                        output=answer,
+                        used_tools=tools_used,
+                    )
+                ],
                 tool_calls=[ToolCallRecord(tool=t, name=t) for t in tools_used],
                 llm_backed=True,
             )
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             logger.warning(f"[customer] react agent failed, falling back: {e}")
             return None
 
-    def query(self, message: str, db: Optional[Session] = None, history: Optional[list] = None) -> CustomerAgentResponse:
+    def query(
+        self, message: str, db: Session | None = None, history: list | None = None
+    ) -> CustomerAgentResponse:
         """
         Runs one full pass of the customer support pipeline.
 
@@ -124,8 +133,10 @@ class CustomerSupportAgent:
                     "(this agent still only reads the historic Olist/DataCo dataset) — "
                     "switch back to Historic to use it."
                 )
-                return CustomerAgentResponse(response=msg, final_response=msg, category="general", status="NOT_ESTIMABLE")
-        except Exception:  # noqa: BLE001
+                return CustomerAgentResponse(
+                    response=msg, final_response=msg, category="general", status="NOT_ESTIMABLE"
+                )
+        except Exception:
             pass
 
         if text.lower() in _EXIT_PHRASES:
@@ -143,21 +154,21 @@ class CustomerSupportAgent:
             return react
 
         try:
-            result = customer_graph.invoke({
-                "user_input": text,
-                "history": history or [],
-                "intermediate_results": {},
-                "traces": [],
-                "tool_calls": [],
-                "retry_count": 0,
-                "needs_retry": False,
-            })
+            result = customer_graph.invoke(
+                {
+                    "user_input": text,
+                    "history": history or [],
+                    "intermediate_results": {},
+                    "traces": [],
+                    "tool_calls": [],
+                    "retry_count": 0,
+                    "needs_retry": False,
+                }
+            )
         except Exception as e:
             logger.error(f"[CustomerSupportAgent] pipeline failed: {e}", exc_info=True)
             msg = "An error occurred while processing your request. Please try again."
-            return CustomerAgentResponse(
-                response=msg, final_response=msg, category="general", status="ERROR"
-            )
+            return CustomerAgentResponse(response=msg, final_response=msg, category="general", status="ERROR")
 
         final = result.get("final_response") or result.get("response") or "No response generated."
         traces = [
@@ -179,7 +190,7 @@ class CustomerSupportAgent:
             )
             for r in result.get("tool_calls", [])
         ]
-        agents_involved = ["triage", "router"] + list(result.get("agents_to_call", [])) + ["supervisor"]
+        agents_involved = ["triage", "router", *list(result.get("agents_to_call", [])), "supervisor"]
 
         return CustomerAgentResponse(
             response=final,

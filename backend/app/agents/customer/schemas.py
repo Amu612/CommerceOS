@@ -3,13 +3,14 @@ Customer Support Agent Schemas.
 Data models for the dynamic multi-agent customer support workflow
 (triage -> router -> specialist agents -> supervisor) and the CustomerAgentView frontend.
 """
-from typing import List, Optional, Dict, Any
-from pydantic import BaseModel, Field
 
+from typing import Any
+
+from pydantic import BaseModel, Field
 
 # ── Agent manifest (frontend sidebar / pipeline cards) ─────────────
 
-AGENT_MANIFEST: List[Dict[str, str]] = [
+AGENT_MANIFEST: list[dict[str, str]] = [
     {
         "id": "triage",
         "name": "Triage Agent",
@@ -69,19 +70,21 @@ AGENT_MANIFEST: List[Dict[str, str]] = [
 
 # ── Request models ────────────────────────────────────────────────
 
+
 class CustomerQueryRequest(BaseModel):
-    query: Optional[str] = None
-    message: Optional[str] = None
-    history: Optional[List[dict]] = None
+    query: str | None = None
+    message: str | None = None
+    history: list[dict] | None = None
 
 
 # ── Response models ───────────────────────────────────────────────
 
+
 class ToolCallRecord(BaseModel):
-    tool: Optional[str] = None
-    name: Optional[str] = None
-    input: Optional[Any] = None
-    output: Optional[Any] = None
+    tool: str | None = None
+    name: str | None = None
+    input: Any | None = None
+    output: Any | None = None
 
 
 class AgentTrace(BaseModel):
@@ -89,7 +92,7 @@ class AgentTrace(BaseModel):
     name: str
     role: str = "Specialist"
     output: str = ""
-    used_tools: List[str] = Field(default_factory=list)
+    used_tools: list[str] = Field(default_factory=list)
 
 
 class CustomerAgentResponse(BaseModel):
@@ -99,10 +102,10 @@ class CustomerAgentResponse(BaseModel):
     final_response: str = ""
     category: str = "general"
     status: str = "SUCCESS"
-    agents_involved: List[str] = Field(default_factory=list)
-    traces: List[AgentTrace] = Field(default_factory=list)
-    tool_calls: List[ToolCallRecord] = Field(default_factory=list)
+    agents_involved: list[str] = Field(default_factory=list)
+    traces: list[AgentTrace] = Field(default_factory=list)
+    tool_calls: list[ToolCallRecord] = Field(default_factory=list)
     retry_count: int = 0
     supervisor_verdict: str = "APPROVE"
-    order_context: Optional[Dict[str, Any]] = None
+    order_context: dict[str, Any] | None = None
     llm_backed: bool = False

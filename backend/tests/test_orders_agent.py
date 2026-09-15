@@ -1,43 +1,21 @@
-import sys
 import os
+import sys
+
 import pytest
+from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
-from fastapi.testclient import TestClient
 
 backend_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if backend_dir not in sys.path:
     sys.path.insert(0, backend_dir)
 
+from app.agents.orders import DataCategory, OrdersAgent, OrdersAgentOutput, orders_agent
+from app.database.session import SessionLocal, init_db
 from app.main import app
-from app.database.session import get_db, SessionLocal, init_db
-from app.models import (
-    Base,
-    Order,
-    Customer,
-    DataCoOrder,
-    Notification,
-    AgentPrediction,
-)
+from app.models import Base, Order
 from app.services.replay_engine import replay_engine
-from app.agents.orders import (
-    orders_agent,
-    OrdersAgent,
-    OrdersAgentOutput,
-    OrderSummary,
-    OrdersHealth,
-    PendingQueue,
-    AgeDistributionBucket,
-    CancellationRisk,
-    FulfillmentHealth,
-    OrderFinding,
-    OrdersForecast,
-    AutomationEligibility,
-    DataCategory,
-    OrdersQueryResponse,
-    OrdersTools,
-)
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -234,12 +212,18 @@ def test_13_query_product_and_order_intelligence():
     client = TestClient(app)
 
     # 1. Product lookup by product ID
-    prod_res = client.post("/api/orders/query", json={"message": "show me product id 1e9e8ef04dbcff4541ed26657ea517e5"})
+    prod_res = client.post(
+        "/api/orders/query", json={"message": "show me product id 1e9e8ef04dbcff4541ed26657ea517e5"}
+    )
     assert prod_res.status_code == 200
     p_data = prod_res.json()
     assert p_data["success"] is True
     assert p_data["intent"] in ("react", "deterministic")
-    assert "Perfumaria" in p_data["result"] or "1e9e8ef04dbcff4541ed26657ea517e5" in p_data["result"] or "product" in p_data["result"].lower()
+    assert (
+        "Perfumaria" in p_data["result"]
+        or "1e9e8ef04dbcff4541ed26657ea517e5" in p_data["result"]
+        or "product" in p_data["result"].lower()
+    )
 
     # 2. Order lookup
     ord_res = client.post("/api/orders/query", json={"message": "order 58"})
@@ -256,5 +240,3 @@ def test_13_query_product_and_order_intelligence():
     assert a_data["success"] is True
     assert a_data["intent"] in ("react", "deterministic")
     assert len(a_data["result"]) > 0
-
-

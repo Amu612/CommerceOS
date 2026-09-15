@@ -14,6 +14,7 @@ Every domain agent is:
 Nothing about the findings is hardcoded: thresholds come from the observed
 distribution (Tukey fences / modified z-score / binomial SE) inside the tools.
 """
+
 from __future__ import annotations
 
 import contextvars
@@ -21,13 +22,13 @@ import json
 import re
 import time
 import uuid
-from datetime import datetime, timezone
-from typing import Any, Callable, Optional
+from datetime import UTC, datetime
+from typing import Any, ClassVar
 
-from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.tools import BaseTool, tool
 
-from app.agents._shared import extract_order_id_from_history, money
+from app.agents._shared import money
 from app.agents.common_schemas import (
     AgentAnalysisOutput,
     AgentQueryResponse,
@@ -37,7 +38,7 @@ from app.agents.common_schemas import (
 )
 from app.core.logging import get_logger
 from app.intelligence.confidence.calculator import ConfidenceCalculator
-from app.services.llm import get_chat_model, get_llm
+from app.services.llm import get_chat_model
 
 logger = get_logger("agent.framework")
 
@@ -49,7 +50,8 @@ logger = get_logger("agent.framework")
 # ReAct agent runs; the side-effecting tools re-check them at execution time,
 # so a model cannot "self-confirm" by passing confirm=True.
 _recent_user_messages: contextvars.ContextVar[tuple[str, ...]] = contextvars.ContextVar(
-    "recent_user_messages", default=(),
+    "recent_user_messages",
+    default=(),
 )
 
 _CONFIRM_RE = re.compile(
@@ -83,13 +85,19 @@ def calculator(expression: str) -> dict:
     import operator as _op
 
     _SAFE_OPS = {
-        _ast.Add: _op.add, _ast.Sub: _op.sub, _ast.Mult: _op.mul,
-        _ast.Div: _op.truediv, _ast.Pow: _op.pow, _ast.Mod: _op.mod,
-        _ast.FloorDiv: _op.floordiv, _ast.USub: _op.neg, _ast.UAdd: _op.pos,
+        _ast.Add: _op.add,
+        _ast.Sub: _op.sub,
+        _ast.Mult: _op.mul,
+        _ast.Div: _op.truediv,
+        _ast.Pow: _op.pow,
+        _ast.Mod: _op.mod,
+        _ast.FloorDiv: _op.floordiv,
+        _ast.USub: _op.neg,
+        _ast.UAdd: _op.pos,
     }
 
     def _eval(node):
-        if isinstance(node, _ast.Constant) and isinstance(node.value, (int, float)):
+        if isinstance(node, _ast.Constant) and isinstance(node.value, int | float):
             return node.value
         if isinstance(node, _ast.BinOp) and type(node.op) in _SAFE_OPS:
             return _SAFE_OPS[type(node.op)](_eval(node.left), _eval(node.right))
@@ -99,7 +107,7 @@ def calculator(expression: str) -> dict:
 
     try:
         return {"result": _eval(_ast.parse(expression, mode="eval").body)}
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         return {"error": f"cannot evaluate '{expression}': {exc}"}
 
 
@@ -115,13 +123,13 @@ class DomainAgent:
     persona: str = "You are a domain intelligence agent."
 
     #: tools whose JSON output becomes metric cards / chart data
-    metric_tools: list[BaseTool] = []
+    metric_tools: ClassVar[list[BaseTool]] = []
     #: tools that each return {"finding": {...}} | {"finding": None} from empirical analysis
-    detector_tools: list[BaseTool] = []
+    detector_tools: ClassVar[list[BaseTool]] = []
     #: extra tools available to the chat ReAct loop (lookups etc.)
-    lookup_tools: list[BaseTool] = []
+    lookup_tools: ClassVar[list[BaseTool]] = []
     #: static, always-applicable playbook recommendations (still selected by live findings)
-    recommendation_playbook: list[Recommendation] = []
+    recommendation_playbook: ClassVar[list[Recommendation]] = []
     #: Olist/DataCo (historic) is the only source this agent's tools query
     #: today. Rather than silently showing stale historic numbers while "Live"
     #: is selected, agents that haven't been made Shopify-aware report
@@ -129,9 +137,9 @@ class DomainAgent:
     supports_live_source: bool = False
 
     # ── analysis ────────────────────────────────────────────────
-    def analyze(self, db=None) -> AgentAnalysisOutput:  # noqa: ARG002 - tools self-manage sessions
+    def analyze(self, db=None) -> AgentAnalysisOutput:
         exec_id = f"EXEC-{self.agent_name[:3].upper()}-{uuid.uuid4().hex[:6].upper()}"
-        now = datetime.now(timezone.utc).isoformat()
+        now = datetime.now(UTC).isoformat()
 
         if not self.supports_live_source:
             live_block = self._live_source_block(exec_id, now)
@@ -156,7 +164,7 @@ class DomainAgent:
                     charts[t.name] = chart
                 sample = max(sample, n)
                 metric_ok += 1
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 logger.warning("metric_tool_failed", tool=t.name, error=str(exc))
 
         findings: list[Finding] = []
@@ -170,13 +178,16 @@ class DomainAgent:
                 if f:
                     findings.append(Finding(**f))
                 detector_ok += 1
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 logger.warning("detector_tool_failed", tool=t.name, error=str(exc))
 
         if sample == 0 and not metrics:
             return AgentAnalysisOutput(
-                agent=self.agent_name, execution_id=exec_id, timestamp=now,
-                status="NOT_ESTIMABLE", health="NOT_ESTIMABLE",
+                agent=self.agent_name,
+                execution_id=exec_id,
+                timestamp=now,
+                status="NOT_ESTIMABLE",
+                health="NOT_ESTIMABLE",
                 not_estimable_reason="No records observed up to the current simulated clock. Start the Data Ingestion Engine (Start Stream / Step +50).",
                 summary=f"No {self.agent_name} data yet — start the ingestion stream.",
                 tool_calls=[_tc(x) for x in tool_calls],
@@ -192,14 +203,21 @@ class DomainAgent:
         # that would be a silent failure, not a healthy system.
         if detector_total and detector_ok == 0:
             return AgentAnalysisOutput(
-                agent=self.agent_name, execution_id=exec_id, timestamp=now,
-                status="NOT_ESTIMABLE", health="NOT_ESTIMABLE",
+                agent=self.agent_name,
+                execution_id=exec_id,
+                timestamp=now,
+                status="NOT_ESTIMABLE",
+                health="NOT_ESTIMABLE",
                 not_estimable_reason=f"All {self.agent_name} detectors failed this run — results would be silently incomplete, so no health verdict is issued.",
                 summary=f"{self.agent_name.title()} detectors unavailable.",
-                metrics=metrics, charts=charts, tool_calls=[_tc(x) for x in tool_calls],
+                metrics=metrics,
+                charts=charts,
+                tool_calls=[_tc(x) for x in tool_calls],
             )
 
-        confidence = ConfidenceCalculator.evaluate(sample_size=max(sample, 1), data_quality=data_quality).confidence_score
+        confidence = ConfidenceCalculator.evaluate(
+            sample_size=max(sample, 1), data_quality=data_quality
+        ).confidence_score
 
         # Findings whose confidence was not derived from their own sample size
         # (i.e. any hardcoded constant in a tool) are recalibrated here from the
@@ -207,23 +225,27 @@ class DomainAgent:
         for f in findings:
             if f.sample_count:
                 f.confidence = ConfidenceCalculator.evaluate(
-                    sample_size=f.sample_count, data_quality=data_quality,
+                    sample_size=f.sample_count,
+                    data_quality=data_quality,
                 ).confidence_score
 
         severities = {f.severity for f in findings}
-        health = (
-            "CRITICAL" if "CRITICAL" in severities
-            else "NEEDS_ATTENTION" if findings
-            else "HEALTHY"
-        )
+        health = "CRITICAL" if "CRITICAL" in severities else "NEEDS_ATTENTION" if findings else "HEALTHY"
         recs = self._select_recommendations(findings)
         summary = self._summary(metrics, findings)
 
         return AgentAnalysisOutput(
-            agent=self.agent_name, execution_id=exec_id, timestamp=now,
-            confidence=round(confidence, 3), health=health, summary=summary,
-            metrics=metrics, findings=findings, recommendations=recs,
-            charts=charts, tool_calls=[_tc(x) for x in tool_calls],
+            agent=self.agent_name,
+            execution_id=exec_id,
+            timestamp=now,
+            confidence=round(confidence, 3),
+            health=health,
+            summary=summary,
+            metrics=metrics,
+            findings=findings,
+            recommendations=recs,
+            charts=charts,
+            tool_calls=[_tc(x) for x in tool_calls],
             llm_backed=False,
         )
 
@@ -231,10 +253,10 @@ class DomainAgent:
     def run_analysis(self, db=None, **_: Any) -> AgentAnalysisOutput:
         return self.analyze(db=db)
 
-    def query(self, message: str, db=None, history: Optional[list] = None, **_: Any) -> AgentQueryResponse:
+    def query(self, message: str, db=None, history: list | None = None, **_: Any) -> AgentQueryResponse:
         return self.chat(message, db=db, history=history)
 
-    def _live_source_block(self, exec_id: str, now: str) -> Optional[AgentAnalysisOutput]:
+    def _live_source_block(self, exec_id: str, now: str) -> AgentAnalysisOutput | None:
         """None when historic (or the agent is live-aware); a clean NOT_ESTIMABLE
         output when Live is active and this agent's tools only know Olist/DataCo."""
         try:
@@ -242,7 +264,7 @@ class DomainAgent:
 
             if not data_source_service.is_live():
                 return None
-        except Exception:  # noqa: BLE001
+        except Exception:
             return None
         reason = (
             f"The live Shopify data source doesn't have {self.agent_name} analytics yet "
@@ -250,14 +272,17 @@ class DomainAgent:
             "to Historic to see it, or ask for this to be added."
         )
         return AgentAnalysisOutput(
-            agent=self.agent_name, execution_id=exec_id, timestamp=now,
-            status="NOT_ESTIMABLE", health="NOT_ESTIMABLE",
+            agent=self.agent_name,
+            execution_id=exec_id,
+            timestamp=now,
+            status="NOT_ESTIMABLE",
+            health="NOT_ESTIMABLE",
             not_estimable_reason=reason,
             summary=f"No live-source data for {self.display_name} yet.",
         )
 
     # subclasses override these three
-    def _render_metric(self, tool_name: str, data: Any) -> tuple[list[MetricCard], Optional[Any], int]:
+    def _render_metric(self, tool_name: str, data: Any) -> tuple[list[MetricCard], Any | None, int]:
         return [], data if isinstance(data, list) else None, _sample_of(data)
 
     def _select_recommendations(self, findings: list[Finding]) -> list[Recommendation]:
@@ -268,12 +293,14 @@ class DomainAgent:
         # data-driven actions for exactly what was observed), highest severity
         # first.
         for f in sorted(findings, key=lambda x: -_SEV_ORDER.get(x.severity, 0))[:4]:
-            out.append(Recommendation(
-                title=f.title,
-                detail=f.recommended_action,
-                expected_impact=f.why_it_matters,
-                priority="HIGH" if f.severity in ("HIGH", "CRITICAL") else "MEDIUM",
-            ))
+            out.append(
+                Recommendation(
+                    title=f.title,
+                    detail=f.recommended_action,
+                    expected_impact=f.why_it_matters,
+                    priority="HIGH" if f.severity in ("HIGH", "CRITICAL") else "MEDIUM",
+                )
+            )
         # Playbook items are only appended when they actually relate to an
         # observed finding (keyword overlap with the finding text) — never as a
         # blanket dump of static copy.
@@ -281,26 +308,42 @@ class DomainAgent:
             if len(out) >= 6:
                 break
             hay = f"{r.title} {r.detail}".lower().split()
-            if any(w in hay for f in findings for w in f"{f.title} {f.what_happened}".lower().split() if len(w) > 3):
+            if any(
+                w in hay
+                for f in findings
+                for w in f"{f.title} {f.what_happened}".lower().split()
+                if len(w) > 3
+            ):
                 prio = "HIGH" if any(f.severity in ("HIGH", "CRITICAL") for f in findings) else "MEDIUM"
                 out.append(r.model_copy(update={"priority": prio if r.priority == "AUTO" else r.priority}))
         return out
 
     def _summary(self, metrics: list[MetricCard], findings: list[Finding]) -> str:
         head = "; ".join(f"{m.label} {m.value}" for m in metrics[:4])
-        tail = f" — {len(findings)} finding(s) need attention." if findings else " — all dimensions within empirical baseline."
+        tail = (
+            f" — {len(findings)} finding(s) need attention."
+            if findings
+            else " — all dimensions within empirical baseline."
+        )
         return (head + tail).strip()
 
     # ── chat ───────────────────────────────────────────────────
-    def chat(self, message: str, db=None, history: Optional[list] = None) -> AgentQueryResponse:  # noqa: ARG002
+    def chat(self, message: str, db=None, history: list | None = None) -> AgentQueryResponse:
         analysis = self.analyze(db=db)
-        if not self.supports_live_source and analysis.not_estimable_reason and "live Shopify data source" in analysis.not_estimable_reason:
+        if (
+            not self.supports_live_source
+            and analysis.not_estimable_reason
+            and "live Shopify data source" in analysis.not_estimable_reason
+        ):
             # Don't fall through to _react_chat/_deterministic_chat — both would
             # invoke tools that only know Olist/DataCo, silently answering from
             # the historic dataset while "Live" is selected.
             return AgentQueryResponse(
-                agent=self.agent_name, intent="not_estimable", answer=analysis.not_estimable_reason,
-                data={"summary": analysis.summary}, llm_backed=False,
+                agent=self.agent_name,
+                intent="not_estimable",
+                answer=analysis.not_estimable_reason,
+                data={"summary": analysis.summary},
+                llm_backed=False,
             )
         context = {
             "summary": analysis.summary,
@@ -308,7 +351,7 @@ class DomainAgent:
             "metrics": [m.model_dump() for m in analysis.metrics],
             "findings": [f.model_dump() for f in analysis.findings],
             "recommendations": [r.model_dump() for r in analysis.recommendations],
-            "charts": {k: v for k, v in analysis.charts.items()},
+            "charts": dict(analysis.charts.items()),
         }
         model = get_chat_model()
         if model is not None:
@@ -318,25 +361,30 @@ class DomainAgent:
                 if answer:
                     if trace:
                         context = {**context, "tool_trace": trace}
-                    return AgentQueryResponse(agent=self.agent_name, intent="react", answer=answer,
-                                              data=context, llm_backed=True)
-            except Exception as exc:  # noqa: BLE001
+                    return AgentQueryResponse(
+                        agent=self.agent_name, intent="react", answer=answer, data=context, llm_backed=True
+                    )
+            except Exception as exc:
                 logger.warning("react_chat_failed", agent=self.agent_name, error=str(exc))
 
         return AgentQueryResponse(
-            agent=self.agent_name, intent="deterministic",
-            answer=self._deterministic_chat(message, analysis, history=history), data=context, llm_backed=False,
+            agent=self.agent_name,
+            intent="deterministic",
+            answer=self._deterministic_chat(message, analysis, history=history),
+            data=context,
+            llm_backed=False,
         )
 
     def _react_chat(
         self,
         model,
         message: str,
-        history: Optional[list] = None,
-        analysis: Optional[AgentAnalysisOutput] = None,
+        history: list | None = None,
+        analysis: AgentAnalysisOutput | None = None,
         trace: list[dict] | None = None,
     ) -> str:
         from langgraph.prebuilt import create_react_agent
+
         from app.agents.customer.langchain_tools import resolve_unknown_id
 
         register_user_message(message)
@@ -374,7 +422,7 @@ class DomainAgent:
                 "general context with business data, fetch the data and fold it in.\n"
                 "6. If a requested business figure genuinely doesn't exist in the data, say so in "
                 "one sentence and offer the closest available figure.\n"
-                "7. Use the conversation history to resolve follow-ups (\"what about its status?\").\n"
+                '7. Use the conversation history to resolve follow-ups ("what about its status?").\n'
                 "8. Tools that change state (creating a purchase order / reorder, opening an RMA) "
                 "are ONE-STEP-BEFORE-CONFIRMATION: when the user asks for such an action, first "
                 "fetch/preview the exact plan with the read-only tools, present it, and ask the "
@@ -418,11 +466,15 @@ class DomainAgent:
             wait = _rate_limit_wait(exc)
             if wait is None:
                 raise
-            logger.warning("react_rate_limited_retry", agent=getattr(agent, "name", "agent"), wait_s=round(wait, 1))
+            logger.warning(
+                "react_rate_limited_retry", agent=getattr(agent, "name", "agent"), wait_s=round(wait, 1)
+            )
             time.sleep(wait)
             return agent.invoke({"messages": messages}, config={"recursion_limit": 12})
 
-    def _deterministic_chat(self, message: str, analysis: AgentAnalysisOutput, history: Optional[list] = None) -> str:
+    def _deterministic_chat(
+        self, message: str, analysis: AgentAnalysisOutput, history: list | None = None
+    ) -> str:
         """
         No-LLM path: still runs the LangChain tools. If the question (or, failing
         that, a recent turn in `history`) references an entity or order id,
@@ -434,7 +486,9 @@ class DomainAgent:
         lines = [f"**{self.display_name}** — {analysis.summary}", ""]
 
         if not low or any(k in low for k in ("hello", "hi ", "hey ", "help", "what can you", "capabilit")):
-            lines.append("I can pull: " + ", ".join(t.name.replace("_", " ") for t in self.metric_tools) + ".")
+            lines.append(
+                "I can pull: " + ", ".join(t.name.replace("_", " ") for t in self.metric_tools) + "."
+            )
             for m in analysis.metrics:
                 lines.append(f"- {m.label}: {m.value}" + (f" — {m.description}" if m.description else ""))
             return "\n".join(lines)
@@ -489,7 +543,7 @@ class DomainAgent:
                     lines.append(f"**{_titleize(t.name)}**:")
                     lines.extend(_render_rows(out))
                     rendered = True
-                except Exception:  # noqa: BLE001
+                except Exception:
                     continue
 
         if not rendered:
@@ -542,7 +596,7 @@ def _collect_tool_trace(msgs: list) -> list[dict]:
 
 
 def _as_obj(raw: Any) -> Any:
-    if isinstance(raw, (dict, list)):
+    if isinstance(raw, dict | list):
         return raw
     if isinstance(raw, str):
         try:
@@ -561,7 +615,7 @@ def _tc(x: dict) -> Any:
 def _sample_of(data: Any) -> int:
     if isinstance(data, dict):
         for k in ("sample_count", "count", "total", "shipments", "sample"):
-            if isinstance(data.get(k), (int, float)):
+            if isinstance(data.get(k), int | float):
                 return int(data[k])
     if isinstance(data, list):
         return len(data)
@@ -592,17 +646,34 @@ def _field_value(k: str, v: Any) -> str:
     kl = k.lower()
     if isinstance(v, bool):
         return "Yes" if v else "No"
-    if isinstance(v, (int, float)):
+    if isinstance(v, int | float):
         if "pct" in kl or "percent" in kl:
             return f"{v}%"
-        if any(t in kl for t in ("revenue", "profit", "price", "cost", "value", "total", "freight", "discount", "margin_amount")):
+        if any(
+            t in kl
+            for t in (
+                "revenue",
+                "profit",
+                "price",
+                "cost",
+                "value",
+                "total",
+                "freight",
+                "discount",
+                "margin_amount",
+            )
+        ):
             return money(v)
         return f"{v:,}" if isinstance(v, int) else f"{v:,.2f}"
     return str(v) if v is not None else "—"
 
 
 def _render_row(row: dict) -> str:
-    parts = [f"{_field_label(k)}: {_field_value(k, v)}" for k, v in row.items() if v is not None and not isinstance(v, (dict, list))]
+    parts = [
+        f"{_field_label(k)}: {_field_value(k, v)}"
+        for k, v in row.items()
+        if v is not None and not isinstance(v, dict | list)
+    ]
     return "- " + " · ".join(parts)
 
 
@@ -612,7 +683,11 @@ def _render_rows(out: Any) -> list[str]:
         for v in out.values():
             if isinstance(v, list) and v and isinstance(v[0], dict):
                 return [_render_row(row) for row in v[:8]]
-        return [f"- {_field_label(k)}: {_field_value(k, v)}" for k, v in out.items() if not isinstance(v, (dict, list))][:12]
+        return [
+            f"- {_field_label(k)}: {_field_value(k, v)}"
+            for k, v in out.items()
+            if not isinstance(v, dict | list)
+        ][:12]
     if isinstance(out, list):
         return [_render_row(row) if isinstance(row, dict) else f"- {row}" for row in out[:8]]
     return [f"- {out}"]

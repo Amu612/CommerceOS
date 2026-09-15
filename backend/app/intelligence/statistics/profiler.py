@@ -3,9 +3,10 @@ Pure Mathematical and Statistical Profiler.
 Derives distributions, central tendencies, spreads, percentiles, IQR, MAD, and rolling baselines.
 Zero hardcoded business thresholds.
 """
+
 import math
-from typing import Dict, Any, List, Optional
-from pydantic import BaseModel, Field
+
+from pydantic import BaseModel
 
 
 class DistributionProfile(BaseModel):
@@ -37,7 +38,7 @@ class StatisticalProfiler:
     """Computes robust statistical metrics without assuming normality."""
 
     @staticmethod
-    def profile(values: List[float]) -> Optional[DistributionProfile]:
+    def profile(values: list[float]) -> DistributionProfile | None:
         """Calculates non-parametric and parametric distribution metrics."""
         cleaned = [float(x) for x in values if x is not None and not math.isnan(x)]
         n = len(cleaned)
@@ -53,7 +54,7 @@ class StatisticalProfiler:
         std = math.sqrt(var)
 
         # Quartiles
-        def _percentile(data: List[float], p: float) -> float:
+        def _percentile(data: list[float], p: float) -> float:
             k = (len(data) - 1) * p
             f = math.floor(k)
             c = math.ceil(k)
@@ -69,10 +70,14 @@ class StatisticalProfiler:
 
         # Median Absolute Deviation (MAD)
         abs_deviations = sorted([abs(x - median_val) for x in cleaned])
-        mad = abs_deviations[n // 2] if n % 2 != 0 else (abs_deviations[n // 2 - 1] + abs_deviations[n // 2]) / 2.0
+        mad = (
+            abs_deviations[n // 2]
+            if n % 2 != 0
+            else (abs_deviations[n // 2 - 1] + abs_deviations[n // 2]) / 2.0
+        )
 
         # Skewness
-        skew = (sum((x - mean_val) ** 3 for x in cleaned) / n) / (std ** 3) if std > 1e-6 else 0.0
+        skew = (sum((x - mean_val) ** 3 for x in cleaned) / n) / (std**3) if std > 1e-6 else 0.0
 
         # Fences (Tukey's IQR method)
         lower_fence = q25 - 1.5 * iqr
@@ -96,7 +101,7 @@ class StatisticalProfiler:
         )
 
     @staticmethod
-    def rolling_baselines(series: List[float], window: int = 7) -> List[Dict[str, float]]:
+    def rolling_baselines(series: list[float], window: int = 7) -> list[dict[str, float]]:
         """Calculates rolling mean and rolling standard deviation over time series observations."""
         results = []
         for i in range(len(series)):
@@ -106,10 +111,12 @@ class StatisticalProfiler:
                 continue
             mean_v = sum(sub) / len(sub)
             var_v = sum((x - mean_v) ** 2 for x in sub) / (len(sub) - 1) if len(sub) > 1 else 0.0
-            results.append({
-                "index": i,
-                "value": series[i],
-                "rolling_mean": round(mean_v, 4),
-                "rolling_std": round(math.sqrt(var_v), 4),
-            })
+            results.append(
+                {
+                    "index": i,
+                    "value": series[i],
+                    "rolling_mean": round(mean_v, 4),
+                    "rolling_std": round(math.sqrt(var_v), 4),
+                }
+            )
         return results

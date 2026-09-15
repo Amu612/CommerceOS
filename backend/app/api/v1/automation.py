@@ -1,7 +1,6 @@
 """HITL automation: proposed/executed actions + the approval queue."""
-from __future__ import annotations
 
-from typing import Optional
+from __future__ import annotations
 
 from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel
@@ -19,7 +18,7 @@ from app.models.security import User, UserRole
 router = APIRouter(prefix="/api/v1/automation", tags=["Automation"])
 
 
-def _action_dict(a: AutomationAction, approval: Optional[Approval] = None) -> dict:
+def _action_dict(a: AutomationAction, approval: Approval | None = None) -> dict:
     return {
         "id": a.id,
         "agent": a.agent,
@@ -34,25 +33,27 @@ def _action_dict(a: AutomationAction, approval: Optional[Approval] = None) -> di
         "verification": a.verification,
         "created_at": a.created_at.isoformat() if a.created_at else None,
         "executed_at": a.executed_at.isoformat() if a.executed_at else None,
-        "approval": None
-        if not approval
-        else {
-            "id": approval.id,
-            "required_role": approval.required_role,
-            "status": approval.status,
-            "decided_by": approval.decided_by,
-            "decided_at": approval.decided_at.isoformat() if approval.decided_at else None,
-            "reason": approval.reason,
-        },
+        "approval": (
+            None
+            if not approval
+            else {
+                "id": approval.id,
+                "required_role": approval.required_role,
+                "status": approval.status,
+                "decided_by": approval.decided_by,
+                "decided_at": approval.decided_at.isoformat() if approval.decided_at else None,
+                "reason": approval.reason,
+            }
+        ),
     }
 
 
 @router.get("/actions")
 def list_actions(
-    status: Optional[str] = Query(None),
-    agent: Optional[str] = Query(None),
+    status: str | None = Query(None),
+    agent: str | None = Query(None),
     limit: int = Query(100, ge=1, le=500),
-    current: Optional[User] = Depends(auth_dependency()),
+    current: User | None = Depends(auth_dependency()),
     db: Session = Depends(get_db),
 ):
     # Same self-scoping rule as `runs.list_runs`: a domain admin may only see
@@ -73,7 +74,9 @@ def list_actions(
     if agent:
         q = q.filter(AutomationAction.agent == agent)
     rows = q.order_by(desc(AutomationAction.created_at)).limit(limit).all()
-    appr = {a.action_id: a for a in db.query(Approval).filter(Approval.action_id.in_([r.id for r in rows])).all()}
+    appr = {
+        a.action_id: a for a in db.query(Approval).filter(Approval.action_id.in_([r.id for r in rows])).all()
+    }
 
     # Counts must respect the same agent scope as the list above, or a domain
     # admin's KPI tiles would silently leak system-wide totals even though
@@ -98,7 +101,7 @@ def list_actions(
 @router.get("/approvals")
 def list_approvals(
     status: str = Query("PENDING"),
-    current: Optional[User] = Depends(auth_dependency()),
+    current: User | None = Depends(auth_dependency()),
     db: Session = Depends(get_db),
 ):
     q = db.query(Approval).filter(Approval.status == status)
@@ -109,7 +112,9 @@ def list_approvals(
     approvals = q.order_by(desc(Approval.requested_at)).limit(200).all()
     actions = {
         a.id: a
-        for a in db.query(AutomationAction).filter(AutomationAction.id.in_([x.action_id for x in approvals])).all()
+        for a in db.query(AutomationAction)
+        .filter(AutomationAction.id.in_([x.action_id for x in approvals]))
+        .all()
     }
     return {
         "items": [
@@ -124,7 +129,7 @@ class DecisionBody(BaseModel):
     reason: str | None = None
 
 
-def _actor(current: Optional[User]) -> dict:
+def _actor(current: User | None) -> dict:
     if current is None:
         # Auth isn't enforced in this environment — attribute the decision to
         # a generic console actor rather than blocking the demo dashboard.
@@ -132,7 +137,7 @@ def _actor(current: Optional[User]) -> dict:
     return {"sub": current.id, "username": current.username, "role": current.role.value}
 
 
-def _check_can_decide(db: Session, approval_id: str, current: Optional[User]) -> Approval:
+def _check_can_decide(db: Session, approval_id: str, current: User | None) -> Approval:
     ap = db.query(Approval).filter(Approval.id == approval_id).first()
     if not ap:
         raise NotFoundException("Approval not found.")
@@ -142,7 +147,12 @@ def _check_can_decide(db: Session, approval_id: str, current: Optional[User]) ->
 
 
 @router.post("/approvals/{approval_id}/approve")
-def approve(approval_id: str, body: DecisionBody, current: Optional[User] = Depends(auth_dependency()), db: Session = Depends(get_db)):
+def approve(
+    approval_id: str,
+    body: DecisionBody,
+    current: User | None = Depends(auth_dependency()),
+    db: Session = Depends(get_db),
+):
     ap = _check_can_decide(db, approval_id, current)
     ap.reason = body.reason
     action = decide(db, approval_id, approved=True, actor=_actor(current))
@@ -150,7 +160,12 @@ def approve(approval_id: str, body: DecisionBody, current: Optional[User] = Depe
 
 
 @router.post("/approvals/{approval_id}/reject")
-def reject(approval_id: str, body: DecisionBody, current: Optional[User] = Depends(auth_dependency()), db: Session = Depends(get_db)):
+def reject(
+    approval_id: str,
+    body: DecisionBody,
+    current: User | None = Depends(auth_dependency()),
+    db: Session = Depends(get_db),
+):
     ap = _check_can_decide(db, approval_id, current)
     ap.reason = body.reason
     action = decide(db, approval_id, approved=False, actor=_actor(current))

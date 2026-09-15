@@ -6,11 +6,12 @@ Detects statistical deviations without hardcoded thresholds:
 - Interquartile Range (IQR) fence exceedance
 - Change-point detection
 """
+
 import math
-from typing import Dict, Any, List, Optional
+
 from pydantic import BaseModel, Field
 
-from app.intelligence.statistics.profiler import StatisticalProfiler, DistributionProfile
+from app.intelligence.statistics.profiler import StatisticalProfiler
 
 
 class StatisticalAnomaly(BaseModel):
@@ -34,7 +35,7 @@ class AnomalyDetector:
     def evaluate_sample(
         cls,
         observed_value: float,
-        historical_samples: List[float],
+        historical_samples: list[float],
         metric_name: str = "metric",
     ) -> StatisticalAnomaly:
         """
@@ -52,7 +53,6 @@ class AnomalyDetector:
                 is_anomaly=False,
                 empirical_evidence=f"Sample size n={len(historical_samples)} has undefined degrees of freedom for variance estimation (minimum n=2 required).",
             )
-
 
         profile = StatisticalProfiler.profile(historical_samples)
         if profile is None:

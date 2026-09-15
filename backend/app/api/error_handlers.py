@@ -2,6 +2,7 @@
 Central exception handling. Registers handlers that emit RFC-7807-style
 `application/problem+json` bodies and never leak stack traces in production.
 """
+
 from __future__ import annotations
 
 from fastapi import FastAPI, Request
@@ -36,7 +37,13 @@ def register_error_handlers(app: FastAPI) -> None:
         if isinstance(exc, RateLimitException):
             headers["Retry-After"] = str(exc.retry_after)
         logger.warning("app_exception", code=exc.error_code, status=exc.status_code, message=exc.message)
-        resp = _problem(exc.status_code, exc.error_code, exc.error_code.replace("_", " ").title(), exc.message, **exc.details)
+        resp = _problem(
+            exc.status_code,
+            exc.error_code,
+            exc.error_code.replace("_", " ").title(),
+            exc.message,
+            **exc.details,
+        )
         for k, v in headers.items():
             resp.headers[k] = v
         return resp

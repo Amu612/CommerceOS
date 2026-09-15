@@ -13,6 +13,7 @@ that must approve it. The guiding rules:
     type — severity is the human operator's real "don't auto-run this" signal.
   * Everything else → NEEDS_APPROVAL by the owning domain admin.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -66,7 +67,11 @@ def evaluate(agent: str, action_type: str, *, confidence: float, severity: str) 
     sev = str(severity or "MEDIUM").upper()
 
     if blocked:
-        return Decision(Mode.BLOCKED, role_value, f"'{action_type}' is never executed automatically (financial / customer-facing).")
+        return Decision(
+            Mode.BLOCKED,
+            role_value,
+            f"'{action_type}' is never executed automatically (financial / customer-facing).",
+        )
 
     if base_mode == Mode.AUTO:
         if sev == "CRITICAL":
@@ -75,11 +80,18 @@ def evaluate(agent: str, action_type: str, *, confidence: float, severity: str) 
             # type normally is — severity, not action type, is the operator's
             # real signal for "don't let this run unattended".
             return Decision(
-                Mode.NEEDS_APPROVAL, role_value,
+                Mode.NEEDS_APPROVAL,
+                role_value,
                 f"'{action_type}' is normally auto-executed, but CRITICAL-severity findings always require {role_value} approval first.",
             )
         if confidence >= min_conf:
-            return Decision(Mode.AUTO, role_value, f"Low-blast-radius action, confidence {confidence:.2f} ≥ {min_conf}.")
-        return Decision(Mode.NEEDS_APPROVAL, role_value, f"Confidence {confidence:.2f} below the {min_conf} auto-execute bar.")
+            return Decision(
+                Mode.AUTO, role_value, f"Low-blast-radius action, confidence {confidence:.2f} ≥ {min_conf}."
+            )
+        return Decision(
+            Mode.NEEDS_APPROVAL,
+            role_value,
+            f"Confidence {confidence:.2f} below the {min_conf} auto-execute bar.",
+        )
 
     return Decision(Mode.NEEDS_APPROVAL, role_value, f"'{action_type}' requires {role_value} approval.")

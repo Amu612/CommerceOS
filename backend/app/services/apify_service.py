@@ -11,6 +11,7 @@ at — this normalizes a few common field-name variants (Apify's e-commerce
 scrapers generally return `title`/`price`/`currency` or close variants) and
 skips anything it can't parse rather than guessing.
 """
+
 from __future__ import annotations
 
 import logging
@@ -29,9 +30,9 @@ _APIFY_BASE = "https://api.apify.com/v2"
 def _extract_price(item: dict) -> float | None:
     for key in ("price", "currentPrice", "salePrice", "priceValue"):
         v = item.get(key)
-        if isinstance(v, (int, float)):
+        if isinstance(v, int | float):
             return float(v)
-        if isinstance(v, dict) and isinstance(v.get("value"), (int, float)):
+        if isinstance(v, dict) and isinstance(v.get("value"), int | float):
             return float(v["value"])
     return None
 
@@ -76,14 +77,18 @@ def sync_competitor_prices(category: str | None = None) -> dict[str, Any]:
             title = _extract_title(item)
             if price is None or not title:
                 continue
-            db.add(CompetitorPrice(
-                category=category or str(item.get("category") or "General"),
-                product_match=title,
-                competitor_name=str(item.get("seller") or item.get("store") or item.get("source") or "Unknown"),
-                price=price,
-                currency=str(item.get("currency") or "INR"),
-                source_url=item.get("url") or item.get("productUrl"),
-            ))
+            db.add(
+                CompetitorPrice(
+                    category=category or str(item.get("category") or "General"),
+                    product_match=title,
+                    competitor_name=str(
+                        item.get("seller") or item.get("store") or item.get("source") or "Unknown"
+                    ),
+                    price=price,
+                    currency=str(item.get("currency") or "INR"),
+                    source_url=item.get("url") or item.get("productUrl"),
+                )
+            )
             synced += 1
         db.commit()
     finally:

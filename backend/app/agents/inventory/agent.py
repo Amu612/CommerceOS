@@ -15,21 +15,12 @@ hard-coded triage -> tool -> response pipeline.
 
 import logging
 import uuid
-from typing import Any, Dict, List, Optional
+from typing import ClassVar
 
 from sqlalchemy.orm import Session
 
 from app.agents.framework import DomainAgent
-from app.agents.inventory.schemas import (
-    InventoryAction,
-    InventoryAgentMetrics,
-    InventoryAgentResponse,
-    InventoryAlert,
-    InventoryProduct,
-    ReorderRecommendation,
-    SalesAnalysis,
-    ToolCallRecord,
-)
+from app.agents.inventory.schemas import InventoryAction, InventoryAgentResponse, ToolCallRecord
 from app.agents.inventory.tools import ALL_INVENTORY_TOOLS, InventoryTools
 from app.database.session import SessionLocal
 from app.services.llm import get_chat_model
@@ -71,23 +62,23 @@ class InventoryWatchdogAgent(DomainAgent):
     #
     # Putting the inventory tools in lookup_tools makes all of them available
     # to the LLM for dynamic selection.
-    metric_tools = []
-    detector_tools = []
-    lookup_tools = ALL_INVENTORY_TOOLS
-    recommendation_playbook = []
+    metric_tools: ClassVar[list] = []
+    detector_tools: ClassVar[list] = []
+    lookup_tools: ClassVar[list] = ALL_INVENTORY_TOOLS
+    recommendation_playbook: ClassVar[list] = []
     supports_live_source = False
 
     def __init__(self, default_threshold: int = 50):
         super().__init__()
 
         self.default_threshold = default_threshold
-        self._last_response: Optional[InventoryAgentResponse] = None
+        self._last_response: InventoryAgentResponse | None = None
 
     def run_monitor(
         self,
-        db: Optional[Session] = None,
-        threshold: Optional[int] = None,
-        admin_emails: Optional[List[str]] = None,
+        db: Session | None = None,
+        threshold: int | None = None,
+        admin_emails: list[str] | None = None,
     ) -> InventoryAgentResponse:
         """
         Executes a complete inventory monitoring inspection cycle.
@@ -184,7 +175,7 @@ class InventoryWatchdogAgent(DomainAgent):
             # These are flags only. This monitoring path does NOT execute
             # purchase orders.
             #
-            actions: List[InventoryAction] = []
+            actions: list[InventoryAction] = []
 
             for recommendation in recs[:3]:
                 actions.append(
@@ -211,10 +202,7 @@ class InventoryWatchdogAgent(DomainAgent):
                         "threshold": thresh,
                         "limit": 40,
                     },
-                    output=(
-                        f"Returned {len(prods)} products "
-                        f"({len(low_stock_prods)} below threshold)."
-                    ),
+                    output=(f"Returned {len(prods)} products " f"({len(low_stock_prods)} below threshold)."),
                 ),
                 ToolCallRecord(
                     tool="get_reorder_recommendations",
@@ -222,10 +210,7 @@ class InventoryWatchdogAgent(DomainAgent):
                     input={
                         "threshold": thresh,
                     },
-                    output=(
-                        "Computed ROP and EOQ batches for "
-                        f"{len(recs)} low-stock candidates."
-                    ),
+                    output=("Computed ROP and EOQ batches for " f"{len(recs)} low-stock candidates."),
                 ),
                 ToolCallRecord(
                     tool="analyze_sales_trends",
@@ -233,10 +218,7 @@ class InventoryWatchdogAgent(DomainAgent):
                     input={
                         "days": 30,
                     },
-                    output=(
-                        "Profiled sales velocity across "
-                        f"{len(sales_trends)} product lines."
-                    ),
+                    output=("Profiled sales velocity across " f"{len(sales_trends)} product lines."),
                 ),
             ]
 
@@ -302,8 +284,8 @@ class InventoryWatchdogAgent(DomainAgent):
     def query(
         self,
         message: str,
-        db: Optional[Session] = None,
-        history: Optional[list] = None,
+        db: Session | None = None,
+        history: list | None = None,
     ) -> InventoryAgentResponse:
         """
         Interactive inquiry with the Inventory Intelligence Agent.
@@ -346,10 +328,7 @@ class InventoryWatchdogAgent(DomainAgent):
         # the API. Return the latest database-backed monitoring information.
         #
         if model is None:
-            logger.warning(
-                "Inventory LLM unavailable; "
-                "falling back to deterministic monitoring."
-            )
+            logger.warning("Inventory LLM unavailable; " "falling back to deterministic monitoring.")
 
             latest = self._last_response or self.run_monitor(db=db)
 
@@ -396,8 +375,7 @@ class InventoryWatchdogAgent(DomainAgent):
 
             if not response_text:
                 response_text = (
-                    "The Inventory Intelligence Agent could not produce "
-                    "a response for that request."
+                    "The Inventory Intelligence Agent could not produce " "a response for that request."
                 )
 
             # ---------------------------------------------------------
@@ -434,10 +412,7 @@ class InventoryWatchdogAgent(DomainAgent):
             # Keep the API available even if the LLM or a tool fails.
             # The exception is logged with the full traceback for debugging.
             #
-            logger.exception(
-                "Inventory ReAct query failed; "
-                "falling back to deterministic monitoring."
-            )
+            logger.exception("Inventory ReAct query failed; " "falling back to deterministic monitoring.")
 
             latest = self._last_response or self.run_monitor(db=db)
 

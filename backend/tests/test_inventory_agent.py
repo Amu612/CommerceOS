@@ -1,8 +1,7 @@
-import pytest
-from app.database.session import SessionLocal
-from app.agents.inventory import inventory_agent, InventoryWatchdogAgent
-from app.agents.inventory.tools import InventoryTools
+from app.agents.inventory import inventory_agent
 from app.agents.inventory.schemas import InventoryAgentResponse
+from app.agents.inventory.tools import InventoryTools
+from app.database.session import SessionLocal
 
 
 def test_01_inventory_tools():

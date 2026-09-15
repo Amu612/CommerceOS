@@ -9,6 +9,7 @@ unconditionally) so removing a *future* live source stays a one-file change
 instead of touching every agent again; today `is_live()` always reports
 False and `available_sources()` only ever offers "historic".
 """
+
 from __future__ import annotations
 
 import logging

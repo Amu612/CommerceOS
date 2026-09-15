@@ -1,19 +1,20 @@
 """Auth routes: login, refresh, current user."""
+
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
+from app.api.v1.deps import get_current_user
 from app.core import rbac
 from app.core.security import create_access_token, create_refresh_token, decode_token
 from app.database.session import get_db
 from app.exceptions.base import AuthenticationException
-from app.api.v1.deps import get_current_user
 from app.models.security import User
-from app.services.auth_service import get_user_by_id, authenticate_user, log_audit
+from app.services.auth_service import authenticate_user, get_user_by_id, log_audit
 
 router = APIRouter(prefix="/auth", tags=["Auth"])
 
@@ -61,10 +62,17 @@ def login(body: LoginRequest, request: Request, db: Session = Depends(get_db)):
     rid = request.headers.get("x-request-id")
     user = authenticate_user(db, body.username, body.password)
     if not user:
-        log_audit(db, action="LOGIN_FAILURE", actor_username=body.username, ip_address=ip, request_id=rid, status_code=401)
+        log_audit(
+            db,
+            action="LOGIN_FAILURE",
+            actor_username=body.username,
+            ip_address=ip,
+            request_id=rid,
+            status_code=401,
+        )
         raise AuthenticationException("Invalid username or password.")
 
-    user.last_login_at = datetime.now(timezone.utc)
+    user.last_login_at = datetime.now(UTC)
     db.commit()
 
     log_audit(

@@ -9,16 +9,17 @@ the bug was found. Safe to re-run: anything still failing (e.g. a handler
 with no real fix, or genuinely bad payload data) is left as FAILED with its
 new error recorded.
 """
+
 from __future__ import annotations
 
 import sys
 
 sys.path.insert(0, ".")
 
-from app.automation.executor import _execute  # noqa: E402
-from app.core.logging import get_logger  # noqa: E402
-from app.database.session import SessionLocal  # noqa: E402
-from app.models.operations import AutomationAction  # noqa: E402
+from app.automation.executor import _execute
+from app.core.logging import get_logger
+from app.database.session import SessionLocal
+from app.models.operations import AutomationAction
 
 logger = get_logger("scripts.reexecute_failed_automation")
 

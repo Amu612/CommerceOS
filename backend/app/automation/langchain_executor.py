@@ -24,9 +24,11 @@ deterministic otherwise" pattern used everywhere else in this codebase):
 Either path always returns the handler's real result dict; only an extra
 `automation_backend` / `automation_summary` key is layered on top.
 """
+
 from __future__ import annotations
 
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 from langchain_core.tools import StructuredTool
 from sqlalchemy.orm import Session
@@ -43,10 +45,10 @@ def _make_tool(action_type: str, fn: Callable[[dict, Session], dict], box: dict)
     nested dict back verbatim), while the real structured result is kept
     for the executor/UI."""
 
-    def _run(**kwargs: Any) -> str:  # noqa: ARG001 - payload is closed over, not LLM-supplied
+    def _run(**kwargs: Any) -> str:
         try:
             result = fn(box["payload"], box["db"])
-        except Exception as exc:  # noqa: BLE001 - recorded, not swallowed; see call site
+        except Exception as exc:
             box["error"] = exc
             return f"Tool call failed: {exc}"
         box["result"] = result
@@ -78,7 +80,7 @@ def execute_via_langchain(
         from app.services.llm.chat_model import get_chat_model
 
         model = get_chat_model()
-    except Exception:  # noqa: BLE001 - LLM layer must never block automation
+    except Exception:
         model = None
 
     if model is None:
@@ -87,8 +89,8 @@ def execute_via_langchain(
         return result
 
     try:
-        from langgraph.prebuilt import create_react_agent
         from langchain_core.messages import HumanMessage
+        from langgraph.prebuilt import create_react_agent
 
         tool = _make_tool(action_type, handler_fn, box)
         agent = create_react_agent(
@@ -107,7 +109,7 @@ def execute_via_langchain(
             {"messages": [HumanMessage(content=f"Execute the approved action now: {title}. {detail}")]},
             config={"recursion_limit": 4},
         )
-    except Exception as exc:  # noqa: BLE001 - LLM/agent-plumbing failure; the tool itself never ran
+    except Exception as exc:
         logger.warning("langchain_automation_agent_failed", action=action_type, error=str(exc))
 
     if box["error"] is not None:

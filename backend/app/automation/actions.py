@@ -6,17 +6,19 @@ so the executor can confirm the intended effect actually happened. The AUTO
 actions here are deliberately low-blast-radius (internal flags / notifications /
 queue hints) — nothing customer-facing or financial (see `policies.py`).
 """
+
 from __future__ import annotations
 
 import re
-from datetime import datetime, timezone
-from typing import Any, Callable
+from collections.abc import Callable
+from datetime import UTC, datetime
+from typing import Any
 
 from sqlalchemy.orm import Session
 
 from app.core.logging import get_logger
 from app.database.session import SessionLocal
-from app.models.security import NotificationSeverity, NotificationStatus
+from app.models.security import NotificationStatus
 from app.services.notification_service import notification_service
 
 logger = get_logger("automation.actions")
@@ -59,8 +61,13 @@ def _parse_evidence(evidence: Any) -> dict[str, str]:
 
 def _notify(db: Session, *, title: str, message: str, agent: str, severity: str) -> dict[str, Any]:
     n = notification_service.create_notification(
-        db=db, title=title, message=message, responsible_agent=agent,
-        severity=severity, priority=severity, notification_type="AUTOMATION",
+        db=db,
+        title=title,
+        message=message,
+        responsible_agent=agent,
+        severity=severity,
+        priority=severity,
+        notification_type="AUTOMATION",
     )
     return {"notification_id": n.id}
 
@@ -102,8 +109,11 @@ def adjust_promised_date_model(payload: dict, db: Session) -> dict:
     res = _notify(
         db,
         title="[Auto] Promised-date buffer updated",
-        message=payload.get("detail", "Applied a per-lane delivery buffer from the observed margin distribution."),
-        agent="logistics", severity="MEDIUM",
+        message=payload.get(
+            "detail", "Applied a per-lane delivery buffer from the observed margin distribution."
+        ),
+        agent="logistics",
+        severity="MEDIUM",
     )
     res["buffer_days"] = payload.get("buffer_days")
     return res
@@ -122,7 +132,8 @@ def create_purchase_order_request(payload: dict, db: Session) -> dict:
         db,
         title=f"[PO Request] {payload.get('title', 'Reorder requested')}",
         message=payload.get("detail", "A purchase-order request was raised from a stock finding."),
-        agent="inventory", severity=payload.get("severity", "MEDIUM"),
+        agent="inventory",
+        severity=payload.get("severity", "MEDIUM"),
     )
     res["effect"] = "PURCHASE_ORDER_REQUESTED"
     res["product_id"] = product_id
@@ -145,7 +156,7 @@ def create_purchase_order_request(payload: dict, db: Session) -> dict:
             db.add(mv)
             db.flush()
             res["stock_movement_id"] = mv.id
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             logger.warning("purchase_order_stock_movement_failed", error=str(exc))
     return res
 
@@ -158,11 +169,12 @@ def open_carrier_review(payload: dict, db: Session) -> dict:
         db,
         title=f"[Carrier Review] {carrier}",
         message=payload.get("detail", f"Opened a performance review for carrier '{carrier}'."),
-        agent="logistics", severity=payload.get("severity", "MEDIUM"),
+        agent="logistics",
+        severity=payload.get("severity", "MEDIUM"),
     )
     res["effect"] = "CARRIER_REVIEW_OPENED"
     res["carrier"] = carrier
-    res["opened_at"] = datetime.now(timezone.utc).isoformat()
+    res["opened_at"] = datetime.now(UTC).isoformat()
     return res
 
 
@@ -174,7 +186,8 @@ def reweight_carrier_routing(payload: dict, db: Session) -> dict:
         db,
         title=f"[Routing] De-prioritised '{carrier}'",
         message=payload.get("detail", f"Time-sensitive volume re-weighted away from '{carrier}'."),
-        agent="logistics", severity=payload.get("severity", "MEDIUM"),
+        agent="logistics",
+        severity=payload.get("severity", "MEDIUM"),
     )
     res["effect"] = "CARRIER_ROUTING_REWEIGHTED"
     res["carrier"] = carrier
@@ -190,12 +203,13 @@ def set_margin_floor(payload: dict, db: Session) -> dict:
         db,
         title=f"[Margin Floor] {scope}",
         message=payload.get("detail", f"Minimum-margin floor set for '{scope}'."),
-        agent="pricing", severity=payload.get("severity", "MEDIUM"),
+        agent="pricing",
+        severity=payload.get("severity", "MEDIUM"),
     )
     res["effect"] = "MARGIN_FLOOR_SET"
     res["scope"] = scope
     res["floor_pct"] = floor_pct
-    res["set_at"] = datetime.now(timezone.utc).isoformat()
+    res["set_at"] = datetime.now(UTC).isoformat()
     return res
 
 
@@ -207,11 +221,12 @@ def launch_campaign(payload: dict, db: Session) -> dict:
         db,
         title=f"[Campaign Launched] {segment}",
         message=payload.get("detail", f"Retention campaign launched for the '{segment}' segment."),
-        agent="marketing", severity=payload.get("severity", "MEDIUM"),
+        agent="marketing",
+        severity=payload.get("severity", "MEDIUM"),
     )
     res["effect"] = "CAMPAIGN_LAUNCHED"
     res["segment"] = segment
-    res["launched_at"] = datetime.now(timezone.utc).isoformat()
+    res["launched_at"] = datetime.now(UTC).isoformat()
     return res
 
 
@@ -221,7 +236,8 @@ def escalate_to_human(payload: dict, db: Session) -> dict:
         db,
         title=f"[Escalated] {payload.get('title', 'Escalation')}",
         message=payload.get("detail", "Escalated to a human owner for review."),
-        agent=payload.get("agent", "orchestrator"), severity=payload.get("severity", "HIGH"),
+        agent=payload.get("agent", "orchestrator"),
+        severity=payload.get("severity", "HIGH"),
     )
     res["effect"] = "ESCALATED_TO_HUMAN"
     return res
@@ -229,7 +245,9 @@ def escalate_to_human(payload: dict, db: Session) -> dict:
 
 # action_type -> (execute_fn, verify_fn, rollback_fn). execute_fn takes the
 # caller's live `db` session (see the module docstring above for why).
-HANDLERS: dict[str, tuple[Callable[[dict, Session], dict], Callable[[dict, dict], bool], Callable[[dict, dict], None]]] = {}
+HANDLERS: dict[
+    str, tuple[Callable[[dict, Session], dict], Callable[[dict, dict], bool], Callable[[dict, dict], None]]
+] = {}
 
 
 def _register(name: str, fn: Callable[[dict, Session], dict]) -> None:

@@ -2,9 +2,8 @@
 Auth dependencies. Unknown/invalid/expired tokens ⇒ 401. No user is ever
 fabricated from an unverified token subject.
 """
-from __future__ import annotations
 
-from typing import Optional
+from __future__ import annotations
 
 from fastapi import Depends, Header, Query
 from sqlalchemy.orm import Session
@@ -17,15 +16,15 @@ from app.models.security import User, UserRole
 from app.services.auth_service import get_user_by_id
 
 
-def _extract_token(authorization: Optional[str], token: Optional[str]) -> Optional[str]:
+def _extract_token(authorization: str | None, token: str | None) -> str | None:
     if authorization and authorization.lower().startswith("bearer "):
         return authorization[7:].strip()
     return token
 
 
 def get_current_user(
-    authorization: Optional[str] = Header(None),
-    token: Optional[str] = Query(None, alias="token"),
+    authorization: str | None = Header(None),
+    token: str | None = Query(None, alias="token"),
     db: Session = Depends(get_db),
 ) -> User:
     raw = _extract_token(authorization, token)
@@ -45,10 +44,10 @@ def get_current_user(
 
 
 def get_optional_user(
-    authorization: Optional[str] = Header(None),
-    token: Optional[str] = Query(None, alias="token"),
+    authorization: str | None = Header(None),
+    token: str | None = Query(None, alias="token"),
     db: Session = Depends(get_db),
-) -> Optional[User]:
+) -> User | None:
     try:
         return get_current_user(authorization=authorization, token=token, db=db)
     except AuthenticationException:
@@ -113,7 +112,7 @@ def agent_dependency(agent: str):
     production-mode feature.
     """
 
-    def _check(current_user: Optional[User] = Depends(auth_dependency())) -> Optional[User]:
+    def _check(current_user: User | None = Depends(auth_dependency())) -> User | None:
         if current_user is None:
             return None
         if not rbac.can_access_agent(current_user.role, agent):
@@ -138,7 +137,7 @@ def ingestion_dependency():
     domain admin reset the whole platform's data through them.
     """
 
-    def _check(current_user: Optional[User] = Depends(auth_dependency())) -> Optional[User]:
+    def _check(current_user: User | None = Depends(auth_dependency())) -> User | None:
         if current_user is None:
             return None
         if not rbac.is_super_admin(current_user.role):
@@ -160,7 +159,7 @@ def orchestrator_dependency():
     is off, but a present, non-super-admin session is always denied.
     """
 
-    def _check(current_user: Optional[User] = Depends(auth_dependency())) -> Optional[User]:
+    def _check(current_user: User | None = Depends(auth_dependency())) -> User | None:
         if current_user is None:
             return None
         if not rbac.can_access_orchestrator(current_user.role):

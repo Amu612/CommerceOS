@@ -7,12 +7,14 @@ Structured logging for the platform.
 - Standard-library logging is routed through structlog so third-party logs
   (uvicorn, sqlalchemy) share the same format.
 """
+
 from __future__ import annotations
 
 import logging
 import sys
+from collections.abc import MutableMapping
 from contextvars import ContextVar
-from typing import Any, MutableMapping
+from typing import Any
 
 import structlog
 
@@ -23,7 +25,7 @@ request_id_ctx: ContextVar[str | None] = ContextVar("request_id", default=None)
 correlation_id_ctx: ContextVar[str | None] = ContextVar("correlation_id", default=None)
 execution_id_ctx: ContextVar[str | None] = ContextVar("execution_id", default=None)
 
-_CONFIGURED = False
+_LOG_STATE = {"configured": False}
 
 
 def _context_processor(_: Any, __: str, event_dict: MutableMapping[str, Any]) -> MutableMapping[str, Any]:
@@ -39,8 +41,7 @@ def _context_processor(_: Any, __: str, event_dict: MutableMapping[str, Any]) ->
 
 
 def configure_logging() -> None:
-    global _CONFIGURED
-    if _CONFIGURED:
+    if _LOG_STATE["configured"]:
         return
 
     level = getattr(logging, settings.LOG_LEVEL.upper(), logging.INFO)
@@ -61,7 +62,7 @@ def configure_logging() -> None:
         renderer = structlog.dev.ConsoleRenderer(colors=sys.stdout.isatty())
 
     structlog.configure(
-        processors=shared_processors + [renderer],
+        processors=[*shared_processors, renderer],
         wrapper_class=structlog.make_filtering_bound_logger(level),
         logger_factory=structlog.PrintLoggerFactory(),
         cache_logger_on_first_use=True,
@@ -83,10 +84,10 @@ def configure_logging() -> None:
         logging.getLogger(noisy).setLevel(logging.WARNING)
     logging.getLogger("uvicorn.error").setLevel(logging.INFO)
 
-    _CONFIGURED = True
+    _LOG_STATE["configured"] = True
 
 
 def get_logger(name: str | None = None) -> structlog.stdlib.BoundLogger:
-    if not _CONFIGURED:
+    if not _LOG_STATE["configured"]:
         configure_logging()
     return structlog.get_logger(name)

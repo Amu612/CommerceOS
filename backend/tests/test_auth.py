@@ -11,11 +11,11 @@ from app.core.security import (
 )
 from app.database.session import SessionLocal
 from app.main import app
-from app.models.security import User, UserRole
+from app.models.security import UserRole
 from app.services.auth_service import create_user, get_user_by_username
 
-
 # ── unit: hashing + jwt ──────────────────────────────────────────
+
 
 def test_password_hash_roundtrip():
     h = hash_password("s3cret-passw0rd")
@@ -39,6 +39,7 @@ def test_refresh_token_type():
 
 # ── integration: real auth (override removed) ────────────────────
 
+
 @pytest.fixture
 def unauth_client():
     saved = dict(app.dependency_overrides)
@@ -53,9 +54,21 @@ def seeded_users():
     db = SessionLocal()
     try:
         if not get_user_by_username(db, "t_admin"):
-            create_user(db, username="t_admin", email="t_admin@x.local", password="AdminPass123!", role=UserRole.SUPER_ADMIN)
+            create_user(
+                db,
+                username="t_admin",
+                email="t_admin@x.local",
+                password="AdminPass123!",
+                role=UserRole.SUPER_ADMIN,
+            )
         if not get_user_by_username(db, "t_orders"):
-            create_user(db, username="t_orders", email="t_orders@x.local", password="OrdersPass123!", role=UserRole.ORDERS_ADMIN)
+            create_user(
+                db,
+                username="t_orders",
+                email="t_orders@x.local",
+                password="OrdersPass123!",
+                role=UserRole.ORDERS_ADMIN,
+            )
     finally:
         db.close()
 

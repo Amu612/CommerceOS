@@ -9,26 +9,62 @@ product API, no separate datastore.
 These are thin, customer-facing wrappers around `OrdersTools` plus a billing
 helper that reads real payment records.
 """
-import re
+
 import logging
-from typing import Any, Dict, List, Optional, Tuple
+import re
+from typing import Any
 
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
-from app.database.session import SessionLocal
-from app.models.olist import Order, OrderPayment, OrderReview
-from app.models.dataco import DataCoOrder
-from app.agents.orders.tools import OrdersTools, get_simulated_clock
 from app.agents._shared import extract_order_id, money, simulated_clock
+from app.agents.orders.tools import OrdersTools
+from app.database.session import SessionLocal
+from app.models.dataco import DataCoOrder
+from app.models.olist import Order, OrderPayment, OrderReview
 
 logger = logging.getLogger(__name__)
 
 _PRODUCT_STOPWORDS = {
-    "do", "you", "have", "any", "a", "an", "the", "in", "stock", "for", "me", "is",
-    "are", "there", "of", "to", "i", "want", "need", "buy", "purchase", "please",
-    "show", "find", "get", "whats", "what", "s", "your", "some", "can", "tell",
-    "about", "price", "cost", "much", "how", "available", "availability",
+    "do",
+    "you",
+    "have",
+    "any",
+    "a",
+    "an",
+    "the",
+    "in",
+    "stock",
+    "for",
+    "me",
+    "is",
+    "are",
+    "there",
+    "of",
+    "to",
+    "i",
+    "want",
+    "need",
+    "buy",
+    "purchase",
+    "please",
+    "show",
+    "find",
+    "get",
+    "whats",
+    "what",
+    "s",
+    "your",
+    "some",
+    "can",
+    "tell",
+    "about",
+    "price",
+    "cost",
+    "much",
+    "how",
+    "available",
+    "availability",
 }
 
 
@@ -45,14 +81,14 @@ def clean_product_query(message: str) -> str:
     return " ".join(kept[-3:]) if kept else message
 
 
-def _fmt_date(value: Optional[str], fallback: str = "on schedule") -> str:
+def _fmt_date(value: str | None, fallback: str = "on schedule") -> str:
     if not value:
         return fallback
     v = str(value)
     return v[:10] if re.match(r"\d{4}-\d{2}-\d{2}", v) else v
 
 
-def verify_order_id(order_id: str, db: Optional[Session] = None) -> bool:
+def verify_order_id(order_id: str, db: Session | None = None) -> bool:
     """Confirms an id resolves to a real Olist or DataCo order."""
     if not order_id:
         return False
@@ -75,7 +111,7 @@ def verify_order_id(order_id: str, db: Optional[Session] = None) -> bool:
             db.close()
 
 
-def _order_review(order_id: str, db: Optional[Session] = None) -> Optional[Dict[str, Any]]:
+def _order_review(order_id: str, db: Session | None = None) -> dict[str, Any] | None:
     """Looks up the review left on an order — the `order_reviews` table, joined by order id."""
     if not order_id:
         return None
@@ -92,7 +128,7 @@ def _order_review(order_id: str, db: Optional[Session] = None) -> Optional[Dict[
             "review_score": rev.review_score,
             "review_comment": rev.review_comment_message,
         }
-    except Exception:  # noqa: BLE001
+    except Exception:
         return None
     finally:
         if close:
@@ -107,7 +143,9 @@ class CustomerSupportTools:
 
     # ── Context ───────────────────────────────────────────────────
     @staticmethod
-    def order_context(message: str, db: Optional[Session] = None) -> Tuple[str, List[Dict[str, Any]], Optional[Dict[str, Any]]]:
+    def order_context(
+        message: str, db: Session | None = None
+    ) -> tuple[str, list[dict[str, Any]], dict[str, Any] | None]:
         """Resolves any order referenced in the message into a structured context block."""
         order_id = extract_order_id(message)
         if not order_id:
@@ -148,7 +186,7 @@ class CustomerSupportTools:
 
     # ── Support / shipping ────────────────────────────────────────
     @staticmethod
-    def shipment_status(order_id: str, db: Optional[Session] = None) -> Tuple[str, List[Dict[str, Any]]]:
+    def shipment_status(order_id: str, db: Session | None = None) -> tuple[str, list[dict[str, Any]]]:
         if not order_id:
             return ("Ask the customer for an Order ID so the shipment can be located.", [])
         res = OrdersTools.track_shipment(order_id, db=db)
@@ -160,7 +198,10 @@ class CustomerSupportTools:
         }
         if res.status == "NOT_FOUND":
             return (f"Shipment for order #{order_id} could not be found.", [rec])
-        milestones = "; ".join(f"{e.status} @ {e.location} ({_fmt_date(e.timestamp)})" for e in res.events) or "registered with carrier"
+        milestones = (
+            "; ".join(f"{e.status} @ {e.location} ({_fmt_date(e.timestamp)})" for e in res.events)
+            or "registered with carrier"
+        )
         text = (
             f"Carrier {res.carrier} | tracking {res.tracking_number} | status {res.status} | "
             f"ETA {_fmt_date(res.estimated_delivery)}. Milestones: {milestones}."
@@ -169,7 +210,7 @@ class CustomerSupportTools:
 
     # ── Sales / products ──────────────────────────────────────────
     @staticmethod
-    def product_info(keyword: str, db: Optional[Session] = None) -> Tuple[str, List[Dict[str, Any]]]:
+    def product_info(keyword: str, db: Session | None = None) -> tuple[str, list[dict[str, Any]]]:
         if not keyword:
             return ("Ask the customer which product, category, or product ID they are interested in.", [])
         # lookup_product tokenises internally (whole phrase + each noun, PT + EN categories).
@@ -186,12 +227,14 @@ class CustomerSupportTools:
         for p in res["products"][:3]:
             cat = p.get("category_english") or p.get("category", "General")
             price = p.get("avg_price", p.get("price", 0.0))
-            lines.append(f"{cat.title()} (ID {str(p.get('product_id'))[:8]}) ~ {money(price)}, {p.get('orders_count', 0)} sold")
+            lines.append(
+                f"{cat.title()} (ID {str(p.get('product_id'))[:8]}) ~ {money(price)}, {p.get('orders_count', 0)} sold"
+            )
         return ("Catalog matches: " + " | ".join(lines), [rec])
 
     # ── Billing ───────────────────────────────────────────────────
     @staticmethod
-    def billing_lookup(order_id: str, db: Optional[Session] = None) -> Tuple[str, List[Dict[str, Any]]]:
+    def billing_lookup(order_id: str, db: Session | None = None) -> tuple[str, list[dict[str, Any]]]:
         if not order_id:
             return ("Ask the customer for an Order or Invoice ID to look up the charge.", [])
         close = False
@@ -202,11 +245,7 @@ class CustomerSupportTools:
             clean = str(order_id).strip().replace("#", "")
             rec = {"tool": "billing_lookup", "name": "billing_lookup", "input": {"order_id": order_id}}
 
-            payments = (
-                db.query(OrderPayment)
-                .filter(OrderPayment.order_id.ilike(f"{clean}%"))
-                .all()
-            )
+            payments = db.query(OrderPayment).filter(OrderPayment.order_id.ilike(f"{clean}%")).all()
             if payments:
                 total = sum(float(p.payment_value or 0.0) for p in payments)
                 methods = ", ".join(sorted({p.payment_type for p in payments}))
@@ -244,7 +283,11 @@ class CustomerSupportTools:
             # Order exists but no payment lines seeded
             detail = OrdersTools.lookup_order(clean, db=db)
             if detail:
-                rec["output"] = {"charged_total": detail.total, "payment_methods": "on file", "source": "order_total"}
+                rec["output"] = {
+                    "charged_total": detail.total,
+                    "payment_methods": "on file",
+                    "source": "order_total",
+                }
                 return (
                     f"Order #{detail.order_id}: order value {money(detail.total)}. "
                     f"Itemised payment breakdown is not on file for this order.",
@@ -259,10 +302,14 @@ class CustomerSupportTools:
 
     # ── Refund / returns ─────────────────────────────────────────
     @staticmethod
-    def refund_flow(order_id: str, message: str, db: Optional[Session] = None) -> Tuple[str, List[Dict[str, Any]]]:
-        records: List[Dict[str, Any]] = []
+    def refund_flow(
+        order_id: str, message: str, db: Session | None = None
+    ) -> tuple[str, list[dict[str, Any]]]:
+        records: list[dict[str, Any]] = []
         policy = OrdersTools.get_return_policy()
-        records.append({"tool": "tool_get_return_policy", "name": "get_return_policy", "input": {}, "output": policy})
+        records.append(
+            {"tool": "tool_get_return_policy", "name": "get_return_policy", "input": {}, "output": policy}
+        )
 
         if not order_id:
             return (
@@ -272,35 +319,44 @@ class CustomerSupportTools:
             )
 
         elig = OrdersTools.check_return_eligibility(order_id, db=db)
-        records.append({
-            "tool": "tool_check_return_eligibility",
-            "name": "check_return_eligibility",
-            "input": {"order_id": order_id},
-            "output": elig.model_dump(),
-        })
+        records.append(
+            {
+                "tool": "tool_check_return_eligibility",
+                "name": "check_return_eligibility",
+                "input": {"order_id": order_id},
+                "output": elig.model_dump(),
+            }
+        )
 
         if not elig.is_eligible:
             return (f"Order #{order_id} is INELIGIBLE for return: {elig.message}", records)
 
-        wants_action = any(k in (message or "").lower() for k in ["refund", "return", "send it back", "money back", "rma"])
+        wants_action = any(
+            k in (message or "").lower() for k in ["refund", "return", "send it back", "money back", "rma"]
+        )
         if wants_action:
             rma = OrdersTools.initiate_return(order_id, reason="Customer requested return", db=db)
-            records.append({
-                "tool": "tool_initiate_return",
-                "name": "initiate_return",
-                "input": {"order_id": order_id, "reason": "Customer requested return"},
-                "output": rma.model_dump(),
-            })
+            records.append(
+                {
+                    "tool": "tool_initiate_return",
+                    "name": "initiate_return",
+                    "input": {"order_id": order_id, "reason": "Customer requested return"},
+                    "output": rma.model_dump(),
+                }
+            )
             return (
                 f"Order #{order_id} is ELIGIBLE. RMA {rma.rma_number} created for a "
                 f"{money(rma.refund_amount)} refund. {rma.instructions}",
                 records,
             )
-        return (f"Order #{order_id} is ELIGIBLE for return ({elig.message}). Confirm with the customer before issuing an RMA.", records)
+        return (
+            f"Order #{order_id} is ELIGIBLE for return ({elig.message}). Confirm with the customer before issuing an RMA.",
+            records,
+        )
 
     # ── General ──────────────────────────────────────────────────
     @staticmethod
-    def order_status(order_id: str, db: Optional[Session] = None) -> Tuple[str, List[Dict[str, Any]]]:
+    def order_status(order_id: str, db: Session | None = None) -> tuple[str, list[dict[str, Any]]]:
         if not order_id:
             return ("Ask the customer for an Order ID to look up status and contents.", [])
         detail = OrdersTools.lookup_order(order_id, db=db)
@@ -320,9 +376,14 @@ class CustomerSupportTools:
         )
 
     @staticmethod
-    def pipeline_snapshot(db: Optional[Session] = None) -> Tuple[str, List[Dict[str, Any]]]:
+    def pipeline_snapshot(db: Session | None = None) -> tuple[str, list[dict[str, Any]]]:
         s = OrdersTools.get_analytics_summary("all", db=db)
-        rec = {"tool": "tool_get_analytics_summary", "name": "get_analytics_summary", "input": {}, "output": s}
+        rec = {
+            "tool": "tool_get_analytics_summary",
+            "name": "get_analytics_summary",
+            "input": {},
+            "output": s,
+        }
         text = (
             f"Store snapshot: {s.get('total_orders', 0):,} orders, "
             f"{s.get('fulfillment_rate_pct', 0):.1f}% fulfilled, "
@@ -332,7 +393,7 @@ class CustomerSupportTools:
 
     # ── Analytics: recent orders / follow-up candidates ────────────
     @staticmethod
-    def recent_orders(limit: int = 5, db: Optional[Session] = None) -> Tuple[str, List[Dict[str, Any]]]:
+    def recent_orders(limit: int = 5, db: Session | None = None) -> tuple[str, list[dict[str, Any]]]:
         """
         Most recent orders in the store up to the simulated clock. There is no
         login-linked customer session in this system, so 'my recent orders' /
@@ -373,7 +434,9 @@ class CustomerSupportTools:
                 db.close()
 
     @staticmethod
-    def late_delivery_poor_review(limit: int = 10, db: Optional[Session] = None) -> Tuple[str, List[Dict[str, Any]]]:
+    def late_delivery_poor_review(
+        limit: int = 10, db: Session | None = None
+    ) -> tuple[str, list[dict[str, Any]]]:
         """Orders delivered after their estimated date AND reviewed 2 stars or below."""
         close = False
         if db is None:
@@ -395,7 +458,11 @@ class CustomerSupportTools:
                 .limit(max(1, limit))
                 .all()
             )
-            rec = {"tool": "late_delivery_poor_review", "name": "late_delivery_poor_review", "input": {"limit": limit}}
+            rec = {
+                "tool": "late_delivery_poor_review",
+                "name": "late_delivery_poor_review",
+                "input": {"limit": limit},
+            }
             if not rows:
                 rec["output"] = []
                 return ("No orders found that were both delivered late and rated 2 stars or below.", [rec])
@@ -415,7 +482,7 @@ class CustomerSupportTools:
                 db.close()
 
     @staticmethod
-    def followup_candidates(limit: int = 10, db: Optional[Session] = None) -> Tuple[str, List[Dict[str, Any]]]:
+    def followup_candidates(limit: int = 10, db: Session | None = None) -> tuple[str, list[dict[str, Any]]]:
         """
         Broader net than late+poor-review: any order that is late OR poorly
         reviewed OR still pending well past its estimated delivery date.
@@ -453,11 +520,21 @@ class CustomerSupportTools:
             lines = []
             for o, r in late_or_poor:
                 reasons = []
-                if o.order_delivered_customer_date and o.order_estimated_delivery_date and o.order_delivered_customer_date > o.order_estimated_delivery_date:
-                    reasons.append(f"{(o.order_delivered_customer_date - o.order_estimated_delivery_date).days}d late")
+                if (
+                    o.order_delivered_customer_date
+                    and o.order_estimated_delivery_date
+                    and o.order_delivered_customer_date > o.order_estimated_delivery_date
+                ):
+                    reasons.append(
+                        f"{(o.order_delivered_customer_date - o.order_estimated_delivery_date).days}d late"
+                    )
                 if r and r.review_score is not None and r.review_score <= 2:
                     reasons.append(f"review {r.review_score}/5")
-                if not o.order_delivered_customer_date and o.order_estimated_delivery_date and o.order_estimated_delivery_date < clock:
+                if (
+                    not o.order_delivered_customer_date
+                    and o.order_estimated_delivery_date
+                    and o.order_estimated_delivery_date < clock
+                ):
                     reasons.append("overdue / not yet delivered")
                 lines.append(f"#{o.order_id[:8]} — {o.order_status} — " + ", ".join(reasons))
             rec["output"] = lines

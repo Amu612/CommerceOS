@@ -1,9 +1,8 @@
-import pytest
 from fastapi.testclient import TestClient
 
+from app.agents.customer import CustomerAgentResponse, customer_support_agent
+from app.agents.customer.tools import CustomerSupportTools, extract_order_id
 from app.database.session import SessionLocal
-from app.agents.customer import customer_support_agent, CustomerAgentResponse
-from app.agents.customer.tools import extract_order_id, CustomerSupportTools
 from app.main import app
 
 client = TestClient(app)
@@ -11,6 +10,7 @@ client = TestClient(app)
 
 def _sample_order_id(db):
     from app.models.olist import Order
+
     row = db.query(Order.order_id).filter(Order.order_status == "delivered").first()
     return row[0] if row else None
 
@@ -23,7 +23,9 @@ def test_01_manifest():
 
 def test_02_extract_order_id():
     assert extract_order_id("where is order #58?") == "58"
-    assert extract_order_id("refund for e481f51cbdc54678b7cc49136f2d6af7") == "e481f51cbdc54678b7cc49136f2d6af7"
+    assert (
+        extract_order_id("refund for e481f51cbdc54678b7cc49136f2d6af7") == "e481f51cbdc54678b7cc49136f2d6af7"
+    )
     assert extract_order_id("hello there") == ""
 
 

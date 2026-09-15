@@ -1,37 +1,41 @@
-from langchain_core.tools import tool
 """
 Orders Agent Domain Tools.
 All tools query real Olist/DataCo records strictly observed up to the simulated clock time T.
 Risk thresholds, severity, SLA health, and anomaly scores are derived from empirical distributions.
 Zero hardcoded, static, or future-leaking values.
 """
+
 import logging
 import math
 import re
-from datetime import datetime, timezone, timedelta
-from typing import Any, Dict, List, Optional, Tuple
+from datetime import UTC, datetime, timedelta
+from typing import Any
 
+from langchain_core.tools import tool
+from sqlalchemy import asc, func, or_
 from sqlalchemy.orm import Session
-from sqlalchemy import func, asc, desc, and_, or_, text
 
-from app.models.olist import Order, OrderItem, Customer, Product, CategoryTranslation, OrderReview
-from app.models.dataco import DataCoOrder, DataCoOrderItem
-from app.intelligence.statistics.profiler import StatisticalProfiler
-from app.intelligence.anomaly.detector import AnomalyDetector
-from app.intelligence.forecasting.engine import ForecastEngine
-from app.intelligence.confidence.calculator import ConfidenceCalculator
+# The one canonical clock implementation lives in `app.agents._shared` (it also
+# handles the live-Shopify-source case); kept as `get_simulated_clock` here
+# since that's the name every call site in this file already uses.
+from app.agents._shared import period_bucket
+from app.agents._shared import simulated_clock as get_simulated_clock
 from app.agents.orders.schemas import (
     DataCategory,
-    AgeDistributionBucket,
     OrderDetail,
     OrderItemDetail,
     OrderPaymentDetail,
     OrderReviewDetail,
     ReturnEligibilityResult,
     ReturnRequestResult,
-    ShipmentTrackingResult,
     ShipmentTrackingEvent,
+    ShipmentTrackingResult,
 )
+from app.intelligence.anomaly.detector import AnomalyDetector
+from app.intelligence.forecasting.engine import ForecastEngine
+from app.intelligence.statistics.profiler import StatisticalProfiler
+from app.models.dataco import DataCoOrder, DataCoOrderItem
+from app.models.olist import CategoryTranslation, Customer, Order, OrderItem, OrderReview, Product
 
 logger = logging.getLogger(__name__)
 
@@ -47,7 +51,7 @@ _DATACO_PENDING = {"PROCESSING", "PENDING", "PENDING_PAYMENT", "ON_HOLD", "PAYME
 _OLIST_CANCELLED = {"canceled", "unavailable"}
 
 
-def _lookup_order_review(order_id: str, db: Optional[Session] = None) -> Optional[Dict[str, Any]]:
+def _lookup_order_review(order_id: str, db: Session | None = None) -> dict[str, Any] | None:
     """Order id queries must check other tables too — pulls the order_reviews row for this order, if any."""
     if not order_id:
         return None
@@ -67,34 +71,33 @@ def _lookup_order_review(order_id: str, db: Optional[Session] = None) -> Optiona
             "review_score": rev.review_score,
             "review_comment_title": rev.review_comment_title,
             "review_comment_message": rev.review_comment_message,
-            "review_creation_date": rev.review_creation_date.isoformat() if rev.review_creation_date else None,
-            "review_answer_timestamp": rev.review_answer_timestamp.isoformat() if rev.review_answer_timestamp else None,
+            "review_creation_date": (
+                rev.review_creation_date.isoformat() if rev.review_creation_date else None
+            ),
+            "review_answer_timestamp": (
+                rev.review_answer_timestamp.isoformat() if rev.review_answer_timestamp else None
+            ),
         }
-    except Exception:  # noqa: BLE001
+    except Exception:
         return None
     finally:
         if close:
             db.close()
+
+
 _DATACO_CANCELLED = {"CANCELED", "SUSPECTED_FRAUD"}
 # Completed
 _OLIST_COMPLETED = {"delivered"}
 _DATACO_COMPLETED = {"COMPLETE", "CLOSED"}
 
 
-def _tz(dt: Optional[datetime]) -> Optional[datetime]:
+def _tz(dt: datetime | None) -> datetime | None:
     if dt is None:
         return None
-    return dt.replace(tzinfo=timezone.utc) if dt.tzinfo is None else dt
+    return dt.replace(tzinfo=UTC) if dt.tzinfo is None else dt
 
 
-# The one canonical clock implementation now lives in `app.agents._shared`
-# (it also handles the live-Shopify-source case); kept as `get_simulated_clock`
-# here since that's the name every call site in this file already uses.
-from app.agents._shared import simulated_clock as get_simulated_clock, period_bucket  # noqa: E402
-
-
-
-def _percentile_from_profile(values: List[float], p: float) -> float:
+def _percentile_from_profile(values: list[float], p: float) -> float:
     """Compute an empirical percentile from a numeric list."""
     if not values:
         return 0.0
@@ -119,7 +122,7 @@ class OrdersTools:
     # 1. get_order_state
     # ──────────────────────────────────────────────────────────────────────────
     @staticmethod
-    def get_order_state(db: Optional[Session] = None) -> Dict[str, Any]:
+    def get_order_state(db: Session | None = None) -> dict[str, Any]:
         """
         Returns a point-in-time state snapshot: total, pending, completed, cancelled, delayed, fulfillment rate.
         Strictly observes records with timestamp <= simulated_clock.
@@ -147,7 +150,8 @@ class OrdersTools:
             olist_counts = dict(
                 db.query(Order.order_status, func.count(Order.order_id))
                 .filter(Order.order_purchase_timestamp <= sim_clock)
-                .group_by(Order.order_status).all()
+                .group_by(Order.order_status)
+                .all()
             )
             o_total = sum(olist_counts.values())
             o_completed = sum(olist_counts.get(s, 0) for s in _OLIST_COMPLETED)
@@ -161,7 +165,9 @@ class OrdersTools:
                     Order.order_delivered_customer_date.isnot(None),
                     Order.order_estimated_delivery_date.isnot(None),
                     Order.order_delivered_customer_date > Order.order_estimated_delivery_date,
-                ).scalar() or 0
+                )
+                .scalar()
+                or 0
             )
         except Exception as e:
             logger.debug(f"Olist order_state note: {e}")
@@ -170,7 +176,8 @@ class OrdersTools:
             dc_counts = dict(
                 db.query(DataCoOrder.order_status, func.count(DataCoOrder.order_id))
                 .filter(DataCoOrder.order_date <= sim_clock)
-                .group_by(DataCoOrder.order_status).all()
+                .group_by(DataCoOrder.order_status)
+                .all()
             )
             dc_total = sum(dc_counts.values())
             dc_completed = sum(dc_counts.get(s, 0) for s in _DATACO_COMPLETED)
@@ -181,7 +188,9 @@ class OrdersTools:
                 .filter(
                     DataCoOrder.order_date <= sim_clock,
                     DataCoOrder.late_delivery_risk == 1,
-                ).scalar() or 0
+                )
+                .scalar()
+                or 0
             )
         except Exception as e:
             logger.debug(f"DataCo order_state note: {e}")
@@ -231,8 +240,8 @@ class OrdersTools:
     @staticmethod
     def get_order_history(
         days: int = 90,
-        db: Optional[Session] = None,
-    ) -> List[Dict[str, Any]]:
+        db: Session | None = None,
+    ) -> list[dict[str, Any]]:
         """
         Returns daily order counts over the rolling window strictly up to simulated clock time T.
         Window: [sim_clock - timedelta(days=days), sim_clock].
@@ -241,7 +250,7 @@ class OrdersTools:
             return []
         sim_clock = get_simulated_clock(db)
         cutoff = sim_clock - timedelta(days=days)
-        rows: Dict[str, int] = {}
+        rows: dict[str, int] = {}
 
         try:
             olist_rows = (
@@ -285,12 +294,12 @@ class OrdersTools:
     # 3. get_order_status_distribution
     # ──────────────────────────────────────────────────────────────────────────
     @staticmethod
-    def get_order_status_distribution(db: Optional[Session] = None) -> List[Dict[str, Any]]:
+    def get_order_status_distribution(db: Session | None = None) -> list[dict[str, Any]]:
         """Returns the frequency of each order status observed up to simulated clock time T."""
         if db is None:
             return []
         sim_clock = get_simulated_clock(db)
-        counts: Dict[str, int] = {}
+        counts: dict[str, int] = {}
         try:
             for st, cnt in (
                 db.query(Order.order_status, func.count(Order.order_id))
@@ -333,8 +342,8 @@ class OrdersTools:
     @staticmethod
     def get_order_processing_distribution(
         limit: int = 3000,
-        db: Optional[Session] = None,
-    ) -> Dict[str, Any]:
+        db: Session | None = None,
+    ) -> dict[str, Any]:
         """
         Profiles the distribution of order processing times in hours
         for orders observed up to simulated clock time T across both Olist and DataCo.
@@ -350,12 +359,16 @@ class OrdersTools:
             }
 
         sim_clock = get_simulated_clock(db)
-        hours_list: List[float] = []
+        hours_list: list[float] = []
 
         # 1. Query Olist processing times
         try:
             rows = (
-                db.query(Order.order_purchase_timestamp, Order.order_approved_at, Order.order_delivered_carrier_date)
+                db.query(
+                    Order.order_purchase_timestamp,
+                    Order.order_approved_at,
+                    Order.order_delivered_carrier_date,
+                )
                 .filter(
                     Order.order_purchase_timestamp <= sim_clock,
                 )
@@ -400,19 +413,29 @@ class OrdersTools:
         # 3. Fallback: if no approval/shipping dates are available yet, calculate pending queue dwell times
         if not hours_list:
             try:
-                p_rows = db.query(Order.order_purchase_timestamp).filter(
-                    Order.order_purchase_timestamp <= sim_clock,
-                    Order.order_status.in_(_OLIST_PENDING),
-                ).limit(limit).all()
+                p_rows = (
+                    db.query(Order.order_purchase_timestamp)
+                    .filter(
+                        Order.order_purchase_timestamp <= sim_clock,
+                        Order.order_status.in_(_OLIST_PENDING),
+                    )
+                    .limit(limit)
+                    .all()
+                )
                 for (ts,) in p_rows:
                     ts_tz = _tz(ts)
                     if ts_tz and sim_clock >= ts_tz:
                         hours_list.append((sim_clock - ts_tz).total_seconds() / 3600.0)
 
-                dc_p_rows = db.query(DataCoOrder.order_date).filter(
-                    DataCoOrder.order_date <= sim_clock,
-                    DataCoOrder.order_status.in_(_DATACO_PENDING),
-                ).limit(limit).all()
+                dc_p_rows = (
+                    db.query(DataCoOrder.order_date)
+                    .filter(
+                        DataCoOrder.order_date <= sim_clock,
+                        DataCoOrder.order_status.in_(_DATACO_PENDING),
+                    )
+                    .limit(limit)
+                    .all()
+                )
                 for (ts,) in dc_p_rows:
                     ts_tz = _tz(ts)
                     if ts_tz and sim_clock >= ts_tz:
@@ -452,7 +475,7 @@ class OrdersTools:
     # 5. get_order_backlog
     # ──────────────────────────────────────────────────────────────────────────
     @staticmethod
-    def get_order_backlog(db: Optional[Session] = None) -> Dict[str, Any]:
+    def get_order_backlog(db: Session | None = None) -> dict[str, Any]:
         """
         Returns pending order count and empirical age distribution relative to simulated clock time T.
         Outlier threshold is derived from empirical Tukey fences, not hardcoded hours.
@@ -473,7 +496,7 @@ class OrdersTools:
             }
 
         sim_clock = get_simulated_clock(db)
-        aging_hours: List[float] = []
+        aging_hours: list[float] = []
 
         try:
             olist_rows = (
@@ -540,22 +563,26 @@ class OrdersTools:
         anomalous = sum(1 for h in aging_hours if h > empirical_fence)
 
         # Dynamic empirical histogram buckets from quartiles
-        buckets: List[Dict[str, Any]] = []
+        buckets: list[dict[str, Any]] = []
         if profile:
             boundaries = [profile.min_val, profile.q25, profile.median, profile.q75, p90, profile.max_val]
-            boundaries = sorted(list(set(boundaries)))
+            boundaries = sorted(set(boundaries))
             for i in range(len(boundaries) - 1):
                 lo = boundaries[i]
                 hi = boundaries[i + 1]
-                cnt = sum(1 for h in aging_hours if (lo <= h <= hi if i == len(boundaries) - 2 else lo <= h < hi))
-                buckets.append({
-                    "label": f"{lo:.1f}h - {hi:.1f}h",
-                    "lower_bound_hours": round(lo, 1),
-                    "upper_bound_hours": round(hi, 1),
-                    "order_count": cnt,
-                    "pct_of_pending": round(cnt / n * 100.0, 1),
-                    "data_status": DataCategory.CALCULATED.value,
-                })
+                cnt = sum(
+                    1 for h in aging_hours if (lo <= h <= hi if i == len(boundaries) - 2 else lo <= h < hi)
+                )
+                buckets.append(
+                    {
+                        "label": f"{lo:.1f}h - {hi:.1f}h",
+                        "lower_bound_hours": round(lo, 1),
+                        "upper_bound_hours": round(hi, 1),
+                        "order_count": cnt,
+                        "pct_of_pending": round(cnt / n * 100.0, 1),
+                        "data_status": DataCategory.CALCULATED.value,
+                    }
+                )
 
         return {
             "pending_count": n,
@@ -577,8 +604,8 @@ class OrdersTools:
     @staticmethod
     def get_cancellation_history(
         days: int = 90,
-        db: Optional[Session] = None,
-    ) -> Dict[str, Any]:
+        db: Session | None = None,
+    ) -> dict[str, Any]:
         """
         Calculates daily cancellation series and empirical rate distribution strictly up to simulated clock T.
         """
@@ -592,8 +619,8 @@ class OrdersTools:
 
         sim_clock = get_simulated_clock(db)
         cutoff = sim_clock - timedelta(days=days)
-        cancelled_by_day: Dict[str, int] = {}
-        total_by_day: Dict[str, int] = {}
+        cancelled_by_day: dict[str, int] = {}
+        total_by_day: dict[str, int] = {}
 
         try:
             rows = (
@@ -602,7 +629,8 @@ class OrdersTools:
                     Order.order_status.in_(_OLIST_CANCELLED),
                     Order.order_purchase_timestamp >= cutoff,
                     Order.order_purchase_timestamp <= sim_clock,
-                ).all()
+                )
+                .all()
             )
             for (ts,) in rows:
                 ts_tz = _tz(ts)
@@ -615,7 +643,8 @@ class OrdersTools:
                 .filter(
                     Order.order_purchase_timestamp >= cutoff,
                     Order.order_purchase_timestamp <= sim_clock,
-                ).all()
+                )
+                .all()
             )
             for (ts,) in all_rows:
                 ts_tz = _tz(ts)
@@ -632,7 +661,8 @@ class OrdersTools:
                     DataCoOrder.order_status.in_(_DATACO_CANCELLED),
                     DataCoOrder.order_date >= cutoff,
                     DataCoOrder.order_date <= sim_clock,
-                ).all()
+                )
+                .all()
             )
             for (ts,) in rows:
                 ts_tz = _tz(ts)
@@ -645,7 +675,8 @@ class OrdersTools:
                 .filter(
                     DataCoOrder.order_date >= cutoff,
                     DataCoOrder.order_date <= sim_clock,
-                ).all()
+                )
+                .all()
             )
             for (ts,) in all_rows:
                 ts_tz = _tz(ts)
@@ -656,7 +687,7 @@ class OrdersTools:
             logger.debug(f"DataCo cancellation history: {e}")
 
         all_days = sorted(set(list(cancelled_by_day.keys()) + list(total_by_day.keys())))
-        daily_rates: List[float] = []
+        daily_rates: list[float] = []
         series = []
         for d in all_days:
             tot = total_by_day.get(d, 0)
@@ -709,8 +740,8 @@ class OrdersTools:
     @staticmethod
     def get_fulfillment_performance(
         limit: int = 3000,
-        db: Optional[Session] = None,
-    ) -> Dict[str, Any]:
+        db: Session | None = None,
+    ) -> dict[str, Any]:
         """
         Profiles delivery times and delay margins empirically for orders completed up to simulated clock T.
         SLA health is derived strictly from the delay margin distribution.
@@ -724,8 +755,8 @@ class OrdersTools:
             }
 
         sim_clock = get_simulated_clock(db)
-        delivery_days: List[float] = []
-        delay_margins: List[float] = []
+        delivery_days: list[float] = []
+        delay_margins: list[float] = []
 
         try:
             rows = (
@@ -830,8 +861,8 @@ class OrdersTools:
     def detect_order_anomalies(
         days: int = 90,
         limit: int = 5,
-        db: Optional[Session] = None,
-    ) -> List[Dict[str, Any]]:
+        db: Session | None = None,
+    ) -> list[dict[str, Any]]:
         """
         Detects daily order volume anomalies from observed daily counts up to simulated clock T.
         Uses Tukey outlier fences or modified Z-scores.
@@ -852,23 +883,25 @@ class OrdersTools:
         recent_dates = dates[-3:] if len(dates) > 5 else dates
 
         anomalies = []
-        for val, date in zip(recent, recent_dates):
+        for val, date in zip(recent, recent_dates, strict=False):
             result = _anomaly_detector.evaluate_sample(
                 observed_value=val,
                 historical_samples=baseline,
                 metric_name="daily_order_count",
             )
             if result and result.is_anomaly:
-                anomalies.append({
-                    "date": date,
-                    "observed_count": int(val),
-                    "expected_baseline": result.expected_baseline,
-                    "deviation": result.deviation,
-                    "anomaly_score": result.anomaly_score,
-                    "detection_method": result.detection_method,
-                    "is_anomaly": True,
-                    "data_status": DataCategory.CALCULATED.value,
-                })
+                anomalies.append(
+                    {
+                        "date": date,
+                        "observed_count": int(val),
+                        "expected_baseline": result.expected_baseline,
+                        "deviation": result.deviation,
+                        "anomaly_score": result.anomaly_score,
+                        "detection_method": result.detection_method,
+                        "is_anomaly": True,
+                        "data_status": DataCategory.CALCULATED.value,
+                    }
+                )
 
         anomalies.sort(key=lambda x: x["anomaly_score"], reverse=True)
         return anomalies[:limit]
@@ -879,8 +912,8 @@ class OrdersTools:
     @staticmethod
     def forecast_order_volume(
         days: int = 90,
-        db: Optional[Session] = None,
-    ) -> Optional[Dict[str, Any]]:
+        db: Session | None = None,
+    ) -> dict[str, Any] | None:
         """
         Forecasts daily order volume from observed time series up to simulated clock T.
         Derives trend direction from linear regression slope t-statistic.
@@ -915,7 +948,7 @@ class OrdersTools:
                 if den > 0:
                     slope = sum((x[i] - x_m) * (count_series[i] - y_m) for i in range(n)) / den
                     res = [(count_series[i] - (y_m + slope * (x[i] - x_m))) for i in range(n)]
-                    rss = sum(r ** 2 for r in res)
+                    rss = sum(r**2 for r in res)
                     s_err = math.sqrt(rss / (n - 2)) if n > 2 else 0.0
                     se_slope = s_err / math.sqrt(den) if den > 0 and s_err > 0 else 0.0
                     if se_slope > 0:
@@ -945,8 +978,8 @@ class OrdersTools:
     @staticmethod
     def forecast_cancellations(
         days: int = 90,
-        db: Optional[Session] = None,
-    ) -> Optional[Dict[str, Any]]:
+        db: Session | None = None,
+    ) -> dict[str, Any] | None:
         """
         Forecasts cancellation rate from observed time series up to simulated clock T.
         """
@@ -991,7 +1024,9 @@ class OrdersTools:
 
             return {
                 "predicted_cancellation_rate_pct": round(predicted_rate, 3),
-                "lower_bound_rate": round(max(0.0, result.lower_bound), 3) if result.lower_bound is not None else None,
+                "lower_bound_rate": (
+                    round(max(0.0, result.lower_bound), 3) if result.lower_bound is not None else None
+                ),
                 "upper_bound_rate": round(result.upper_bound, 3) if result.upper_bound is not None else None,
                 "predicted_cancellations": predicted_cancellations,
                 "lower_bound_cancellations": _count_from_rate(result.lower_bound),
@@ -1010,19 +1045,20 @@ class OrdersTools:
     # 11. analyze_status_transitions
     # ──────────────────────────────────────────────────────────────────────────
     @staticmethod
-    def analyze_status_transitions(db: Optional[Session] = None) -> Dict[str, Any]:
+    def analyze_status_transitions(db: Session | None = None) -> dict[str, Any]:
         """Counts orders at each lifecycle stage and identifies top aging orders observed up to clock T."""
         if db is None:
             return {}
         sim_clock = get_simulated_clock(db)
-        transition_counts: Dict[str, int] = {}
-        stuck_pending: List[Dict] = []
+        transition_counts: dict[str, int] = {}
+        stuck_pending: list[dict] = []
 
         try:
             olist_transitions = dict(
                 db.query(Order.order_status, func.count(Order.order_id))
                 .filter(Order.order_purchase_timestamp <= sim_clock)
-                .group_by(Order.order_status).all()
+                .group_by(Order.order_status)
+                .all()
             )
             for st, cnt in olist_transitions.items():
                 if st:
@@ -1041,12 +1077,14 @@ class OrdersTools:
             for r in oldest_pending:
                 ts_tz = _tz(r.order_purchase_timestamp)
                 age_h = (sim_clock - ts_tz).total_seconds() / 3600.0 if ts_tz else None
-                stuck_pending.append({
-                    "order_id": str(r.order_id),
-                    "status": str(r.order_status),
-                    "age_hours": round(age_h, 1) if age_h is not None else None,
-                    "source": "olist",
-                })
+                stuck_pending.append(
+                    {
+                        "order_id": str(r.order_id),
+                        "status": str(r.order_status),
+                        "age_hours": round(age_h, 1) if age_h is not None else None,
+                        "source": "olist",
+                    }
+                )
         except Exception as e:
             logger.debug(f"Olist transitions note: {e}")
 
@@ -1054,7 +1092,8 @@ class OrdersTools:
             dc_transitions = dict(
                 db.query(DataCoOrder.order_status, func.count(DataCoOrder.order_id))
                 .filter(DataCoOrder.order_date <= sim_clock)
-                .group_by(DataCoOrder.order_status).all()
+                .group_by(DataCoOrder.order_status)
+                .all()
             )
             for st, cnt in dc_transitions.items():
                 if st:
@@ -1073,12 +1112,14 @@ class OrdersTools:
             for r in oldest_dc:
                 ts_tz = _tz(r.order_date)
                 age_h = (sim_clock - ts_tz).total_seconds() / 3600.0 if ts_tz else None
-                stuck_pending.append({
-                    "order_id": str(r.order_id),
-                    "status": str(r.order_status),
-                    "age_hours": round(age_h, 1) if age_h is not None else None,
-                    "source": "dataco",
-                })
+                stuck_pending.append(
+                    {
+                        "order_id": str(r.order_id),
+                        "status": str(r.order_status),
+                        "age_hours": round(age_h, 1) if age_h is not None else None,
+                        "source": "dataco",
+                    }
+                )
         except Exception as e:
             logger.debug(f"DataCo transitions note: {e}")
 
@@ -1093,12 +1134,13 @@ class OrdersTools:
     # 12. lookup_order
     # ──────────────────────────────────────────────────────────────────────────
     @staticmethod
-    def lookup_order(order_id: str, db: Optional[Session] = None) -> Optional[OrderDetail]:
+    def lookup_order(order_id: str, db: Session | None = None) -> OrderDetail | None:
         """
         Retrieves order details for an order observed up to simulated clock time T.
         Includes fallback search in broader database if placed past current simulated clock.
         """
         from app.database.session import SessionLocal
+
         should_close = False
         if db is None:
             db = SessionLocal()
@@ -1111,7 +1153,9 @@ class OrdersTools:
             # so any 6+ char prefix is effectively unique) — this lets a truncated id
             # shown earlier in a conversation (e.g. "#7d09831e") still resolve on a
             # follow-up question, not just the full id.
-            id_filter = Order.order_id.ilike(f"{clean_id}%") if len(clean_id) >= 6 else Order.order_id.ilike(clean_id)
+            id_filter = (
+                Order.order_id.ilike(f"{clean_id}%") if len(clean_id) >= 6 else Order.order_id.ilike(clean_id)
+            )
 
             # 1. Try Olist (first with simulated clock, then without for maximum user helpfulness)
             for filter_clock in [True, False]:
@@ -1120,12 +1164,20 @@ class OrdersTools:
                     q = q.filter(Order.order_purchase_timestamp <= sim_clock)
                 o = q.first()
                 if o:
-                    cust = db.query(Customer).filter(Customer.customer_id == o.customer_id).first() if o.customer_id else None
+                    cust = (
+                        db.query(Customer).filter(Customer.customer_id == o.customer_id).first()
+                        if o.customer_id
+                        else None
+                    )
                     items_raw = db.query(OrderItem).filter(OrderItem.order_id == o.order_id).all()
                     items = []
                     for it in items_raw:
                         p = db.query(Product).filter(Product.product_id == it.product_id).first()
-                        p_name = f"Product {str(it.product_id)[:8]} ({p.product_category_name})" if p and p.product_category_name else f"Product {str(it.product_id)[:8]}"
+                        p_name = (
+                            f"Product {str(it.product_id)[:8]} ({p.product_category_name})"
+                            if p and p.product_category_name
+                            else f"Product {str(it.product_id)[:8]}"
+                        )
                         items.append(
                             OrderItemDetail(
                                 product_id=str(it.product_id),
@@ -1133,21 +1185,37 @@ class OrdersTools:
                                 quantity=1,
                                 price=float(it.price or 0.0),
                                 freight_value=float(it.freight_value or 0.0),
-                                shipping_limit_date=it.shipping_limit_date.isoformat() if it.shipping_limit_date else None,
+                                shipping_limit_date=(
+                                    it.shipping_limit_date.isoformat() if it.shipping_limit_date else None
+                                ),
                                 seller_id=str(it.seller_id) if it.seller_id else None,
                                 product_category=p.product_category_name if p else None,
                                 product_photos_qty=p.product_photos_qty if p else None,
                                 product_name_length=p.product_name_lenght if p else None,
                                 product_description_length=p.product_description_lenght if p else None,
-                                product_weight_g=float(p.product_weight_g) if p and p.product_weight_g else None,
-                                product_length_cm=float(p.product_length_cm) if p and p.product_length_cm else None,
-                                product_height_cm=float(p.product_height_cm) if p and p.product_height_cm else None,
-                                product_width_cm=float(p.product_width_cm) if p and p.product_width_cm else None,
+                                product_weight_g=(
+                                    float(p.product_weight_g) if p and p.product_weight_g else None
+                                ),
+                                product_length_cm=(
+                                    float(p.product_length_cm) if p and p.product_length_cm else None
+                                ),
+                                product_height_cm=(
+                                    float(p.product_height_cm) if p and p.product_height_cm else None
+                                ),
+                                product_width_cm=(
+                                    float(p.product_width_cm) if p and p.product_width_cm else None
+                                ),
                             )
                         )
                     # Full payment breakdown (sequential rows, type, installments, value)
                     from app.models.olist import OrderPayment
-                    pmts = db.query(OrderPayment).filter(OrderPayment.order_id == o.order_id).order_by(OrderPayment.payment_sequential).all()
+
+                    pmts = (
+                        db.query(OrderPayment)
+                        .filter(OrderPayment.order_id == o.order_id)
+                        .order_by(OrderPayment.payment_sequential)
+                        .all()
+                    )
                     payments = [
                         OrderPaymentDetail(
                             payment_sequential=int(p.payment_sequential or 1),
@@ -1162,31 +1230,65 @@ class OrdersTools:
                         total = sum(p.payment_value for p in payments)
                     # Full review row (score, title, message, creation/answer timestamps)
                     rev = db.query(OrderReview).filter(OrderReview.order_id == o.order_id).first()
-                    review = OrderReviewDetail(
-                        review_id=str(rev.review_id) if rev and rev.review_id else None,
-                        review_score=int(rev.review_score) if rev and rev.review_score is not None else None,
-                        review_comment_title=rev.review_comment_title if rev else None,
-                        review_comment_message=rev.review_comment_message if rev else None,
-                        review_creation_date=rev.review_creation_date.isoformat() if rev and rev.review_creation_date else None,
-                        review_answer_timestamp=rev.review_answer_timestamp.isoformat() if rev and rev.review_answer_timestamp else None,
-                    ) if rev else None
+                    review = (
+                        OrderReviewDetail(
+                            review_id=str(rev.review_id) if rev and rev.review_id else None,
+                            review_score=(
+                                int(rev.review_score) if rev and rev.review_score is not None else None
+                            ),
+                            review_comment_title=rev.review_comment_title if rev else None,
+                            review_comment_message=rev.review_comment_message if rev else None,
+                            review_creation_date=(
+                                rev.review_creation_date.isoformat()
+                                if rev and rev.review_creation_date
+                                else None
+                            ),
+                            review_answer_timestamp=(
+                                rev.review_answer_timestamp.isoformat()
+                                if rev and rev.review_answer_timestamp
+                                else None
+                            ),
+                        )
+                        if rev
+                        else None
+                    )
                     return OrderDetail(
                         order_id=str(o.order_id),
                         customer_id=str(o.customer_id or "unknown"),
-                        customer_unique_id=str(cust.customer_unique_id) if cust and cust.customer_unique_id else None,
+                        customer_unique_id=(
+                            str(cust.customer_unique_id) if cust and cust.customer_unique_id else None
+                        ),
                         customer_city=cust.customer_city if cust else None,
                         customer_state=cust.customer_state if cust else None,
-                        customer_zip_code_prefix=int(cust.customer_zip_code_prefix) if cust and cust.customer_zip_code_prefix else None,
+                        customer_zip_code_prefix=(
+                            int(cust.customer_zip_code_prefix)
+                            if cust and cust.customer_zip_code_prefix
+                            else None
+                        ),
                         status=str(o.order_status),
                         total=round(total, 2),
                         items=items,
                         payments=payments,
                         review=review,
-                        purchase_timestamp=o.order_purchase_timestamp.isoformat() if o.order_purchase_timestamp else None,
+                        purchase_timestamp=(
+                            o.order_purchase_timestamp.isoformat() if o.order_purchase_timestamp else None
+                        ),
                         approved_at=o.order_approved_at.isoformat() if o.order_approved_at else None,
-                        delivered_carrier_date=o.order_delivered_carrier_date.isoformat() if o.order_delivered_carrier_date else None,
-                        delivered_customer_date=o.order_delivered_customer_date.isoformat() if o.order_delivered_customer_date else None,
-                        estimated_delivery_date=o.order_estimated_delivery_date.isoformat() if o.order_estimated_delivery_date else None,
+                        delivered_carrier_date=(
+                            o.order_delivered_carrier_date.isoformat()
+                            if o.order_delivered_carrier_date
+                            else None
+                        ),
+                        delivered_customer_date=(
+                            o.order_delivered_customer_date.isoformat()
+                            if o.order_delivered_customer_date
+                            else None
+                        ),
+                        estimated_delivery_date=(
+                            o.order_estimated_delivery_date.isoformat()
+                            if o.order_estimated_delivery_date
+                            else None
+                        ),
                         tracking_number=f"BR-{str(o.order_id)[:8].upper()}",
                     )
 
@@ -1216,7 +1318,11 @@ class OrdersTools:
                             ],
                             purchase_timestamp=dc.order_date.isoformat() if dc.order_date else None,
                             delivered_carrier_date=dc.shipping_date.isoformat() if dc.shipping_date else None,
-                            delivered_customer_date=dc.shipping_date.isoformat() if dc.shipping_date and dc.order_status in _DATACO_COMPLETED else None,
+                            delivered_customer_date=(
+                                dc.shipping_date.isoformat()
+                                if dc.shipping_date and dc.order_status in _DATACO_COMPLETED
+                                else None
+                            ),
                             estimated_delivery_date=None,
                             tracking_number=f"DC-{dc.order_id}",
                         )
@@ -1232,39 +1338,108 @@ class OrdersTools:
     # 13. lookup_product
     # ──────────────────────────────────────────────────────────────────────────
     @staticmethod
-    def lookup_product(product_id_or_keyword: str, db: Optional[Session] = None) -> Dict[str, Any]:
+    def lookup_product(product_id_or_keyword: str, db: Session | None = None) -> dict[str, Any]:
         """
         Look up product details by Product ID (UUID or integer) or category keyword.
         Searches Olist products and translations as well as DataCo order items.
         """
         from app.database.session import SessionLocal
+
         should_close = False
         if db is None:
             db = SessionLocal()
             should_close = True
 
         try:
-            clean_term = str(product_id_or_keyword).strip().replace("PROD-", "").replace("prod-", "").replace("#", "")
+            clean_term = (
+                str(product_id_or_keyword).strip().replace("PROD-", "").replace("prod-", "").replace("#", "")
+            )
             results = []
 
             # Candidate keywords: the whole phrase + each meaningful noun.
             _stop = {
-                "do", "you", "sell", "have", "has", "having", "any", "the", "and", "for", "are", "there",
-                "was", "with", "your", "our", "what", "which", "where", "when", "how", "why", "who", "that",
-                "this", "these", "those", "some", "many", "much", "cost", "costs", "price", "priced",
-                "return", "returns", "policy", "refund", "refunds", "order", "orders", "buy", "buying",
-                "purchase", "purchasing", "want", "need", "looking", "interested", "available", "availability",
-                "stock", "product", "products", "item", "items", "thing", "things", "get", "got", "show",
-                "tell", "give", "please", "can", "could", "would", "should", "will", "about", "help",
+                "do",
+                "you",
+                "sell",
+                "have",
+                "has",
+                "having",
+                "any",
+                "the",
+                "and",
+                "for",
+                "are",
+                "there",
+                "was",
+                "with",
+                "your",
+                "our",
+                "what",
+                "which",
+                "where",
+                "when",
+                "how",
+                "why",
+                "who",
+                "that",
+                "this",
+                "these",
+                "those",
+                "some",
+                "many",
+                "much",
+                "cost",
+                "costs",
+                "price",
+                "priced",
+                "return",
+                "returns",
+                "policy",
+                "refund",
+                "refunds",
+                "order",
+                "orders",
+                "buy",
+                "buying",
+                "purchase",
+                "purchasing",
+                "want",
+                "need",
+                "looking",
+                "interested",
+                "available",
+                "availability",
+                "stock",
+                "product",
+                "products",
+                "item",
+                "items",
+                "thing",
+                "things",
+                "get",
+                "got",
+                "show",
+                "tell",
+                "give",
+                "please",
+                "can",
+                "could",
+                "would",
+                "should",
+                "will",
+                "about",
+                "help",
             }
             words = [w for w in re.split(r"[^a-zA-Z]+", clean_term.lower()) if len(w) > 2 and w not in _stop]
-            keywords = [clean_term] + words
+            keywords = [clean_term, *words]
 
             pt_from_en: list = []
             for kw in keywords:
                 pt_from_en += [
-                    r[0] for r in db.query(CategoryTranslation.product_category_name)
-                    .filter(CategoryTranslation.product_category_name_english.ilike(f"%{kw}%")).all()
+                    r[0]
+                    for r in db.query(CategoryTranslation.product_category_name)
+                    .filter(CategoryTranslation.product_category_name_english.ilike(f"%{kw}%"))
+                    .all()
                 ]
             pt_from_en = list(set(pt_from_en))
 
@@ -1287,9 +1462,11 @@ class OrdersTools:
                 # English translation if present
                 cat_en = None
                 if p.product_category_name:
-                    trans = db.query(CategoryTranslation).filter(
-                        CategoryTranslation.product_category_name == p.product_category_name
-                    ).first()
+                    trans = (
+                        db.query(CategoryTranslation)
+                        .filter(CategoryTranslation.product_category_name == p.product_category_name)
+                        .first()
+                    )
                     if trans:
                         cat_en = trans.product_category_name_english
 
@@ -1317,38 +1494,47 @@ class OrdersTools:
                         avg_price = round(float(global_avg), 2) if global_avg else 0.0
                         price_benchmark = "GLOBAL_BENCHMARK" if global_avg else "NOT_ESTIMABLE"
 
-                results.append({
-                    "product_id": p.product_id,
-                    "source": "OLIST",
-                    "category": p.product_category_name or "Unknown",
-                    "category_english": cat_en or p.product_category_name or "Unknown",
-                    "weight_g": p.product_weight_g,
-                    "dimensions_cm": f"{p.product_length_cm or 0}x{p.product_width_cm or 0}x{p.product_height_cm or 0}",
-                    "photos_qty": p.product_photos_qty,
-                    "orders_count": len(items),
-                    "avg_price": avg_price,
-                    "price_benchmark": price_benchmark,
-                    "sample_orders": order_ids[:5],
-                })
+                results.append(
+                    {
+                        "product_id": p.product_id,
+                        "source": "OLIST",
+                        "category": p.product_category_name or "Unknown",
+                        "category_english": cat_en or p.product_category_name or "Unknown",
+                        "weight_g": p.product_weight_g,
+                        "dimensions_cm": f"{p.product_length_cm or 0}x{p.product_width_cm or 0}x{p.product_height_cm or 0}",
+                        "photos_qty": p.product_photos_qty,
+                        "orders_count": len(items),
+                        "avg_price": avg_price,
+                        "price_benchmark": price_benchmark,
+                        "sample_orders": order_ids[:5],
+                    }
+                )
 
             # 2. Check DataCo if table available
             if not results:
                 try:
-                    dc_items = db.query(DataCoOrderItem).filter(
-                        or_(
-                            DataCoOrderItem.product_name.ilike(f"%{clean_term}%"),
-                            DataCoOrderItem.category_name.ilike(f"%{clean_term}%"),
+                    dc_items = (
+                        db.query(DataCoOrderItem)
+                        .filter(
+                            or_(
+                                DataCoOrderItem.product_name.ilike(f"%{clean_term}%"),
+                                DataCoOrderItem.category_name.ilike(f"%{clean_term}%"),
+                            )
                         )
-                    ).limit(5).all()
+                        .limit(5)
+                        .all()
+                    )
                     for it in dc_items:
-                        results.append({
-                            "product_id": str(it.product_card_id),
-                            "source": "DATACO",
-                            "product_name": it.product_name,
-                            "category": it.category_name,
-                            "price": float(it.product_price or 0.0),
-                            "order_id": str(it.order_id),
-                        })
+                        results.append(
+                            {
+                                "product_id": str(it.product_card_id),
+                                "source": "DATACO",
+                                "product_name": it.product_name,
+                                "category": it.category_name,
+                                "price": float(it.product_price or 0.0),
+                                "order_id": str(it.order_id),
+                            }
+                        )
                 except Exception:
                     pass
 
@@ -1366,139 +1552,194 @@ class OrdersTools:
     # 14. search_orders
     # ──────────────────────────────────────────────────────────────────────────
     @staticmethod
-    def search_orders(query: str, db: Optional[Session] = None, limit: int = 5) -> Dict[str, Any]:
+    def search_orders(query: str, db: Session | None = None, limit: int = 5) -> dict[str, Any]:
         """
         Searches orders by product ID, customer ID, order status, or keyword.
         """
         from app.database.session import SessionLocal
+
         should_close = False
         if db is None:
             db = SessionLocal()
             should_close = True
 
         try:
-            clean_q = str(query).strip().lower().replace("cust-", "").replace("customer:", "").replace("customer id", "").strip()
+            clean_q = (
+                str(query)
+                .strip()
+                .lower()
+                .replace("cust-", "")
+                .replace("customer:", "")
+                .replace("customer id", "")
+                .strip()
+            )
             orders_found = []
 
             # 1. Check by Customer ID or Unique Customer ID in Olist
             linked_cust_ids = [
                 c.customer_id
-                for c in db.query(Customer.customer_id).filter(
+                for c in db.query(Customer.customer_id)
+                .filter(
                     or_(
                         Customer.customer_id == clean_q,
                         Customer.customer_unique_id == clean_q,
                         Customer.customer_id.ilike(f"{clean_q}%"),
                         Customer.customer_unique_id.ilike(f"{clean_q}%"),
                     )
-                ).all()
+                )
+                .all()
             ]
             if not linked_cust_ids:
                 linked_cust_ids = [clean_q]
 
-            cust_orders = db.query(Order).filter(
-                Order.customer_id.in_(linked_cust_ids)
-            ).limit(limit).all()
+            cust_orders = db.query(Order).filter(Order.customer_id.in_(linked_cust_ids)).limit(limit).all()
             for o in cust_orders:
-                orders_found.append({
-                    "order_id": o.order_id,
-                    "status": o.order_status,
-                    "purchase_date": o.order_purchase_timestamp.strftime("%Y-%m-%d") if o.order_purchase_timestamp else "N/A",
-                    "customer_id": o.customer_id,
-                })
+                orders_found.append(
+                    {
+                        "order_id": o.order_id,
+                        "status": o.order_status,
+                        "purchase_date": (
+                            o.order_purchase_timestamp.strftime("%Y-%m-%d")
+                            if o.order_purchase_timestamp
+                            else "N/A"
+                        ),
+                        "customer_id": o.customer_id,
+                    }
+                )
 
             # 2. Check by Customer ID in DataCo
             try:
                 cid_int = int(clean_q)
-                dc_cust_orders = db.query(DataCoOrder).filter(DataCoOrder.customer_id == cid_int).limit(limit).all()
+                dc_cust_orders = (
+                    db.query(DataCoOrder).filter(DataCoOrder.customer_id == cid_int).limit(limit).all()
+                )
                 for dc in dc_cust_orders:
-                    orders_found.append({
-                        "order_id": str(dc.order_id),
-                        "status": dc.order_status,
-                        "purchase_date": dc.order_date.strftime("%Y-%m-%d") if dc.order_date else "N/A",
-                        "total": float(dc.order_total or 0.0),
-                        "customer_id": str(dc.customer_id),
-                    })
+                    orders_found.append(
+                        {
+                            "order_id": str(dc.order_id),
+                            "status": dc.order_status,
+                            "purchase_date": dc.order_date.strftime("%Y-%m-%d") if dc.order_date else "N/A",
+                            "total": float(dc.order_total or 0.0),
+                            "customer_id": str(dc.customer_id),
+                        }
+                    )
             except ValueError:
                 pass
 
             # 3. Check if query matches a product ID in order_items
             if not orders_found:
-                items = db.query(OrderItem).filter(
-                    or_(
-                        OrderItem.product_id == clean_q,
-                        OrderItem.product_id.ilike(f"%{clean_q}%"),
+                items = (
+                    db.query(OrderItem)
+                    .filter(
+                        or_(
+                            OrderItem.product_id == clean_q,
+                            OrderItem.product_id.ilike(f"%{clean_q}%"),
+                        )
                     )
-                ).limit(limit).all()
+                    .limit(limit)
+                    .all()
+                )
 
                 if items:
                     for it in items:
                         o = db.query(Order).filter(Order.order_id == it.order_id).first()
                         if o:
-                            orders_found.append({
-                                "order_id": o.order_id,
-                                "status": o.order_status,
-                                "purchase_date": o.order_purchase_timestamp.strftime("%Y-%m-%d") if o.order_purchase_timestamp else "N/A",
-                                "price": float(it.price or 0.0),
-                                "product_id": it.product_id,
-                                "customer_id": o.customer_id,
-                            })
+                            orders_found.append(
+                                {
+                                    "order_id": o.order_id,
+                                    "status": o.order_status,
+                                    "purchase_date": (
+                                        o.order_purchase_timestamp.strftime("%Y-%m-%d")
+                                        if o.order_purchase_timestamp
+                                        else "N/A"
+                                    ),
+                                    "price": float(it.price or 0.0),
+                                    "product_id": it.product_id,
+                                    "customer_id": o.customer_id,
+                                }
+                            )
 
             # 4. Check if query matches an Order ID directly
             if not orders_found:
-                olist_ord = db.query(Order).filter(
-                    or_(Order.order_id == clean_q, Order.order_id.ilike(f"{clean_q}%"))
-                ).first()
+                olist_ord = (
+                    db.query(Order)
+                    .filter(or_(Order.order_id == clean_q, Order.order_id.ilike(f"{clean_q}%")))
+                    .first()
+                )
                 if olist_ord:
-                    orders_found.append({
-                        "order_id": olist_ord.order_id,
-                        "status": olist_ord.order_status,
-                        "purchase_date": olist_ord.order_purchase_timestamp.strftime("%Y-%m-%d") if olist_ord.order_purchase_timestamp else "N/A",
-                        "customer_id": olist_ord.customer_id,
-                    })
+                    orders_found.append(
+                        {
+                            "order_id": olist_ord.order_id,
+                            "status": olist_ord.order_status,
+                            "purchase_date": (
+                                olist_ord.order_purchase_timestamp.strftime("%Y-%m-%d")
+                                if olist_ord.order_purchase_timestamp
+                                else "N/A"
+                            ),
+                            "customer_id": olist_ord.customer_id,
+                        }
+                    )
                 else:
                     try:
                         oid_int = int(clean_q)
                         dc_ord = db.query(DataCoOrder).filter(DataCoOrder.order_id == oid_int).first()
                         if dc_ord:
-                            orders_found.append({
-                                "order_id": str(dc_ord.order_id),
-                                "status": dc_ord.order_status,
-                                "purchase_date": dc_ord.order_date.strftime("%Y-%m-%d") if dc_ord.order_date else "N/A",
-                                "total": float(dc_ord.order_total or 0.0),
-                                "customer_id": str(dc_ord.customer_id),
-                            })
+                            orders_found.append(
+                                {
+                                    "order_id": str(dc_ord.order_id),
+                                    "status": dc_ord.order_status,
+                                    "purchase_date": (
+                                        dc_ord.order_date.strftime("%Y-%m-%d") if dc_ord.order_date else "N/A"
+                                    ),
+                                    "total": float(dc_ord.order_total or 0.0),
+                                    "customer_id": str(dc_ord.customer_id),
+                                }
+                            )
                     except ValueError:
                         pass
 
             # 5. Check by status in Olist
             if not orders_found:
-                olist_status_orders = db.query(Order).filter(
-                    Order.order_status.ilike(f"%{clean_q}%")
-                ).limit(limit).all()
+                olist_status_orders = (
+                    db.query(Order).filter(Order.order_status.ilike(f"%{clean_q}%")).limit(limit).all()
+                )
                 for o in olist_status_orders:
-                    orders_found.append({
-                        "order_id": o.order_id,
-                        "status": o.order_status,
-                        "purchase_date": o.order_purchase_timestamp.strftime("%Y-%m-%d") if o.order_purchase_timestamp else "N/A",
-                        "customer_id": o.customer_id,
-                    })
+                    orders_found.append(
+                        {
+                            "order_id": o.order_id,
+                            "status": o.order_status,
+                            "purchase_date": (
+                                o.order_purchase_timestamp.strftime("%Y-%m-%d")
+                                if o.order_purchase_timestamp
+                                else "N/A"
+                            ),
+                            "customer_id": o.customer_id,
+                        }
+                    )
 
             # 6. Check DataCo by status or city
             if not orders_found:
-                dc_orders = db.query(DataCoOrder).filter(
-                    or_(
-                        DataCoOrder.order_status.ilike(f"%{clean_q}%"),
-                        DataCoOrder.customer_city.ilike(f"%{clean_q}%"),
+                dc_orders = (
+                    db.query(DataCoOrder)
+                    .filter(
+                        or_(
+                            DataCoOrder.order_status.ilike(f"%{clean_q}%"),
+                            DataCoOrder.customer_city.ilike(f"%{clean_q}%"),
+                        )
                     )
-                ).limit(limit).all()
+                    .limit(limit)
+                    .all()
+                )
                 for dc in dc_orders:
-                    orders_found.append({
-                        "order_id": str(dc.order_id),
-                        "status": dc.order_status,
-                        "purchase_date": dc.order_date.strftime("%Y-%m-%d") if dc.order_date else "N/A",
-                        "total": float(dc.order_total or 0.0),
-                        "customer_id": str(dc.customer_id),
-                    })
+                    orders_found.append(
+                        {
+                            "order_id": str(dc.order_id),
+                            "status": dc.order_status,
+                            "purchase_date": dc.order_date.strftime("%Y-%m-%d") if dc.order_date else "N/A",
+                            "total": float(dc.order_total or 0.0),
+                            "customer_id": str(dc.customer_id),
+                        }
+                    )
 
             return {
                 "status": "OK" if orders_found else "NOT_FOUND",
@@ -1514,11 +1755,12 @@ class OrdersTools:
     # 15. get_analytics_summary
     # ──────────────────────────────────────────────────────────────────────────
     @staticmethod
-    def get_analytics_summary(metric_name: str = "all", db: Optional[Session] = None) -> Dict[str, Any]:
+    def get_analytics_summary(metric_name: str = "all", db: Session | None = None) -> dict[str, Any]:
         """
         Calculates real-time summary analytics across the order pipeline.
         """
         from app.database.session import SessionLocal
+
         should_close = False
         if db is None:
             db = SessionLocal()
@@ -1554,9 +1796,11 @@ class OrdersTools:
     # 16. track_shipment
     # ──────────────────────────────────────────────────────────────────────────
     @staticmethod
-    def track_shipment(tracking_number_or_order_id: str, db: Optional[Session] = None) -> ShipmentTrackingResult:
+    def track_shipment(tracking_number_or_order_id: str, db: Session | None = None) -> ShipmentTrackingResult:
         """Tracks order shipment events observed up to simulated clock time T."""
-        clean_id = tracking_number_or_order_id.replace("TRK-", "").replace("BR-", "").replace("DC-", "").strip()
+        clean_id = (
+            tracking_number_or_order_id.replace("TRK-", "").replace("BR-", "").replace("DC-", "").strip()
+        )
         detail = OrdersTools.lookup_order(clean_id, db=db)
         if not detail:
             return ShipmentTrackingResult(
@@ -1567,28 +1811,34 @@ class OrdersTools:
                 events=[],
             )
 
-        events: List[ShipmentTrackingEvent] = []
+        events: list[ShipmentTrackingEvent] = []
         if detail.purchase_timestamp:
-            events.append(ShipmentTrackingEvent(
-                timestamp=detail.purchase_timestamp,
-                status="ORDER_PLACED",
-                location="Fulfillment Center",
-                description="Order verified and scheduled for warehouse packing.",
-            ))
+            events.append(
+                ShipmentTrackingEvent(
+                    timestamp=detail.purchase_timestamp,
+                    status="ORDER_PLACED",
+                    location="Fulfillment Center",
+                    description="Order verified and scheduled for warehouse packing.",
+                )
+            )
         if detail.delivered_carrier_date:
-            events.append(ShipmentTrackingEvent(
-                timestamp=detail.delivered_carrier_date,
-                status="IN_TRANSIT",
-                location="Logistics Hub",
-                description="Dispatched to regional transport hub.",
-            ))
+            events.append(
+                ShipmentTrackingEvent(
+                    timestamp=detail.delivered_carrier_date,
+                    status="IN_TRANSIT",
+                    location="Logistics Hub",
+                    description="Dispatched to regional transport hub.",
+                )
+            )
         if detail.delivered_customer_date:
-            events.append(ShipmentTrackingEvent(
-                timestamp=detail.delivered_customer_date,
-                status="DELIVERED",
-                location=f"{detail.customer_city or 'Destination'}, {detail.customer_state or 'ST'}",
-                description="Package successfully delivered to destination.",
-            ))
+            events.append(
+                ShipmentTrackingEvent(
+                    timestamp=detail.delivered_customer_date,
+                    status="DELIVERED",
+                    location=f"{detail.customer_city or 'Destination'}, {detail.customer_state or 'ST'}",
+                    description="Package successfully delivered to destination.",
+                )
+            )
 
         return ShipmentTrackingResult(
             order_id=detail.order_id,
@@ -1603,7 +1853,7 @@ class OrdersTools:
     # 17. check_return_eligibility
     # ──────────────────────────────────────────────────────────────────────────
     @staticmethod
-    def check_return_eligibility(order_id: str, db: Optional[Session] = None) -> ReturnEligibilityResult:
+    def check_return_eligibility(order_id: str, db: Session | None = None) -> ReturnEligibilityResult:
         """
         Verifies return eligibility based on delivery timestamp and simulated clock time T.
         Return window: 30 days from delivery.
@@ -1664,7 +1914,7 @@ class OrdersTools:
         )
 
     @staticmethod
-    def get_order_value_stats(db: Optional[Session] = None) -> Dict[str, Any]:
+    def get_order_value_stats(db: Session | None = None) -> dict[str, Any]:
         """
         Average order value, computed the standard way: total amount paid across
         all orders, divided by the number of orders — never per customer (that's
@@ -1684,11 +1934,12 @@ class OrdersTools:
             sim_clock = get_simulated_clock(db)
 
             olist_order_ids = [
-                r[0] for r in db.query(Order.order_id).filter(Order.order_purchase_timestamp <= sim_clock).all()
+                r[0]
+                for r in db.query(Order.order_id).filter(Order.order_purchase_timestamp <= sim_clock).all()
             ]
             olist_total = 0.0
             olist_count = 0
-            payment_counts: Dict[str, int] = {}
+            payment_counts: dict[str, int] = {}
             if olist_order_ids:
                 # per-order payment total (sums installment rows for the same order)
                 per_order = dict(
@@ -1705,10 +1956,14 @@ class OrdersTools:
                     .group_by(OrderPayment.payment_type)
                     .all()
                 ):
-                    payment_counts[method or "unknown"] = payment_counts.get(method or "unknown", 0) + int(cnt)
+                    payment_counts[method or "unknown"] = payment_counts.get(method or "unknown", 0) + int(
+                        cnt
+                    )
 
             dc_row = (
-                db.query(func.count(DataCoOrder.order_id), func.coalesce(func.sum(DataCoOrder.order_total), 0.0))
+                db.query(
+                    func.count(DataCoOrder.order_id), func.coalesce(func.sum(DataCoOrder.order_total), 0.0)
+                )
                 .filter(DataCoOrder.order_date <= sim_clock)
                 .first()
             )
@@ -1720,7 +1975,9 @@ class OrdersTools:
                     .group_by(DataCoOrder.payment_type)
                     .all()
                 ):
-                    payment_counts[method or "unknown"] = payment_counts.get(method or "unknown", 0) + int(cnt)
+                    payment_counts[method or "unknown"] = payment_counts.get(method or "unknown", 0) + int(
+                        cnt
+                    )
 
             total_orders = olist_count + dc_count
             total_value = olist_total + dc_total
@@ -1738,9 +1995,14 @@ class OrdersTools:
                 "average_order_value": round(total_value / total_orders, 2),
                 "top_payment_method": top_method,
                 "top_payment_method_count": top_method_count,
-                "top_payment_method_share_pct": round(top_method_count / total_orders * 100, 2) if top_method else 0.0,
+                "top_payment_method_share_pct": (
+                    round(top_method_count / total_orders * 100, 2) if top_method else 0.0
+                ),
                 "payment_method_breakdown": sorted(
-                    [{"payment_method": k, "orders": v, "share_pct": round(v / total_orders * 100, 2)} for k, v in payment_counts.items()],
+                    [
+                        {"payment_method": k, "orders": v, "share_pct": round(v / total_orders * 100, 2)}
+                        for k, v in payment_counts.items()
+                    ],
                     key=lambda r: -r["orders"],
                 ),
             }
@@ -1749,7 +2011,7 @@ class OrdersTools:
                 db.close()
 
     @staticmethod
-    def get_orders_by_period(group_by: str = "month", db: Optional[Session] = None) -> Dict[str, Any]:
+    def get_orders_by_period(group_by: str = "month", db: Session | None = None) -> dict[str, Any]:
         """
         Order counts grouped by calendar month ("2017-09") or year ("2017"),
         blending Olist + DataCo, up to the simulated clock — answers "how many
@@ -1764,7 +2026,7 @@ class OrdersTools:
         try:
             sim_clock = get_simulated_clock(db)
             fmt = "%Y" if group_by == "year" else "%Y-%m"
-            counts: Dict[str, int] = {}
+            counts: dict[str, int] = {}
 
             order_bucket = period_bucket(db, Order.order_purchase_timestamp, fmt)
             for period, cnt in (
@@ -1806,8 +2068,9 @@ class OrdersTools:
                 db.close()
 
     @staticmethod
-    def initiate_return(order_id: str, reason: str, db: Optional[Session] = None) -> ReturnRequestResult:
+    def initiate_return(order_id: str, reason: str, db: Session | None = None) -> ReturnRequestResult:
         import uuid
+
         detail = OrdersTools.lookup_order(order_id, db=db)
         amount = detail.total if detail else 0.0
         rma_id = f"RMA-{uuid.uuid4().hex[:8].upper()}"
@@ -1827,6 +2090,7 @@ class OrdersTools:
 # Interactive LangChain Tools
 # ──────────────────────────────────────────────────────────────────────────────
 
+
 @tool
 def tool_lookup_order(order_id: str) -> str:
     """Look up an order by its ID (e.g. Olist UUID or DataCo integer ID).
@@ -1836,6 +2100,7 @@ def tool_lookup_order(order_id: str) -> str:
     if not detail:
         # Cross-table entity resolution fallback (customer, seller, product, review)
         from app.agents.entity_resolver import entity_resolver
+
         resolved = entity_resolver.resolve_entity(clean_id)
         if resolved.get("status") == "FOUND":
             return resolved.get("summary", "")
@@ -1849,18 +2114,22 @@ def tool_lookup_order(order_id: str) -> str:
             return tool_search_orders.invoke({"query": clean_id})
         return f"❌ Order #{order_id} not found in database."
 
-    items_str = "\n".join(
-        f"  • {it.product_name} x{it.quantity} — R${it.price:.2f}"
-        + (f" + freight R${it.freight_value:.2f}" if it.freight_value else "")
-        + (f", ship-by {it.shipping_limit_date[:10]}" if it.shipping_limit_date else "")
-        + (f", seller #{it.seller_id[:8]}" if it.seller_id else "")
-        + (
-            f" [{it.product_weight_g:g}g {it.product_length_cm:g}x{it.product_height_cm:g}x{it.product_width_cm:g}cm, {it.product_photos_qty} photo(s)]"
-            if it.product_weight_g
-            else ""
+    items_str = (
+        "\n".join(
+            f"  • {it.product_name} x{it.quantity} — R${it.price:.2f}"
+            + (f" + freight R${it.freight_value:.2f}" if it.freight_value else "")
+            + (f", ship-by {it.shipping_limit_date[:10]}" if it.shipping_limit_date else "")
+            + (f", seller #{it.seller_id[:8]}" if it.seller_id else "")
+            + (
+                f" [{it.product_weight_g:g}g {it.product_length_cm:g}x{it.product_height_cm:g}x{it.product_width_cm:g}cm, {it.product_photos_qty} photo(s)]"
+                if it.product_weight_g
+                else ""
+            )
+            for it in detail.items
         )
-        for it in detail.items
-    ) if detail.items else "  • 1x Order fulfillment package (itemized details pending in active batch)"
+        if detail.items
+        else "  • 1x Order fulfillment package (itemized details pending in active batch)"
+    )
 
     payments_str = ""
     if detail.payments:
@@ -1921,9 +2190,15 @@ def tool_lookup_product(product_id_or_keyword: str) -> str:
     for i, p in enumerate(res["products"], 1):
         cat = p.get("category_english") or p.get("category", "General")
         price_str = f"R${p['avg_price']:.2f}" if "avg_price" in p else (f"R${p.get('price', 0):.2f}")
-        orders_str = ", ".join(f"`{oid[:8]}...`" for oid in p.get("sample_orders", [])) if p.get("sample_orders") else "None in active stream"
+        orders_str = (
+            ", ".join(f"`{oid[:8]}...`" for oid in p.get("sample_orders", []))
+            if p.get("sample_orders")
+            else "None in active stream"
+        )
         orders_cnt = p.get("orders_count", 0)
-        sales_status = f"Units Sold: **{orders_cnt}**" if orders_cnt > 0 else "Status: **Active in Catalog** (In Stock)"
+        sales_status = (
+            f"Units Sold: **{orders_cnt}**" if orders_cnt > 0 else "Status: **Active in Catalog** (In Stock)"
+        )
         price_label = "Avg Price" if orders_cnt > 0 else "Benchmark Price"
         parts.append(
             f"**{i}. Product ID:** `{p['product_id']}`\n"
@@ -1949,7 +2224,11 @@ def tool_search_orders(query: str) -> str:
             f"   • Status: **{o['status'].upper()}**\n"
             f"   • Date: {o.get('purchase_date', 'N/A')}\n"
             + (f"   • Product: `{o['product_id']}`\n" if "product_id" in o else "")
-            + (f"   • Total/Price: R${o.get('price') or o.get('total', 0):.2f}\n" if "price" in o or "total" in o else "")
+            + (
+                f"   • Total/Price: R${o.get('price') or o.get('total', 0):.2f}\n"
+                if "price" in o or "total" in o
+                else ""
+            )
         )
     return "\n".join(parts)
 
@@ -1958,11 +2237,11 @@ def tool_search_orders(query: str) -> str:
 def tool_get_analytics_summary(metric_name: str = "all") -> str:
     """Retrieve high-level pipeline analytics: delay rate, SLA health, processing times, backlog aging, and volume."""
     s = OrdersTools.get_analytics_summary(metric_name)
-    avg_p = f"{s['avg_processing_hours']:.1f}h" if s.get('avg_processing_hours') is not None else "N/A"
-    med_p = f"{s['median_processing_hours']:.1f}h" if s.get('median_processing_hours') is not None else "N/A"
-    p90_p = f"{s['p90_processing_hours']:.1f}h" if s.get('p90_processing_hours') is not None else "N/A"
-    avg_d = f"{s['avg_delivery_days']:.1f} days" if s.get('avg_delivery_days') is not None else "N/A"
-    med_d = f"{s['median_delivery_days']:.1f} days" if s.get('median_delivery_days') is not None else "N/A"
+    avg_p = f"{s['avg_processing_hours']:.1f}h" if s.get("avg_processing_hours") is not None else "N/A"
+    med_p = f"{s['median_processing_hours']:.1f}h" if s.get("median_processing_hours") is not None else "N/A"
+    p90_p = f"{s['p90_processing_hours']:.1f}h" if s.get("p90_processing_hours") is not None else "N/A"
+    avg_d = f"{s['avg_delivery_days']:.1f} days" if s.get("avg_delivery_days") is not None else "N/A"
+    med_d = f"{s['median_delivery_days']:.1f} days" if s.get("median_delivery_days") is not None else "N/A"
 
     return (
         f"📊 **Orders Pipeline Analytics Snapshot**\n\n"
@@ -2003,12 +2282,17 @@ def tool_get_orders_by_period(group_by: str = "month") -> str:
     if s.get("status") != "OK":
         return "Not enough order data has been observed yet to break this down by period."
     ranked = sorted(s["periods"], key=lambda r: -r["order_count"])[:10]
-    lines = [f"Order counts by {s['group_by']} (top {len(ranked)} by volume, {s['sample_count']:,} orders total):"]
+    lines = [
+        f"Order counts by {s['group_by']} (top {len(ranked)} by volume, {s['sample_count']:,} orders total):"
+    ]
     for row in ranked:
         lines.append(f"- {row['period']}: {row['order_count']:,} orders")
     chrono = sorted(s["periods"], key=lambda r: r["period"])
     lines.append("")
-    lines.append(f"Chronological ({s['group_by']}): " + ", ".join(f"{r['period']}={r['order_count']:,}" for r in chrono))
+    lines.append(
+        f"Chronological ({s['group_by']}): "
+        + ", ".join(f"{r['period']}={r['order_count']:,}" for r in chrono)
+    )
     return "\n".join(lines)
 
 
@@ -2020,10 +2304,10 @@ def tool_track_shipment(tracking_number_or_order_id: str) -> str:
     if res.status == "NOT_FOUND":
         return f"❌ Shipment #{tracking_number_or_order_id} not found."
 
-    events_str = "\n".join(
-        f"  • {e.timestamp[:10]} — [{e.status}] {e.location}: {e.description}"
-        for e in res.events
-    ) or "  • Package registered with carrier."
+    events_str = (
+        "\n".join(f"  • {e.timestamp[:10]} — [{e.status}] {e.location}: {e.description}" for e in res.events)
+        or "  • Package registered with carrier."
+    )
 
     return (
         f"🚚 **{res.carrier}** — `{res.tracking_number}`\n"
@@ -2076,16 +2360,17 @@ def tool_initiate_return(order_id: str, reason: str, confirm: bool = False) -> s
             f"💰 Refund Amount: **R${ret.refund_amount:.2f}**\n"
             f"📋 Reason: {ret.reason}\n"
             f"📌 Status: **{ret.status}**\n\n"
-            f"ℹ️ {ret.instructions}"
+            f"Note: {ret.instructions}"
         )
     except Exception as e:
-        return f"❌ Failed to initiate return: {str(e)}"
+        return f"❌ Failed to initiate return: {e!s}"
 
 
 @tool
 def tool_lookup_customer(customer_id: str) -> str:
     """Look up customer details, location, lifetime spend, and all associated orders using customer_id or customer_unique_id."""
     from app.agents.entity_resolver import entity_resolver
+
     clean = str(customer_id).strip().replace("#", "").replace("CUST-", "").replace("cust-", "")
     res = entity_resolver.resolve_entity(clean)
     if res.get("status") == "FOUND" and res.get("entity_type") == "customer":
@@ -2102,6 +2387,7 @@ def tool_lookup_customer(customer_id: str) -> str:
 def tool_resolve_entity(entity_id: str) -> str:
     """Universal ID inspector: checks orders, customers, products, sellers, and reviews to identify what table an ID belongs to and returns all linked records."""
     from app.agents.entity_resolver import entity_resolver
+
     res = entity_resolver.resolve_entity(entity_id)
     return res.get("summary", f"❌ No record matching ID '{entity_id}' found across any database table.")
 
@@ -2122,17 +2408,19 @@ def tool_order_analytics(metric: str) -> str:
     - "delivery_time_year"  : average purchase-to-delivery days for delivered orders, per year
     - "top_months"          : 10 highest-volume months and their % share of all orders
     """
-    from app.models.olist import Order, OrderItem, OrderPayment
     from app.database.session import SessionLocal
+    from app.models.olist import Order, OrderItem, OrderPayment
 
     db = SessionLocal()
     try:
         clock = get_simulated_clock(db)
         base = db.query(Order).filter(Order.order_purchase_timestamp <= clock)
 
-        if metric == "monthly_growth" or metric == "top_months":
+        if metric in ("monthly_growth", "top_months"):
             rows = (
-                base.with_entities(func.strftime("%Y-%m", Order.order_purchase_timestamp), func.count(Order.order_id))
+                base.with_entities(
+                    func.strftime("%Y-%m", Order.order_purchase_timestamp), func.count(Order.order_id)
+                )
                 .group_by(func.strftime("%Y-%m", Order.order_purchase_timestamp))
                 .order_by(func.strftime("%Y-%m", Order.order_purchase_timestamp))
                 .all()
@@ -2150,11 +2438,16 @@ def tool_order_analytics(metric: str) -> str:
                 growth.append((months[i][0], cur, g))
             ups = sorted((g for g in growth if g[2] is not None), key=lambda x: -x[2])[:3]
             downs = sorted((g for g in growth if g[2] is not None), key=lambda x: x[2])[:3]
-            lines = [f"{m}: {c:,} ({'+' if g is not None and g > 0 else ''}{g}% MoM)" for m, c, g in growth[-6:]]
+            lines = [
+                f"{m}: {c:,} ({'+' if g is not None and g > 0 else ''}{g}% MoM)" for m, c, g in growth[-6:]
+            ]
             return (
-                "Monthly order volume (recent): " + " | ".join(lines)
-                + "\nLargest increases: " + (", ".join(f"{m} +{g}%" for m, _, g in ups) or "none")
-                + "\nLargest decreases: " + (", ".join(f"{m} {g}%" for m, _, g in downs) or "none")
+                "Monthly order volume (recent): "
+                + " | ".join(lines)
+                + "\nLargest increases: "
+                + (", ".join(f"{m} +{g}%" for m, _, g in ups) or "none")
+                + "\nLargest decreases: "
+                + (", ".join(f"{m} {g}%" for m, _, g in downs) or "none")
             )
 
         if metric == "aov_by_year":
@@ -2175,7 +2468,11 @@ def tool_order_analytics(metric: str) -> str:
 
         if metric == "status_breakdown":
             total = base.count() or 1
-            rows = base.with_entities(Order.order_status, func.count(Order.order_id)).group_by(Order.order_status).all()
+            rows = (
+                base.with_entities(Order.order_status, func.count(Order.order_id))
+                .group_by(Order.order_status)
+                .all()
+            )
             parts = ", ".join(f"{s} {c / total * 100:.1f}%" for s, c in sorted(rows, key=lambda r: -r[1]))
             return f"Order status distribution across {total:,} orders: {parts}"
 
@@ -2185,17 +2482,25 @@ def tool_order_analytics(metric: str) -> str:
                 n_orders = (
                     db.query(func.count(func.distinct(OrderItem.order_id)))
                     .join(Order, Order.order_id == OrderItem.order_id)
-                    .filter(Order.order_purchase_timestamp <= clock, func.strftime("%Y", Order.order_purchase_timestamp) == y)
-                    .scalar() or 1
+                    .filter(
+                        Order.order_purchase_timestamp <= clock,
+                        func.strftime("%Y", Order.order_purchase_timestamp) == y,
+                    )
+                    .scalar()
+                    or 1
                 )
                 n_items = (
                     db.query(func.count(OrderItem.order_item_id))
                     .join(Order, Order.order_id == OrderItem.order_id)
-                    .filter(Order.order_purchase_timestamp <= clock, func.strftime("%Y", Order.order_purchase_timestamp) == y)
-                    .scalar() or 0
+                    .filter(
+                        Order.order_purchase_timestamp <= clock,
+                        func.strftime("%Y", Order.order_purchase_timestamp) == y,
+                    )
+                    .scalar()
+                    or 0
                 )
                 out.append(f"{y} {n_items / n_orders:.2f}")
-            return f"Average items per order — " + " vs ".join(out)
+            return "Average items per order — " + " vs ".join(out)
 
         if metric == "payments_by_type":
             total_val = db.query(func.coalesce(func.sum(OrderPayment.payment_value), 0.0)).scalar() or 1.0
@@ -2218,7 +2523,11 @@ def tool_order_analytics(metric: str) -> str:
 
         if metric == "multi_payment":
             rows = (
-                db.query(OrderPayment.order_id, func.count(OrderPayment.payment_sequential), func.sum(OrderPayment.payment_value))
+                db.query(
+                    OrderPayment.order_id,
+                    func.count(OrderPayment.payment_sequential),
+                    func.sum(OrderPayment.payment_value),
+                )
                 .group_by(OrderPayment.order_id)
                 .all()
             )
@@ -2258,7 +2567,10 @@ def tool_order_analytics(metric: str) -> str:
             rows = (
                 db.query(
                     func.strftime("%Y", Order.order_purchase_timestamp),
-                    func.avg(func.julianday(Order.order_delivered_customer_date) - func.julianday(Order.order_purchase_timestamp)),
+                    func.avg(
+                        func.julianday(Order.order_delivered_customer_date)
+                        - func.julianday(Order.order_purchase_timestamp)
+                    ),
                 )
                 .filter(
                     Order.order_purchase_timestamp <= clock,
@@ -2275,7 +2587,7 @@ def tool_order_analytics(metric: str) -> str:
             "Unknown metric. Use one of: monthly_growth, aov_by_year, status_breakdown, items_per_order, "
             "payments_by_type, multi_payment, quarterly_revenue, delivery_time_year, top_months"
         )
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         return f"❌ Analytics failed: {exc}"
     finally:
         db.close()

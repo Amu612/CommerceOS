@@ -12,6 +12,7 @@ access (all 6 domain roles x all 6 agents), direct route access without a
 token, the Orchestrator (SUPER_ADMIN-only), Approvals (scoped, not
 all-or-nothing), and admin-only functionality (user management, audit log).
 """
+
 from __future__ import annotations
 
 import uuid
@@ -82,7 +83,13 @@ def rbac_users() -> dict[str, str]:
             create_user(db, username=username, email=f"{username}@test.local", password=PASSWORD, role=role)
             usernames[agent] = username
         username = f"rbac_test_super_{suffix}"
-        create_user(db, username=username, email=f"{username}@test.local", password=PASSWORD, role=UserRole.SUPER_ADMIN)
+        create_user(
+            db,
+            username=username,
+            email=f"{username}@test.local",
+            password=PASSWORD,
+            role=UserRole.SUPER_ADMIN,
+        )
         usernames["super"] = username
     finally:
         db.close()
@@ -120,6 +127,7 @@ def _auth_headers(token: str) -> dict:
 
 # ── 1. Login ─────────────────────────────────────────────────────────
 
+
 def test_login_succeeds_and_returns_permitted_agents(real_auth_client, rbac_users):
     body = _login(real_auth_client, rbac_users["orders"])
     assert body["access_token"] and body["refresh_token"]
@@ -146,6 +154,7 @@ def test_super_admin_login_reports_all_agents_and_orchestrator(real_auth_client,
 
 # ── 2. Direct route access without a token ──────────────────────────
 
+
 @pytest.mark.parametrize("agent", ALL_AGENTS)
 def test_agent_route_requires_authentication(real_auth_client, agent):
     assert _probe(real_auth_client, agent, {}) == 401
@@ -167,6 +176,7 @@ def test_invalid_token_is_rejected(real_auth_client):
 
 # ── 3. Authorized access: each domain admin on their OWN agent ─────
 
+
 @pytest.mark.parametrize("agent", ALL_AGENTS)
 def test_domain_admin_can_access_own_agent(real_auth_client, rbac_users, agent):
     token = _login(real_auth_client, rbac_users[agent])["access_token"]
@@ -176,6 +186,7 @@ def test_domain_admin_can_access_own_agent(real_auth_client, rbac_users, agent):
 
 # ── 4. Unauthorized cross-agent access: 403 on every OTHER agent ───
 
+
 @pytest.mark.parametrize("owner_agent", ALL_AGENTS)
 def test_domain_admin_gets_403_on_every_other_agent(real_auth_client, rbac_users, owner_agent):
     token = _login(real_auth_client, rbac_users[owner_agent])["access_token"]
@@ -184,9 +195,7 @@ def test_domain_admin_gets_403_on_every_other_agent(real_auth_client, rbac_users
         if other_agent == owner_agent:
             continue
         status = _probe(real_auth_client, other_agent, headers)
-        assert status == 403, (
-            f"{owner_agent}_admin should be denied '{other_agent}', got {status}"
-        )
+        assert status == 403, f"{owner_agent}_admin should be denied '{other_agent}', got {status}"
 
 
 def test_super_admin_can_access_every_agent(real_auth_client, rbac_users):
@@ -197,6 +206,7 @@ def test_super_admin_can_access_every_agent(real_auth_client, rbac_users):
 
 
 # ── 5. Orchestrator: SUPER_ADMIN only ────────────────────────────────
+
 
 @pytest.mark.parametrize("agent", ALL_AGENTS)
 def test_domain_admin_gets_403_on_orchestrator(real_auth_client, rbac_users, agent):
@@ -245,6 +255,7 @@ def test_super_admin_can_access_ingestion_control_every_alias(real_auth_client, 
 
 # ── 6. Admin-only functionality: user management + audit log ───────
 
+
 @pytest.mark.parametrize("agent", ALL_AGENTS)
 def test_domain_admin_gets_403_on_admin_routes(real_auth_client, rbac_users, agent):
     token = _login(real_auth_client, rbac_users[agent])["access_token"]
@@ -262,6 +273,7 @@ def test_super_admin_can_access_admin_routes(real_auth_client, rbac_users):
 
 # ── 7. Approvals: scoped to the requester's own domain, not all-or-nothing ──
 
+
 def test_approval_flow_is_scoped_to_the_owning_domain(real_auth_client, rbac_users):
     """A finding that requires LOGISTICS_ADMIN approval must be visible to and
     decidable by the logistics_admin test user, invisible to a different
@@ -276,14 +288,16 @@ def test_approval_flow_is_scoped_to_the_owning_domain(real_auth_client, rbac_use
         created = propose_for_run(
             db,
             agent="logistics",
-            findings=[{
-                "category": "LATE_DELIVERY_RISK",  # -> FLAG_FOR_REVIEW
-                "severity": "CRITICAL",  # forces NEEDS_APPROVAL regardless of action type
-                "confidence": 0.9,
-                "title": title,
-                "recommended_action": "test",
-                "evidence": "carrier=TestCarrier",
-            }],
+            findings=[
+                {
+                    "category": "LATE_DELIVERY_RISK",  # -> FLAG_FOR_REVIEW
+                    "severity": "CRITICAL",  # forces NEEDS_APPROVAL regardless of action type
+                    "confidence": 0.9,
+                    "title": title,
+                    "recommended_action": "test",
+                    "evidence": "carrier=TestCarrier",
+                }
+            ],
         )
         assert created and created[0].mode == Mode.NEEDS_APPROVAL.value
         action_id = created[0].id
@@ -333,9 +347,7 @@ def test_automation_action_history_is_scoped_to_own_agent(real_auth_client, rbac
     history to a domain admin, and must 403 an explicit cross-domain query."""
     orders_token = _login(real_auth_client, rbac_users["orders"])["access_token"]
 
-    r = real_auth_client.get(
-        "/api/v1/automation/actions", headers=_auth_headers(orders_token)
-    )
+    r = real_auth_client.get("/api/v1/automation/actions", headers=_auth_headers(orders_token))
     assert r.status_code == 200
     assert all(item["agent"] == "orders" for item in r.json()["items"])
 
@@ -357,6 +369,7 @@ def test_run_history_is_scoped_to_own_agent(real_auth_client, rbac_users):
 
 
 # ── 8. Logout ────────────────────────────────────────────────────────
+
 
 def test_logout_is_recorded_and_succeeds(real_auth_client, rbac_users):
     token = _login(real_auth_client, rbac_users["orders"])["access_token"]

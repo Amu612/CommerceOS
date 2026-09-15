@@ -5,13 +5,15 @@ recommendations deterministically, and produces one coordinated view.
 
 It is NOT a business agent — it owns no domain logic; it coordinates the six.
 """
+
 from __future__ import annotations
 
 import time
 import uuid
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timezone
-from typing import Any, Callable, Dict, List
+from datetime import UTC, datetime
+from typing import Any
 
 from sqlalchemy.orm import Session
 
@@ -46,12 +48,12 @@ _DISPLAY = {
 
 
 class NexusOrchestrator:
-    def run(self, db: Session | None = None) -> OrchestrationResult:  # noqa: ARG002 - domains own their sessions
+    def run(self, db: Session | None = None) -> OrchestrationResult:
         exec_id = f"EXEC-ORCH-{uuid.uuid4().hex[:6].upper()}"
-        now = datetime.now(timezone.utc).isoformat()
+        now = datetime.now(UTC).isoformat()
 
         # Each domain runs in its own session (thread-safe) via a factory.
-        tasks: Dict[str, Callable[[], DomainSnapshot]] = {
+        tasks: dict[str, Callable[[], DomainSnapshot]] = {
             "orders": self._orders,
             "inventory": self._inventory,
             "logistics": self._logistics,
@@ -60,7 +62,7 @@ class NexusOrchestrator:
             "customer": self._customer,
         }
 
-        snapshots: List[DomainSnapshot] = []
+        snapshots: list[DomainSnapshot] = []
         with ThreadPoolExecutor(max_workers=6) as pool:
             futures = {pool.submit(self._safe, name, fn): name for name, fn in tasks.items()}
             for fut in futures:
@@ -71,7 +73,13 @@ class NexusOrchestrator:
         conflicts = self._resolve_conflicts(snapshots)
         kpis = self._kpis(snapshots)
 
-        worst = max((_OVERALL_RANK.get(s.health, 0) if s.health != "ERROR" else _OVERALL_RANK["NEEDS_ATTENTION"] for s in snapshots), default=1)
+        worst = max(
+            (
+                _OVERALL_RANK.get(s.health, 0) if s.health != "ERROR" else _OVERALL_RANK["NEEDS_ATTENTION"]
+                for s in snapshots
+            ),
+            default=1,
+        )
         overall_health = next((h for h, r in _OVERALL_RANK.items() if r == worst), "HEALTHY")
         confidences = [s.confidence for s in snapshots if s.confidence > 0]
         overall_conf = round(sum(confidences) / len(confidences), 3) if confidences else 0.0
@@ -98,10 +106,15 @@ class NexusOrchestrator:
         start = time.perf_counter()
         try:
             snap = fn()
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             logger.warning("orchestrator_domain_failed", agent=name, error=str(exc))
-            snap = DomainSnapshot(agent=name, display_name=_DISPLAY.get(name, name.title()),
-                                  health="ERROR", headline=f"Agent failed: {exc}", error=str(exc))
+            snap = DomainSnapshot(
+                agent=name,
+                display_name=_DISPLAY.get(name, name.title()),
+                health="ERROR",
+                headline=f"Agent failed: {exc}",
+                error=str(exc),
+            )
         snap.latency_ms = round((time.perf_counter() - start) * 1000, 1)
         return snap
 
@@ -112,14 +125,26 @@ class NexusOrchestrator:
         try:
             o = orders_agent.run_analysis(db=db, generate_notifications=False)
             findings = [
-                DomainFinding(agent="orders", category=f.category, severity=f.severity,
-                              title=f.what_happened[:120], recommended_action=f.recommended_action, confidence=f.confidence)
+                DomainFinding(
+                    agent="orders",
+                    category=f.category,
+                    severity=f.severity,
+                    title=f.what_happened[:120],
+                    recommended_action=f.recommended_action,
+                    confidence=f.confidence,
+                )
                 for f in o.findings[:5]
             ]
             return DomainSnapshot(
-                agent="orders", display_name="Orders",
-                health={"HEALTHY": "HEALTHY", "NEEDS_ATTENTION": "NEEDS_ATTENTION", "CRITICAL": "CRITICAL"}.get(o.health.status, "NOT_ESTIMABLE"),
-                headline=o.health.summary_message, confidence=o.confidence,
+                agent="orders",
+                display_name="Orders",
+                health={
+                    "HEALTHY": "HEALTHY",
+                    "NEEDS_ATTENTION": "NEEDS_ATTENTION",
+                    "CRITICAL": "CRITICAL",
+                }.get(o.health.status, "NOT_ESTIMABLE"),
+                headline=o.health.summary_message,
+                confidence=o.confidence,
                 metrics=[
                     {"label": "Total Orders", "value": o.summary.total_orders},
                     {"label": "Fulfillment", "value": f"{o.summary.fulfillment_rate_pct}%"},
@@ -139,25 +164,39 @@ class NexusOrchestrator:
             r = inventory_agent.run_monitor(db=db)
             low = len(r.low_stock_products or [])
             total = r.metrics.total_products if r.metrics else 0
-            health = "CRITICAL" if any(a.severity == "CRITICAL" for a in (r.alerts or [])) else ("NEEDS_ATTENTION" if low else "HEALTHY")
+            health = (
+                "CRITICAL"
+                if any(a.severity == "CRITICAL" for a in (r.alerts or []))
+                else ("NEEDS_ATTENTION" if low else "HEALTHY")
+            )
             # Confidence scales with how much of the catalogue the sweep actually saw.
             inv_confidence = ConfidenceCalculator.evaluate(sample_size=max(total, 1)).confidence_score
             findings = [
-                DomainFinding(agent="inventory", category="STOCK", severity=a.severity or "MEDIUM",
-                              title=(a.message or "")[:120], recommended_action=a.reason or "Review reorder plan.",
-                              confidence=inv_confidence,
-                              evidence=f"product_id={a.product_id} sku={a.sku} name={a.name}")
+                DomainFinding(
+                    agent="inventory",
+                    category="STOCK",
+                    severity=a.severity or "MEDIUM",
+                    title=(a.message or "")[:120],
+                    recommended_action=a.reason or "Review reorder plan.",
+                    confidence=inv_confidence,
+                    evidence=f"product_id={a.product_id} sku={a.sku} name={a.name}",
+                )
                 for a in (r.alerts or [])[:5]
             ]
             return DomainSnapshot(
-                agent="inventory", display_name="Inventory", health=health,
+                agent="inventory",
+                display_name="Inventory",
+                health=health,
                 headline=f"{low} low-stock item(s) across {total:,} products; {len(r.recommendations or [])} reorder candidate(s).",
                 confidence=inv_confidence,
                 metrics=[
                     {"label": "Products", "value": total},
                     {"label": "Low Stock", "value": low},
                     {"label": "Reorder Candidates", "value": len(r.recommendations or [])},
-                    {"label": "Inventory Value", "value": f"R${(r.metrics.inventory_value if r.metrics else 0):,.0f}"},
+                    {
+                        "label": "Inventory Value",
+                        "value": f"R${(r.metrics.inventory_value if r.metrics else 0):,.0f}",
+                    },
                 ],
                 findings=findings,
             )
@@ -212,7 +251,8 @@ class NexusOrchestrator:
             health = "CRITICAL" if pressure >= 30 else ("NEEDS_ATTENTION" if pressure >= 12 else "HEALTHY")
             confidence = ConfidenceCalculator.evaluate(sample_size=max(total, 1)).confidence_score
             return DomainSnapshot(
-                agent="customer", display_name="Customer Support",
+                agent="customer",
+                display_name="Customer Support",
                 health=health,
                 headline=text or "Support channel snapshot unavailable.",
                 confidence=confidence,
@@ -223,16 +263,21 @@ class NexusOrchestrator:
                     {"label": "SLA Health", "value": s.get("sla_health", "UNKNOWN")},
                 ],
             )
-        except Exception as exc:  # noqa: BLE001 — degrade to a readiness-only snapshot
+        except Exception as exc:
             logger.warning("customer_snapshot_failed", error=str(exc))
             from app.agents.customer import customer_support_agent
 
             manifest = customer_support_agent.manifest()
             return DomainSnapshot(
-                agent="customer", display_name="Customer Support", health="NOT_ESTIMABLE",
+                agent="customer",
+                display_name="Customer Support",
+                health="NOT_ESTIMABLE",
                 headline=f"{len(manifest)} support agents ready; no data slice available to derive support pressure.",
                 confidence=0.0,
-                metrics=[{"label": "Specialist Agents", "value": len(manifest)}, {"label": "Mode", "value": "Interactive"}],
+                metrics=[
+                    {"label": "Specialist Agents", "value": len(manifest)},
+                    {"label": "Mode", "value": "Interactive"},
+                ],
             )
         finally:
             db.close()
@@ -240,21 +285,30 @@ class NexusOrchestrator:
     @staticmethod
     def _from_common(out: Any) -> DomainSnapshot:
         return DomainSnapshot(
-            agent=out.agent, display_name=_DISPLAY.get(out.agent, out.agent.title()),
-            health=out.health, headline=out.summary, confidence=out.confidence,
+            agent=out.agent,
+            display_name=_DISPLAY.get(out.agent, out.agent.title()),
+            health=out.health,
+            headline=out.summary,
+            confidence=out.confidence,
             metrics=[m.model_dump() for m in out.metrics],
             findings=[
-                DomainFinding(agent=out.agent, category=f.category, severity=f.severity,
-                              title=f.title, recommended_action=f.recommended_action, confidence=f.confidence)
+                DomainFinding(
+                    agent=out.agent,
+                    category=f.category,
+                    severity=f.severity,
+                    title=f.title,
+                    recommended_action=f.recommended_action,
+                    confidence=f.confidence,
+                )
                 for f in out.findings[:5]
             ],
         )
 
     # ── cross-domain reasoning ──────────────────────────────────
-    def _correlate(self, snaps: List[DomainSnapshot]) -> List[SystemicFinding]:
+    def _correlate(self, snaps: list[DomainSnapshot]) -> list[SystemicFinding]:
         by = {s.agent: s for s in snaps}
         cats = {s.agent: {f.category for f in s.findings} for s in snaps}
-        out: List[SystemicFinding] = []
+        out: list[SystemicFinding] = []
 
         def has(agent, *needles):
             return any(any(n in c for n in needles) for c in cats.get(agent, set()))
@@ -275,103 +329,131 @@ class NexusOrchestrator:
                 domains.append("customer")
             fulfil = metric("orders", "Fulfillment")
             backlog = metric("orders", "Pending Backlog")
-            out.append(SystemicFinding(
-                title="Orders and deliveries are running late together",
-                severity="HIGH",
-                domains=domains,
-                explanation=(
-                    f"Unshipped orders (pending backlog: {backlog if backlog is not None else 'n/a'}, "
-                    f"fulfillment at {fulfil if fulfil is not None else 'n/a'}) and delivery delays are "
-                    "happening at the same time. When packages move slowly, more buyers call support "
-                    "or cancel orders."
-                ),
-                recommended_action=(
-                    "Speed up the oldest orders on the slowest routes first"
-                    + (" and give the affected buyers realistic delivery dates before they contact support."
-                       if "customer" in domains else
-                       ", and give buyers realistic delivery dates proactively.")
-                ),
-            ))
+            out.append(
+                SystemicFinding(
+                    title="Orders and deliveries are running late together",
+                    severity="HIGH",
+                    domains=domains,
+                    explanation=(
+                        f"Unshipped orders (pending backlog: {backlog if backlog is not None else 'n/a'}, "
+                        f"fulfillment at {fulfil if fulfil is not None else 'n/a'}) and delivery delays are "
+                        "happening at the same time. When packages move slowly, more buyers call support "
+                        "or cancel orders."
+                    ),
+                    recommended_action=(
+                        "Speed up the oldest orders on the slowest routes first"
+                        + (
+                            " and give the affected buyers realistic delivery dates before they contact support."
+                            if "customer" in domains
+                            else ", and give buyers realistic delivery dates proactively."
+                        )
+                    ),
+                )
+            )
 
         # Cancellation + loss-making orders + discount leakage → margin-negative demand
         if has("orders", "CANCELLATION") and has("pricing", "LOSS_MAKING", "DISCOUNT", "SEGMENT_MARGIN"):
             canc = metric("orders", "Cancellation")
-            out.append(SystemicFinding(
-                title="Big discounts are causing money losses",
-                severity="MEDIUM",
-                domains=["orders", "pricing", "marketing"],
-                explanation=(
-                    f"Heavily discounted orders are losing money or getting cancelled "
-                    f"(cancellation rate: {canc if canc is not None else 'n/a'}). Promotions are "
-                    "bringing in buyers who quickly cancel or buy below cost."
-                ),
-                recommended_action=(
-                    "Cap discount depth at the margin floor Pricing measured, and target promotion "
-                    "spend at repeat buyers instead of blanket sitewide discounts."
-                ),
-            ))
+            out.append(
+                SystemicFinding(
+                    title="Big discounts are causing money losses",
+                    severity="MEDIUM",
+                    domains=["orders", "pricing", "marketing"],
+                    explanation=(
+                        f"Heavily discounted orders are losing money or getting cancelled "
+                        f"(cancellation rate: {canc if canc is not None else 'n/a'}). Promotions are "
+                        "bringing in buyers who quickly cancel or buy below cost."
+                    ),
+                    recommended_action=(
+                        "Cap discount depth at the margin floor Pricing measured, and target promotion "
+                        "spend at repeat buyers instead of blanket sitewide discounts."
+                    ),
+                )
+            )
 
         # Inventory low stock + marketing demand concentration → stockout risk on the hero category
         if has("inventory", "STOCK") and has("marketing", "DEMAND_CONCENTRATION"):
             low = metric("inventory", "Low Stock")
-            out.append(SystemicFinding(
-                title="Top selling items are running out of stock",
-                severity="HIGH",
-                domains=["inventory", "marketing"],
-                explanation=(
-                    f"Most sales come from one main category, but warehouse stock for it is low "
-                    f"({low if low is not None else 'n/a'} low-stock item(s) flagged). If it runs out, "
-                    "sales will drop sharply."
-                ),
-                recommended_action=(
-                    "Expedite replenishment for the top category now and pause paid acquisition on it "
-                    "until cover days are back above the reorder point."
-                ),
-            ))
+            out.append(
+                SystemicFinding(
+                    title="Top selling items are running out of stock",
+                    severity="HIGH",
+                    domains=["inventory", "marketing"],
+                    explanation=(
+                        f"Most sales come from one main category, but warehouse stock for it is low "
+                        f"({low if low is not None else 'n/a'} low-stock item(s) flagged). If it runs out, "
+                        "sales will drop sharply."
+                    ),
+                    recommended_action=(
+                        "Expedite replenishment for the top category now and pause paid acquisition on it "
+                        "until cover days are back above the reorder point."
+                    ),
+                )
+            )
 
         return out
 
-    def _resolve_conflicts(self, snaps: List[DomainSnapshot]) -> List[Conflict]:
+    def _resolve_conflicts(self, snaps: list[DomainSnapshot]) -> list[Conflict]:
         by = {s.agent: s for s in snaps}
         cats = {s.agent: {f.category for f in s.findings} for s in snaps}
-        conflicts: List[Conflict] = []
+        conflicts: list[Conflict] = []
 
-        pricing_wants_markdown = any("LOSS_MAKING" in c or "DISCOUNT" in c or "SEGMENT_MARGIN" in c for c in cats.get("pricing", set()))
+        pricing_wants_markdown = any(
+            "LOSS_MAKING" in c or "DISCOUNT" in c or "SEGMENT_MARGIN" in c for c in cats.get("pricing", set())
+        )
         inventory_low = any("STOCK" in c for c in cats.get("inventory", set()))
         if pricing_wants_markdown and inventory_low:
-            low = next((m.get("value") for m in by.get("inventory", DomainSnapshot(agent="i", display_name="i")).metrics if m.get("label") == "Low Stock"), None)
-            conflicts.append(Conflict(
-                between=["pricing", "inventory"],
-                description=(
-                    "Pricing wants to discount/clear slow or low-margin stock; Inventory is short "
-                    f"({low if low is not None else 'n/a'} low-stock item(s)) and a markdown would accelerate a stockout."
+            low = next(
+                (
+                    m.get("value")
+                    for m in by.get("inventory", DomainSnapshot(agent="i", display_name="i")).metrics
+                    if m.get("label") == "Low Stock"
                 ),
-                resolution=(
-                    "Inventory constraint wins for the affected SKUs: no markdown while cover is below "
-                    "the reorder point. Apply Pricing's margin floor only to well-stocked SKUs."
-                ),
-            ))
+                None,
+            )
+            conflicts.append(
+                Conflict(
+                    between=["pricing", "inventory"],
+                    description=(
+                        "Pricing wants to discount/clear slow or low-margin stock; Inventory is short "
+                        f"({low if low is not None else 'n/a'} low-stock item(s)) and a markdown would accelerate a stockout."
+                    ),
+                    resolution=(
+                        "Inventory constraint wins for the affected SKUs: no markdown while cover is below "
+                        "the reorder point. Apply Pricing's margin floor only to well-stocked SKUs."
+                    ),
+                )
+            )
 
         marketing_wants_scale = any("DEMAND_CONCENTRATION" in c for c in cats.get("marketing", set()))
         orders_backlog = any("BACKLOG" in c or "FULFILLMENT" in c for c in cats.get("orders", set()))
         if marketing_wants_scale and orders_backlog:
-            backlog = next((m.get("value") for m in by.get("orders", DomainSnapshot(agent="o", display_name="o")).metrics if m.get("label") == "Pending Backlog"), None)
-            conflicts.append(Conflict(
-                between=["marketing", "orders"],
-                description=(
-                    "Marketing wants to scale acquisition on the hero category; Orders has a fulfilment "
-                    f"backlog (pending: {backlog if backlog is not None else 'n/a'}) that more volume would worsen."
+            backlog = next(
+                (
+                    m.get("value")
+                    for m in by.get("orders", DomainSnapshot(agent="o", display_name="o")).metrics
+                    if m.get("label") == "Pending Backlog"
                 ),
-                resolution=(
-                    "Delay the acquisition push until the backlog clears below its empirical fence; "
-                    "in the interim run retention campaigns (no new fulfilment load)."
-                ),
-            ))
+                None,
+            )
+            conflicts.append(
+                Conflict(
+                    between=["marketing", "orders"],
+                    description=(
+                        "Marketing wants to scale acquisition on the hero category; Orders has a fulfilment "
+                        f"backlog (pending: {backlog if backlog is not None else 'n/a'}) that more volume would worsen."
+                    ),
+                    resolution=(
+                        "Delay the acquisition push until the backlog clears below its empirical fence; "
+                        "in the interim run retention campaigns (no new fulfilment load)."
+                    ),
+                )
+            )
 
         return conflicts
 
-    def _kpis(self, snaps: List[DomainSnapshot]) -> Dict[str, Any]:
-        kpi: Dict[str, Any] = {}
+    def _kpis(self, snaps: list[DomainSnapshot]) -> dict[str, Any]:
+        kpi: dict[str, Any] = {}
         for s in snaps:
             for m in s.metrics:
                 kpi[f"{s.agent}.{m['label']}"] = m["value"]
@@ -381,8 +463,10 @@ class NexusOrchestrator:
         kpi["critical_findings"] = sum(1 for s in snaps for f in s.findings if f.severity == "CRITICAL")
         return kpi
 
-    def _priority_actions(self, snaps: List[DomainSnapshot], systemic: List[SystemicFinding]) -> List[str]:
-        actions: List[str] = [f"[SYSTEMIC] {sf.recommended_action}" for sf in systemic if sf.severity in ("HIGH", "CRITICAL")]
+    def _priority_actions(self, snaps: list[DomainSnapshot], systemic: list[SystemicFinding]) -> list[str]:
+        actions: list[str] = [
+            f"[SYSTEMIC] {sf.recommended_action}" for sf in systemic if sf.severity in ("HIGH", "CRITICAL")
+        ]
         ranked = sorted(
             (f for s in snaps for f in s.findings),
             key=lambda f: (-_SEV_RANK.get(f.severity, 0), -f.confidence),
@@ -418,7 +502,7 @@ class NexusOrchestrator:
                     max_tokens=280,
                     untrusted=False,
                 )
-            except Exception as exc:  # noqa: BLE001 — LLM down / rate-limited: degrade, never 502 the sweep
+            except Exception as exc:
                 logger.warning("orchestrator_briefing_failed", error=str(exc))
                 txt = ""
             if txt:

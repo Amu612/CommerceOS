@@ -16,12 +16,12 @@ replies are synthesised by the model. When no provider is available the graph
 degrades to deterministic, database-grounded templated answers — exactly how
 the Orders and Inventory graphs already behave.
 """
-import json
+
 import logging
-from typing import Any, Dict, List, Optional
-from typing_extensions import TypedDict
+from typing import Any
 
 from langgraph.graph import END, StateGraph
+from typing_extensions import TypedDict
 
 from app.agents._shared import extract_order_id_from_history
 from app.agents.customer.tools import CustomerSupportTools, extract_order_id, verify_order_id
@@ -62,15 +62,15 @@ SPECIALIST_PERSONAS = {
 
 class CustomerAgentState(TypedDict, total=False):
     user_input: str
-    history: List[Dict[str, Any]]
+    history: list[dict[str, Any]]
     category: str
     order_id: str
     product_query: str
-    agents_to_call: List[str]
-    intermediate_results: Dict[str, str]
-    traces: List[Dict[str, Any]]
-    tool_calls: List[Dict[str, Any]]
-    order_context: Optional[Dict[str, Any]]
+    agents_to_call: list[str]
+    intermediate_results: dict[str, str]
+    traces: list[dict[str, Any]]
+    tool_calls: list[dict[str, Any]]
+    order_context: dict[str, Any] | None
     response: str
     final_response: str
     retry_count: int
@@ -99,18 +99,75 @@ Return ONLY valid JSON, no markdown."""
 
 def _heuristic_triage(msg: str) -> str:
     low = (msg or "").lower()
-    if any(k in low for k in ["refund", "return", "money back", "rma", "cancel my order", "cancel order", "send it back"]):
+    if any(
+        k in low
+        for k in ["refund", "return", "money back", "rma", "cancel my order", "cancel order", "send it back"]
+    ):
         return "refund"
-    if any(k in low for k in ["charge", "charged", "invoice", "payment", "overcharge", "installment", "subscription", "billed", "bill "]):
+    if any(
+        k in low
+        for k in [
+            "charge",
+            "charged",
+            "invoice",
+            "payment",
+            "overcharge",
+            "installment",
+            "subscription",
+            "billed",
+            "bill ",
+        ]
+    ):
         return "billing"
-    if any(k in low for k in ["price", "cost", "how much", "in stock", "availability", "available", "recommend", "catalog", "buy", "purchase", "product", "products", "item ", "items", "sku", "do you sell", "do you have any"]):
+    if any(
+        k in low
+        for k in [
+            "price",
+            "cost",
+            "how much",
+            "in stock",
+            "availability",
+            "available",
+            "recommend",
+            "catalog",
+            "buy",
+            "purchase",
+            "product",
+            "products",
+            "item ",
+            "items",
+            "sku",
+            "do you sell",
+            "do you have any",
+        ]
+    ):
         return "sales"
-    if any(k in low for k in ["where is", "track", "tracking", "delivery", "delivered", "delayed", "late", "damaged", "broken", "arrive", "arrived", "status", "complaint", "shipping", "shipment", "package"]):
+    if any(
+        k in low
+        for k in [
+            "where is",
+            "track",
+            "tracking",
+            "delivery",
+            "delivered",
+            "delayed",
+            "late",
+            "damaged",
+            "broken",
+            "arrive",
+            "arrived",
+            "status",
+            "complaint",
+            "shipping",
+            "shipment",
+            "package",
+        ]
+    ):
         return "support"
     return "general"
 
 
-def triage_node(state: CustomerAgentState) -> Dict[str, Any]:
+def triage_node(state: CustomerAgentState) -> dict[str, Any]:
     msg = state.get("user_input", "") or ""
     category = None
     order_id = ""
@@ -163,14 +220,44 @@ order id is known and history matters. Prefer "general" if unsure."""
 _INTENT_KEYWORDS = {
     "refund": ("refund", "return", "money back", "rma", "send it back", "cancel my order", "cancel order"),
     "billing": ("charge", "charged", "invoice", "payment", "overcharge", "installment", "billed", "bill "),
-    "sales": ("price", "cost", "how much", "in stock", "availability", "available", "recommend", "catalog",
-              "buy", "purchase", "do you sell", "do you have", "product", "products"),
-    "support": ("where is", "track", "tracking", "delivery", "delivered", "delayed", "late", "damaged",
-                "broken", "arrive", "arrived", "status", "complaint", "shipping", "shipment", "package"),
+    "sales": (
+        "price",
+        "cost",
+        "how much",
+        "in stock",
+        "availability",
+        "available",
+        "recommend",
+        "catalog",
+        "buy",
+        "purchase",
+        "do you sell",
+        "do you have",
+        "product",
+        "products",
+    ),
+    "support": (
+        "where is",
+        "track",
+        "tracking",
+        "delivery",
+        "delivered",
+        "delayed",
+        "late",
+        "damaged",
+        "broken",
+        "arrive",
+        "arrived",
+        "status",
+        "complaint",
+        "shipping",
+        "shipment",
+        "package",
+    ),
 }
 
 
-def _fallback_route(category: str, has_order: bool, message: str = "") -> List[str]:
+def _fallback_route(category: str, has_order: bool, message: str = "") -> list[str]:
     """Detect EVERY intent present in the message (multi-intent), not just the triage category."""
     low = (message or "").lower()
     hits = [name for name, kws in _INTENT_KEYWORDS.items() if any(k in low for k in kws)]
@@ -178,14 +265,16 @@ def _fallback_route(category: str, has_order: bool, message: str = "") -> List[s
         hits.append(category)
     if not hits:
         hits = [category if category in _INTENT_KEYWORDS else "general"]
-    agents: List[str] = []
+    agents: list[str] = []
     if has_order and any(h in ("support", "refund", "billing") for h in hits):
         agents.append("context")
     agents.extend(hits)
     return agents
 
 
-def _analytics_context(low: str, order_id: str) -> Optional[tuple[str, List[Dict[str, Any]], Optional[Dict[str, Any]]]]:
+def _analytics_context(
+    low: str, order_id: str
+) -> tuple[str, list[dict[str, Any]], dict[str, Any] | None] | None:
     """
     Cross-order analytics queries — "find customers whose orders were late and
     poorly reviewed", "identify orders needing follow-up", "show my recent
@@ -193,25 +282,50 @@ def _analytics_context(low: str, order_id: str) -> Optional[tuple[str, List[Dict
     before per-specialist routing sends them somewhere order-id-shaped.
     """
     wants_late = any(k in low for k in ("late", "delay", "delayed"))
-    wants_poor_review = any(k in low for k in ("poor review", "bad review", "low review", "review score", "poorly reviewed"))
-    wants_followup = any(k in low for k in ("follow-up", "follow up", "followup", "need attention", "needs attention", "escalat"))
-    wants_multi_order = any(k in low for k in (
-        "find customers", "which customers", "identify orders", "which orders",
-        "list orders", "list customers", "customers whose orders",
-    ))
+    wants_poor_review = any(
+        k in low for k in ("poor review", "bad review", "low review", "review score", "poorly reviewed")
+    )
+    wants_followup = any(
+        k in low
+        for k in ("follow-up", "follow up", "followup", "need attention", "needs attention", "escalat")
+    )
+    wants_multi_order = any(
+        k in low
+        for k in (
+            "find customers",
+            "which customers",
+            "identify orders",
+            "which orders",
+            "list orders",
+            "list customers",
+            "customers whose orders",
+        )
+    )
     if wants_multi_order and wants_late and wants_poor_review:
         text, recs = CustomerSupportTools.late_delivery_poor_review()
         return text, recs, None
     if wants_followup or (wants_multi_order and (wants_late or wants_poor_review)):
         text, recs = CustomerSupportTools.followup_candidates()
         return text, recs, None
-    if not order_id and any(k in low for k in ("my recent order", "my previous order", "my orders", "my order history", "recent orders", "past orders")):
+    if not order_id and any(
+        k in low
+        for k in (
+            "my recent order",
+            "my previous order",
+            "my orders",
+            "my order history",
+            "recent orders",
+            "past orders",
+        )
+    ):
         text, recs = CustomerSupportTools.recent_orders()
         return text, recs, None
     return None
 
 
-def _tool_context_for(agent: str, state: CustomerAgentState) -> tuple[str, List[Dict[str, Any]], Optional[Dict[str, Any]]]:
+def _tool_context_for(
+    agent: str, state: CustomerAgentState
+) -> tuple[str, list[dict[str, Any]], dict[str, Any] | None]:
     """Returns (tool_context_text, tool_records, order_context_or_None)."""
     msg = state.get("user_input", "")
     order_id = state.get("order_id", "")
@@ -239,7 +353,13 @@ def _tool_context_for(agent: str, state: CustomerAgentState) -> tuple[str, List[
         text, recs = CustomerSupportTools.refund_flow(order_id, msg)
         return text, recs, None
     # general
-    if not order_id and (len(low) <= 4 or any(low.startswith(g) for g in ("hi", "hey", "hello", "yo", "good morning", "good afternoon", "good evening"))):
+    if not order_id and (
+        len(low) <= 4
+        or any(
+            low.startswith(g)
+            for g in ("hi", "hey", "hello", "yo", "good morning", "good afternoon", "good evening")
+        )
+    ):
         return (
             "Greet the customer warmly and offer help with orders, shipping, billing, refunds/returns, and products. "
             "Ask for an Order ID for anything order-specific.",
@@ -302,13 +422,13 @@ def _run_specialist(agent: str, tool_context: str, user_input: str, shared_conte
     return f"{prefix}: {tool_context}", False
 
 
-def execution_node(state: CustomerAgentState) -> Dict[str, Any]:
+def execution_node(state: CustomerAgentState) -> dict[str, Any]:
     category = state.get("category", "general")
     order_id = state.get("order_id", "")
     retry_count = state.get("retry_count", 0)
 
     # Router
-    agents_to_call: List[str] = []
+    agents_to_call: list[str] = []
     if llm_service.is_available():
         try:
             router_msg = state.get("user_input", "")
@@ -330,14 +450,15 @@ def execution_node(state: CustomerAgentState) -> Dict[str, Any]:
         agents_to_call = _fallback_route(category, bool(order_id), state.get("user_input", ""))
 
     # Execute specialists in order
-    intermediate: Dict[str, str] = {}
-    traces: List[Dict[str, Any]] = []
-    tool_calls: List[Dict[str, Any]] = []
+    intermediate: dict[str, str] = {}
+    traces: list[dict[str, Any]] = []
+    tool_calls: list[dict[str, Any]] = []
     llm_backed_any = False
     shared_context = ""
-    order_context: Optional[Dict[str, Any]] = None
+    order_context: dict[str, Any] | None = None
 
     from app.agents.customer.schemas import AGENT_MANIFEST
+
     role_by_id = {a["id"]: a for a in AGENT_MANIFEST}
 
     for agent in agents_to_call:
@@ -351,17 +472,21 @@ def execution_node(state: CustomerAgentState) -> Dict[str, Any]:
         if agent == "context":
             shared_context = answer
         meta = role_by_id.get(agent, {"name": agent.title(), "role": "Specialist"})
-        traces.append({
-            "id": agent,
-            "name": meta.get("name", agent.title()),
-            "role": meta.get("role", "Specialist"),
-            "output": answer,
-            "used_tools": [r.get("name") or r.get("tool") for r in recs],
-        })
+        traces.append(
+            {
+                "id": agent,
+                "name": meta.get("name", agent.title()),
+                "role": meta.get("role", "Specialist"),
+                "output": answer,
+                "used_tools": [r.get("name") or r.get("tool") for r in recs],
+            }
+        )
 
     # Combine specialist replies (skip the internal context brief)
     customer_parts = [v for k, v in intermediate.items() if k != "context" and v]
-    combined = "\n\n".join(customer_parts) or "I'm sorry, I couldn't find enough information to help with that yet."
+    combined = (
+        "\n\n".join(customer_parts) or "I'm sorry, I couldn't find enough information to help with that yet."
+    )
 
     return {
         "agents_to_call": agents_to_call,
@@ -385,13 +510,18 @@ Reply with EXACTLY one of:
 Start with 'APPROVE:' or 'RETRY:' and nothing before it."""
 
 
-def supervisor_node(state: CustomerAgentState) -> Dict[str, Any]:
+def supervisor_node(state: CustomerAgentState) -> dict[str, Any]:
     current = state.get("response", "")
     retry_count = state.get("retry_count", 0)
 
     if not current.strip():
         final = "I'm sorry, I could not generate a response. Please rephrase or provide an Order ID."
-        return {"final_response": final, "response": final, "needs_retry": False, "supervisor_verdict": "APPROVE"}
+        return {
+            "final_response": final,
+            "response": final,
+            "needs_retry": False,
+            "supervisor_verdict": "APPROVE",
+        }
 
     if llm_service.is_available():
         try:
@@ -400,7 +530,12 @@ def supervisor_node(state: CustomerAgentState) -> Dict[str, Any]:
                 f"Draft reply:\n{current}\n\n"
                 f"Retries used: {retry_count} / {MAX_RETRIES}"
             )
-            out = (llm_service.generate_text(system_prompt=_SUPERVISOR_PROMPT, user_message=sup_in, max_tokens=400) or "").strip()
+            out = (
+                llm_service.generate_text(
+                    system_prompt=_SUPERVISOR_PROMPT, user_message=sup_in, max_tokens=400
+                )
+                or ""
+            ).strip()
             if out.upper().startswith("RETRY:") and retry_count < MAX_RETRIES:
                 return {
                     "needs_retry": True,
@@ -408,7 +543,7 @@ def supervisor_node(state: CustomerAgentState) -> Dict[str, Any]:
                     "supervisor_verdict": "RETRY",
                 }
             if out.upper().startswith("APPROVE:"):
-                polished = out[len("APPROVE:"):].strip() or current
+                polished = out[len("APPROVE:") :].strip() or current
             else:
                 polished = out or current
             return {
@@ -436,6 +571,7 @@ def should_retry(state: CustomerAgentState) -> str:
 
 
 # ── Build graph ──────────────────────────────────────────────────
+
 
 def build_customer_graph():
     workflow = StateGraph(CustomerAgentState)

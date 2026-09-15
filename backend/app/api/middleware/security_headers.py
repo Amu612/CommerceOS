@@ -1,4 +1,5 @@
 """Adds baseline security response headers."""
+
 from __future__ import annotations
 
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -21,7 +22,5 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         for k, v in _HEADERS.items():
             response.headers.setdefault(k, v)
         if settings.is_production:
-            response.headers.setdefault(
-                "Strict-Transport-Security", "max-age=31536000; includeSubDomains"
-            )
+            response.headers.setdefault("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
         return response

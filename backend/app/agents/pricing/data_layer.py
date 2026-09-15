@@ -3,9 +3,10 @@ Pricing data layer — margin distribution, discount leakage, and category price
 benchmarks from DataCo (profit per order) + Olist (item prices), observed up to
 the simulated clock.
 """
+
 from __future__ import annotations
 
-from typing import Any, Dict, List
+from typing import Any
 
 from sqlalchemy import func
 from sqlalchemy.orm import Session
@@ -18,7 +19,7 @@ from app.models.olist import OrderItem, Product
 
 class PricingData:
     @staticmethod
-    def margin_overview(db: Session) -> Dict[str, Any]:
+    def margin_overview(db: Session) -> dict[str, Any]:
         clock = simulated_clock(db)
         rows = (
             db.query(DataCoOrder.order_total, DataCoOrder.order_profit)
@@ -51,7 +52,7 @@ class PricingData:
         }
 
     @staticmethod
-    def margin_by_segment(db: Session, limit: int = 12) -> Dict[str, Any]:
+    def margin_by_segment(db: Session, limit: int = 12) -> dict[str, Any]:
         clock = simulated_clock(db)
         rows = (
             db.query(
@@ -80,7 +81,7 @@ class PricingData:
         }
 
     @staticmethod
-    def discount_leakage(db: Session, limit: int = 12) -> Dict[str, Any]:
+    def discount_leakage(db: Session, limit: int = 12) -> dict[str, Any]:
         clock = simulated_clock(db)
         # DataCoOrderItem may or may not be populated depending on ingestion path.
         rows = (
@@ -112,7 +113,7 @@ class PricingData:
         return {"categories": cats, "available": bool(cats)}
 
     @staticmethod
-    def order_margin_lookup(db: Session, order_id: str) -> Dict[str, Any]:
+    def order_margin_lookup(db: Session, order_id: str) -> dict[str, Any]:
         """Resolves margin/price/freight for ONE specific order id — DataCo (has profit) first, then Olist item prices."""
         clean = str(order_id or "").strip().replace("#", "")
         if not clean:
@@ -153,7 +154,7 @@ class PricingData:
         return {"status": "NOT_FOUND", "reason": f"No order/pricing record found for #{clean}."}
 
     @staticmethod
-    def olist_category_prices(db: Session, limit: int = 15) -> Dict[str, Any]:
+    def olist_category_prices(db: Session, limit: int = 15) -> dict[str, Any]:
         rows = (
             db.query(
                 Product.product_category_name,

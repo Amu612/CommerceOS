@@ -2,6 +2,7 @@
 Writes one `audit_logs` row for every authenticated, mutating (non-GET/HEAD/OPTIONS)
 request. Failures here never break the request.
 """
+
 from __future__ import annotations
 
 import time
@@ -53,7 +54,7 @@ class AuditMiddleware(BaseHTTPMiddleware):
                 )
             finally:
                 db.close()
-        except Exception:  # noqa: BLE001
+        except Exception:
             logger.warning("audit_middleware_failed", path=request.url.path)
 
         return response

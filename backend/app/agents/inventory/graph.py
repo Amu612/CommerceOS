@@ -1,24 +1,22 @@
 """
 Inventory Agent LangGraph ReAct implementation and query triage.
 """
-import json
-import re
+
 import logging
-from typing import Dict, Any, List, Optional
+import re
+from typing import Any
+
+from langchain_core.messages import HumanMessage
+from langgraph.graph import END, StateGraph
 from typing_extensions import TypedDict
 
-from langgraph.graph import END, StateGraph
-from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
-
 from app.agents.inventory.tools import (
-    ALL_INVENTORY_TOOLS,
-    tool_demand_analytics,
-    tool_query_inventory,
-    tool_get_product_stock,
-    tool_suggest_reorders,
     tool_analyze_sales_trends,
     tool_create_reorder_action,
-    InventoryTools,
+    tool_demand_analytics,
+    tool_get_product_stock,
+    tool_query_inventory,
+    tool_suggest_reorders,
 )
 from app.services.llm_service import llm_service
 
@@ -26,16 +24,16 @@ logger = logging.getLogger(__name__)
 
 
 class InventoryAgentState(TypedDict):
-    messages: List[Any]
-    intent: Optional[str]
-    product_id: Optional[str]
-    threshold: Optional[int]
-    metric: Optional[str]
-    tool_name: Optional[str]
-    tool_input: Optional[Dict[str, Any]]
-    tool_result: Optional[str]
-    response: Optional[str]
-    error: Optional[str]
+    messages: list[Any]
+    intent: str | None
+    product_id: str | None
+    threshold: int | None
+    metric: str | None
+    tool_name: str | None
+    tool_input: dict[str, Any] | None
+    tool_result: str | None
+    response: str | None
+    error: str | None
 
 
 SYSTEM_CONTEXT = """You are a Smart Inventory Watchdog Agent, an intelligent 24/7 inventory guardian.
@@ -77,7 +75,7 @@ Intent guide:
 Return ONLY valid JSON without markdown formatting."""
 
 
-def inventory_triage_node(state: InventoryAgentState) -> Dict[str, Any]:
+def inventory_triage_node(state: InventoryAgentState) -> dict[str, Any]:
     """Extracts intent and entities from user message."""
     messages = state.get("messages", [])
     user_msg = ""
@@ -123,7 +121,11 @@ def inventory_triage_node(state: InventoryAgentState) -> Dict[str, Any]:
     # product, check earlier turns (most recent first) for the last one mentioned.
     if not extracted_id and len(messages) > 1:
         for m in reversed(messages[:-1]):
-            prior = m.content if isinstance(m, HumanMessage) else (m.get("content", "") if isinstance(m, dict) else "")
+            prior = (
+                m.content
+                if isinstance(m, HumanMessage)
+                else (m.get("content", "") if isinstance(m, dict) else "")
+            )
             if not prior:
                 continue
             ph = re.search(r"\b([0-9a-f]{32})\b", prior, re.IGNORECASE)
@@ -137,14 +139,37 @@ def inventory_triage_node(state: InventoryAgentState) -> Dict[str, Any]:
         # should I order") stays read-only even when a product id is resolved
         # (including one resolved from a follow-up's history) — only explicit
         # action/confirmation language executes a real purchase order.
-        if any(k in lower for k in (
-            "recommend", "suggest", "candidate", "what should", "which",
-            "point", "rop", "how much", "how many", "calculate", "what is", "what's",
-        )):
+        if any(
+            k in lower
+            for k in (
+                "recommend",
+                "suggest",
+                "candidate",
+                "what should",
+                "which",
+                "point",
+                "rop",
+                "how much",
+                "how many",
+                "calculate",
+                "what is",
+                "what's",
+            )
+        ):
             return {"intent": "reorder_suggestions", "threshold": extracted_thresh}
-        wants_action = any(k in lower for k in (
-            "place", "create", "execute", "confirm", "approve", "go ahead", "yes order", "order now",
-        ))
+        wants_action = any(
+            k in lower
+            for k in (
+                "place",
+                "create",
+                "execute",
+                "confirm",
+                "approve",
+                "go ahead",
+                "yes order",
+                "order now",
+            )
+        )
         if extracted_id and wants_action:
             return {"intent": "reorder_action", "product_id": extracted_id}
         return {"intent": "reorder_suggestions", "threshold": extracted_thresh}
@@ -152,9 +177,8 @@ def inventory_triage_node(state: InventoryAgentState) -> Dict[str, Any]:
     if any(k in lower for k in ["sales", "velocity", "trend", "demand", "moving", "sold"]):
         return {"intent": "sales_analysis", "product_id": extracted_id}
 
-    if extracted_id or any(k in lower for k in ["item", "product", "sku", "stock of", "how many"]):
-        if extracted_id:
-            return {"intent": "product_stock", "product_id": extracted_id}
+    if extracted_id:
+        return {"intent": "product_stock", "product_id": extracted_id}
 
     if any(k in lower for k in ["low stock", "stock", "monitor", "below", "inventory", "watchdog"]):
         return {"intent": "stock_monitoring", "threshold": extracted_thresh}
@@ -162,7 +186,7 @@ def inventory_triage_node(state: InventoryAgentState) -> Dict[str, Any]:
     return {"intent": "general"}
 
 
-def inventory_tool_node(state: InventoryAgentState) -> Dict[str, Any]:
+def inventory_tool_node(state: InventoryAgentState) -> dict[str, Any]:
     """Executes the appropriate tool based on classified intent."""
     intent = state.get("intent") or "general"
     pid = state.get("product_id") or ""
@@ -183,11 +207,15 @@ def inventory_tool_node(state: InventoryAgentState) -> Dict[str, Any]:
             res = tool_get_product_stock.invoke(tool_input)
             if "Product not found" in str(res) or "not found" in str(res).lower():
                 from app.agents.entity_resolver import entity_resolver
+
                 fallback = entity_resolver.resolve_entity(pid)
                 if fallback.get("status") == "FOUND":
                     etype = fallback.get("entity_type")
                     if etype != "product":
-                        tool_result = f"ID '{pid}' is a **{etype.upper()}** (not an inventory product):\n\n" + fallback.get("summary", "")
+                        tool_result = (
+                            f"ID '{pid}' is a **{etype.upper()}** (not an inventory product):\n\n"
+                            + fallback.get("summary", "")
+                        )
                     else:
                         tool_result = str(res)
                 else:
@@ -225,7 +253,7 @@ def inventory_tool_node(state: InventoryAgentState) -> Dict[str, Any]:
     }
 
 
-def inventory_response_node(state: InventoryAgentState) -> Dict[str, Any]:
+def inventory_response_node(state: InventoryAgentState) -> dict[str, Any]:
     """Synthesizes tool execution result and user question into clean response."""
     messages = state.get("messages", [])
     user_msg = ""
@@ -254,17 +282,18 @@ def inventory_response_node(state: InventoryAgentState) -> Dict[str, Any]:
 
     # Deterministic fallback response
     out_lines = [
-        f"**Smart Inventory Watchdog Analysis**",
+        "**Smart Inventory Watchdog Analysis**",
         "",
         tool_result,
         "",
         "---",
-        "💡 *Proactive Watchdog Tip: Safety stock levels dynamically buffer supply variance. Low-stock alerts have been refreshed.*"
+        "💡 *Proactive Watchdog Tip: Safety stock levels dynamically buffer supply variance. Low-stock alerts have been refreshed.*",
     ]
     return {"response": "\n".join(out_lines)}
 
 
 # ── Build LangGraph ───────────────────────────────────────────────
+
 
 def build_inventory_graph():
     workflow = StateGraph(InventoryAgentState)

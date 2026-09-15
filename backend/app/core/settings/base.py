@@ -7,11 +7,12 @@ Every configurable value in the backend flows through here. No module outside
 Precedence: process env vars > `.env` file > defaults below.
 Select the profile with `ENVIRONMENT=development|production|test`.
 """
+
 from __future__ import annotations
 
 import os
 from functools import lru_cache
-from typing import Annotated, List, Literal, Optional
+from typing import Annotated, Literal
 
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
@@ -60,7 +61,7 @@ class BaseAppSettings(BaseSettings):
     # Local fallback (pre-M2): sqlite file at repo root.
     DATABASE_URL: str = f"sqlite:///{os.path.join(_project_root(), 'orders.db').replace(os.sep, '/')}"
     # Read replica / read-only role. Falls back to DATABASE_URL if unset.
-    DATABASE_READ_URL: Optional[str] = None
+    DATABASE_READ_URL: str | None = None
     DB_POOL_SIZE: int = 10
     DB_MAX_OVERFLOW: int = 20
     DB_POOL_RECYCLE_SECONDS: int = 1800
@@ -83,8 +84,10 @@ class BaseAppSettings(BaseSettings):
     # NoDecode: these come from a plain comma-separated env string, not JSON —
     # without it pydantic-settings tries to json.loads() the raw value before
     # our _split_csv validator ever runs, and blows up on a real .env file.
-    CORS_ORIGINS: Annotated[List[str], NoDecode] = Field(default_factory=lambda: ["http://localhost:3000", "http://localhost:5173"])
-    TRUSTED_HOSTS: Annotated[List[str], NoDecode] = Field(default_factory=lambda: ["*"])
+    CORS_ORIGINS: Annotated[list[str], NoDecode] = Field(
+        default_factory=lambda: ["http://localhost:3000", "http://localhost:5173"]
+    )
+    TRUSTED_HOSTS: Annotated[list[str], NoDecode] = Field(default_factory=lambda: ["*"])
     MAX_REQUEST_BYTES: int = 2 * 1024 * 1024
     RATE_LIMIT_PER_MINUTE: int = 240
     LOGIN_RATE_LIMIT_PER_MINUTE: int = 10
@@ -107,39 +110,39 @@ class BaseAppSettings(BaseSettings):
     GROQ_REASONING_EFFORT: str = "low"
     LLM_REQUEST_TOKEN_BUDGET: int = 6000
     LLM_MONTHLY_BUDGET_USD: float = 200.0
-    OPENAI_API_KEY: Optional[str] = None
+    OPENAI_API_KEY: str | None = None
     OPENAI_API_BASE: str = "https://api.openai.com/v1"
     OPENAI_MODEL: str = "gpt-4o-mini"
-    ANTHROPIC_API_KEY: Optional[str] = None
+    ANTHROPIC_API_KEY: str | None = None
     ANTHROPIC_MODEL: str = "claude-3-5-sonnet-latest"
     BEDROCK_REGION: str = "us-east-1"
     BEDROCK_MODEL_ID: str = "anthropic.claude-3-5-sonnet-20241022-v2:0"
-    GROQ_API_KEY: Optional[str] = None
+    GROQ_API_KEY: str | None = None
     GROQ_API_BASE: str = "https://api.groq.com/openai/v1"
     # Legacy keys still honoured by the deterministic->real bridge during migration.
-    GEMINI_API_KEY: Optional[str] = None
+    GEMINI_API_KEY: str | None = None
     # OpenAI-compatible local proxy (e.g. gemini web2api). If set, used automatically.
-    GEMINI_WEB2API_BASE_URL: Optional[str] = None
-    GEMINI_WEB2API_API_KEY: Optional[str] = None
-    GEMINI_WEB2API_MODEL: Optional[str] = None
+    GEMINI_WEB2API_BASE_URL: str | None = None
+    GEMINI_WEB2API_API_KEY: str | None = None
+    GEMINI_WEB2API_MODEL: str | None = None
 
     # ── Data / ingestion ───────────────────────────────────────────
-    DATASET_DIR: Optional[str] = None  # local dir OR s3://bucket/prefix
+    DATASET_DIR: str | None = None  # local dir OR s3://bucket/prefix
     REPLAY_MAX_ORDERS: int = 15000
 
     # ── TomTom (Logistics Route Intelligence) ──────────────────────
-    TOMTOM_API_KEY: Optional[str] = None  # set via env; never hardcode keys in source
+    TOMTOM_API_KEY: str | None = None  # set via env; never hardcode keys in source
 
     # ── Apify (competitor price feed — Pricing agent only) ──────────
-    APIFY_TOKEN: Optional[str] = None
-    APIFY_ACTOR_ID: Optional[str] = None
+    APIFY_TOKEN: str | None = None
+    APIFY_ACTOR_ID: str | None = None
     PRICING_COMPETITOR_FEED_ENABLED: bool = False
 
     # ── Observability ──────────────────────────────────────────────
     LOG_LEVEL: str = "INFO"
     LOG_JSON: bool = True
     OTEL_ENABLED: bool = False
-    OTEL_EXPORTER_OTLP_ENDPOINT: Optional[str] = None
+    OTEL_EXPORTER_OTLP_ENDPOINT: str | None = None
     METRICS_ENABLED: bool = True
 
     # ── Derived ────────────────────────────────────────────────────

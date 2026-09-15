@@ -3,28 +3,26 @@ Orders Agent LangGraph — Production-grade ReAct agent with retry loop.
 Supports Order lookup, Product search, Order Search, Analytics questions,
 Shipment tracking, and Returns.
 """
-import json
-import re
-import traceback
-import logging
-from typing import Dict, Any, List
 
+import logging
+import re
+from typing import Any
+
+from langchain_core.messages import HumanMessage
 from langgraph.graph import END, StateGraph
-from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
 from app.agents.orders.schemas import OrdersAgentState
 from app.agents.orders.tools import (
-    ALL_ORDERS_TOOLS,
-    tool_lookup_order,
-    tool_lookup_product,
-    tool_search_orders,
+    tool_check_return_eligibility,
     tool_get_analytics_summary,
     tool_get_order_value_stats,
     tool_get_orders_by_period,
-    tool_track_shipment,
     tool_get_return_policy,
-    tool_check_return_eligibility,
     tool_initiate_return,
+    tool_lookup_order,
+    tool_lookup_product,
+    tool_search_orders,
+    tool_track_shipment,
 )
 from app.services.llm_service import llm_service
 
@@ -61,7 +59,7 @@ Rules:
 Return ONLY valid JSON without markdown formatting."""
 
 
-def triage_node(state: OrdersAgentState) -> Dict[str, Any]:
+def triage_node(state: OrdersAgentState) -> dict[str, Any]:
     """Classifies user intent and extracts order-, product-, and analytics-related entities."""
     messages = state.get("messages", [])
     last_msg = ""
@@ -96,15 +94,11 @@ def triage_node(state: OrdersAgentState) -> Dict[str, Any]:
                 if target_check and target_check not in ("None", ""):
                     try:
                         from app.agents.entity_resolver import entity_resolver
+
                         resolved = entity_resolver.resolve_entity(target_check)
                         if resolved.get("status") == "FOUND":
                             etype = resolved.get("entity_type")
-                            if etype == "customer":
-                                intent = "search_orders"
-                                search_query = target_check
-                                order_id = ""
-                                product_id = ""
-                            elif etype == "seller":
+                            if etype in ("customer", "seller"):
                                 intent = "search_orders"
                                 search_query = target_check
                                 order_id = ""
@@ -146,17 +140,27 @@ def triage_node(state: OrdersAgentState) -> Dict[str, Any]:
         extracted_tracking_number = track_m.group(1)
 
     # Check for customer ID patterns
-    cust_m = re.search(r"(?:customer|cust)(?:\s+id|\s+#|\s*:|\s+)?\s*([0-9a-f]{8,32}|\d{1,10})", last_msg, re.IGNORECASE)
+    cust_m = re.search(
+        r"(?:customer|cust)(?:\s+id|\s+#|\s*:|\s+)?\s*([0-9a-f]{8,32}|\d{1,10})", last_msg, re.IGNORECASE
+    )
     if cust_m:
         extracted_customer_id = cust_m.group(1)
 
     # Check for product ID patterns
-    prod_m = re.search(r"(?:product|item|prod|sku)(?:\s+id|\s+#|\s*:|\s+)?\s*([0-9a-f]{8,32}|\d{1,10})", last_msg, re.IGNORECASE)
+    prod_m = re.search(
+        r"(?:product|item|prod|sku)(?:\s+id|\s+#|\s*:|\s+)?\s*([0-9a-f]{8,32}|\d{1,10})",
+        last_msg,
+        re.IGNORECASE,
+    )
     if prod_m:
         extracted_product_id = prod_m.group(1)
 
     # Check for order ID patterns
-    ord_m = re.search(r"(?:order|ord)(?:\s+id|\s+#|\s*:|\s+)?\s*([0-9a-f]{8,32}|ORD-[\w-]+|\d{1,10})", last_msg, re.IGNORECASE)
+    ord_m = re.search(
+        r"(?:order|ord)(?:\s+id|\s+#|\s*:|\s+)?\s*([0-9a-f]{8,32}|ORD-[\w-]+|\d{1,10})",
+        last_msg,
+        re.IGNORECASE,
+    )
     if ord_m:
         extracted_order_id = ord_m.group(1)
 
@@ -180,6 +184,7 @@ def triage_node(state: OrdersAgentState) -> Dict[str, Any]:
                 # Disambiguate against database records across all tables
                 try:
                     from app.agents.entity_resolver import entity_resolver
+
                     resolved = entity_resolver.resolve_entity(candidate)
                     if resolved.get("status") == "FOUND":
                         etype = resolved.get("entity_type")
@@ -201,11 +206,20 @@ def triage_node(state: OrdersAgentState) -> Dict[str, Any]:
     # Follow-up fallback: if this message has no order id of its own, check
     # earlier turns in the conversation (most recent first) for the last one
     # mentioned — resolves "what about its status?"-style follow-ups.
-    if not extracted_order_id and not extracted_product_id and not extracted_customer_id and len(messages) > 1:
+    if (
+        not extracted_order_id
+        and not extracted_product_id
+        and not extracted_customer_id
+        and len(messages) > 1
+    ):
         from app.agents._shared import extract_order_id as _extract_oid
 
         for m in reversed(messages[:-1]):
-            prior = m.content if isinstance(m, HumanMessage) else (m.get("content", "") if isinstance(m, dict) else "")
+            prior = (
+                m.content
+                if isinstance(m, HumanMessage)
+                else (m.get("content", "") if isinstance(m, dict) else "")
+            )
             oid = _extract_oid(prior or "")
             if oid:
                 extracted_order_id = oid
@@ -232,7 +246,14 @@ def triage_node(state: OrdersAgentState) -> Dict[str, Any]:
         and "order" not in lower_msg
         and any(k in lower_msg for k in ("product", "item"))
     ):
-        clean_target = extracted_product_id or last_msg.replace("show", "").replace("find", "").replace("product", "").replace("item", "").strip()
+        clean_target = (
+            extracted_product_id
+            or last_msg.replace("show", "")
+            .replace("find", "")
+            .replace("product", "")
+            .replace("item", "")
+            .strip()
+        )
         return {
             "intent": "product_lookup",
             "product_id": clean_target,
@@ -281,7 +302,21 @@ def triage_node(state: OrdersAgentState) -> Dict[str, Any]:
         }
 
     # 5a. Order value / payment method
-    if any(k in lower_msg for k in ["average order value", "avg order value", " aov", "aov ", "order value", "payment method", "most used payment", "most frequent payment", "total order value", "total revenue"]):
+    if any(
+        k in lower_msg
+        for k in [
+            "average order value",
+            "avg order value",
+            " aov",
+            "aov ",
+            "order value",
+            "payment method",
+            "most used payment",
+            "most frequent payment",
+            "total order value",
+            "total revenue",
+        ]
+    ):
         return {
             "intent": "order_value_query",
             "order_id": "",
@@ -293,9 +328,23 @@ def triage_node(state: OrdersAgentState) -> Dict[str, Any]:
         }
 
     # 5b. Order counts by month/year
-    if any(k in lower_msg for k in ["top month", "top year", "orders placed in", "orders were placed", "how many orders in", "orders per month", "orders per year", "orders by month", "orders by year", "compare", "busiest month", "busiest year"]) and (
-        "order" in lower_msg or "compare" in lower_msg
-    ):
+    if any(
+        k in lower_msg
+        for k in [
+            "top month",
+            "top year",
+            "orders placed in",
+            "orders were placed",
+            "how many orders in",
+            "orders per month",
+            "orders per year",
+            "orders by month",
+            "orders by year",
+            "compare",
+            "busiest month",
+            "busiest year",
+        ]
+    ) and ("order" in lower_msg or "compare" in lower_msg):
         return {
             "intent": "order_period_query",
             "order_id": "",
@@ -303,7 +352,11 @@ def triage_node(state: OrdersAgentState) -> Dict[str, Any]:
             "search_query": last_msg,
             "tracking_number": "",
             "customer_email": "",
-            "period_group_by": "year" if any(k in lower_msg for k in ["year", "annual", "yoy"]) and "month" not in lower_msg else "month",
+            "period_group_by": (
+                "year"
+                if any(k in lower_msg for k in ["year", "annual", "yoy"]) and "month" not in lower_msg
+                else "month"
+            ),
             "error_message": "",
         }
 
@@ -315,7 +368,21 @@ def triage_node(state: OrdersAgentState) -> Dict[str, Any]:
         not extracted_order_id and "deliver" in lower_msg and "cancel" in lower_msg
     )
     if aggregate_delivered_vs_cancelled or any(
-        k in lower_msg for k in ["delay rate", "fulfillment rate", "sla", "processing time", "delivery time", "how many cancel", "backlog", "forecast", "anomal", "pipeline", "performance", "metrics"]
+        k in lower_msg
+        for k in [
+            "delay rate",
+            "fulfillment rate",
+            "sla",
+            "processing time",
+            "delivery time",
+            "how many cancel",
+            "backlog",
+            "forecast",
+            "anomal",
+            "pipeline",
+            "performance",
+            "metrics",
+        ]
     ):
         return {
             "intent": "analytics_query",
@@ -362,14 +429,14 @@ def triage_node(state: OrdersAgentState) -> Dict[str, Any]:
     }
 
 
-def tool_node(state: OrdersAgentState) -> Dict[str, Any]:
+def tool_node(state: OrdersAgentState) -> dict[str, Any]:
     """Executes relevant orders tools based on classified intent and parameters."""
     intent = state.get("intent", "general")
     order_id = state.get("order_id", "")
     product_id = state.get("product_id", "")
     search_query = state.get("search_query", "")
     retries = state.get("retry_count", 0)
-    tool_results: Dict[str, Any] = {}
+    tool_results: dict[str, Any] = {}
 
     try:
         if intent == "product_lookup":
@@ -378,20 +445,28 @@ def tool_node(state: OrdersAgentState) -> Dict[str, Any]:
                 res = tool_lookup_product.invoke({"product_id_or_keyword": target})
                 tool_results["tool_lookup_product"] = str(res)
             else:
-                tool_results["tool_lookup_product"] = "Please specify a Product ID (UUID or card ID) or category keyword to look up."
+                tool_results["tool_lookup_product"] = (
+                    "Please specify a Product ID (UUID or card ID) or category keyword to look up."
+                )
 
         elif intent == "search_orders":
             target = search_query or product_id or order_id
             if target:
                 from app.agents.entity_resolver import entity_resolver
+
                 resolved = entity_resolver.resolve_entity(target)
-                if resolved.get("status") == "FOUND" and resolved.get("entity_type") in ("customer", "seller"):
+                if resolved.get("status") == "FOUND" and resolved.get("entity_type") in (
+                    "customer",
+                    "seller",
+                ):
                     tool_results["tool_search_orders"] = resolved.get("summary", "")
                 else:
                     res = tool_search_orders.invoke({"query": target})
                     tool_results["tool_search_orders"] = str(res)
             else:
-                tool_results["tool_search_orders"] = "Please provide search parameters (such as a Customer ID, Product ID, status, or date)."
+                tool_results["tool_search_orders"] = (
+                    "Please provide search parameters (such as a Customer ID, Product ID, status, or date)."
+                )
 
         elif intent == "analytics_query":
             res = tool_get_analytics_summary.invoke({"metric_name": "all"})
@@ -411,7 +486,9 @@ def tool_node(state: OrdersAgentState) -> Dict[str, Any]:
                 res = tool_lookup_order.invoke({"order_id": order_id})
                 tool_results["tool_lookup_order"] = str(res)
             else:
-                tool_results["tool_lookup_order"] = "Please specify an Order ID (e.g. Olist UUID or integer ID) to check order status."
+                tool_results["tool_lookup_order"] = (
+                    "Please specify an Order ID (e.g. Olist UUID or integer ID) to check order status."
+                )
 
         elif intent == "shipping_tracking":
             target = order_id or state.get("tracking_number", "")
@@ -419,7 +496,9 @@ def tool_node(state: OrdersAgentState) -> Dict[str, Any]:
                 res = tool_track_shipment.invoke({"tracking_number_or_order_id": target})
                 tool_results["tool_track_shipment"] = str(res)
             else:
-                tool_results["tool_track_shipment"] = "Please provide an Order ID or tracking code to track package milestones."
+                tool_results["tool_track_shipment"] = (
+                    "Please provide an Order ID or tracking code to track package milestones."
+                )
 
         elif intent == "return_policy":
             res = tool_get_return_policy.invoke({})
@@ -430,10 +509,14 @@ def tool_node(state: OrdersAgentState) -> Dict[str, Any]:
                 elig = tool_check_return_eligibility.invoke({"order_id": order_id})
                 tool_results["tool_check_return_eligibility"] = str(elig)
                 if "ELIGIBLE" in str(elig) and "INELIGIBLE" not in str(elig):
-                    ret = tool_initiate_return.invoke({"order_id": order_id, "reason": "Customer requested return"})
+                    ret = tool_initiate_return.invoke(
+                        {"order_id": order_id, "reason": "Customer requested return"}
+                    )
                     tool_results["tool_initiate_return"] = str(ret)
             else:
-                tool_results["tool_check_return_eligibility"] = "Please provide an Order ID to check return eligibility."
+                tool_results["tool_check_return_eligibility"] = (
+                    "Please provide an Order ID to check return eligibility."
+                )
 
         return {"tool_results": tool_results, "retry_count": retries + 1, "error_message": ""}
 
@@ -446,7 +529,7 @@ def tool_node(state: OrdersAgentState) -> Dict[str, Any]:
         }
 
 
-def response_node(state: OrdersAgentState) -> Dict[str, Any]:
+def response_node(state: OrdersAgentState) -> dict[str, Any]:
     """Composes the final structured customer-facing or administrator response using LLM or structured formatting."""
     intent = state.get("intent", "general")
     tool_results = state.get("tool_results", {})
@@ -530,7 +613,7 @@ def response_node(state: OrdersAgentState) -> Dict[str, Any]:
     else:
         parts.append("### 📋 Order Intelligence")
 
-    for tool_name, res in tool_results.items():
+    for _tool_name, res in tool_results.items():
         parts.append(str(res))
 
     return {"final_response": "\n\n".join(parts)}
@@ -554,8 +637,7 @@ def after_tools(state: OrdersAgentState) -> str:
     """
     tool_results = state.get("tool_results", {})
     has_error = any(
-        str(v).startswith("❌ Error") or str(v).startswith("Error:")
-        for v in tool_results.values()
+        str(v).startswith("❌ Error") or str(v).startswith("Error:") for v in tool_results.values()
     )
     retries = state.get("retry_count", 0)
 

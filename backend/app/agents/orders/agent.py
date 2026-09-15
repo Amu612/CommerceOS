@@ -18,42 +18,37 @@ Data Honesty:
   - Zero fake "orders are healthy" findings.
   - Empty DB yields 0.0 confidence and no findings.
 """
+
+import contextlib
 import logging
 import uuid
-from typing import ClassVar, List, Optional, Tuple
-from datetime import datetime, timezone
+from datetime import UTC, datetime
+from typing import ClassVar
 
-from sqlalchemy.orm import Session
 from sqlalchemy import or_
+from sqlalchemy.orm import Session
 
-from app.models.security import (
-    AgentPrediction,
-    Notification,
-    NotificationStatus,
-    UserRole,
-    _uuid,
-)
+from app.agents._shared import extract_order_id
 from app.agents.framework import DomainAgent
 from app.agents.orders.schemas import (
-    OrdersQueryResponse,
-    OrdersAgentOutput,
-    OrderSummary,
-    OrdersHealth,
-    PendingQueue,
     AgeDistributionBucket,
-    CancellationRisk,
-    FulfillmentHealth,
-    OrderFinding,
-    OrdersForecast,
-    InvestigationSummary,
     AutomationEligibility,
+    CancellationRisk,
     DataCategory,
+    FulfillmentHealth,
+    InvestigationSummary,
+    OrderFinding,
+    OrdersAgentOutput,
+    OrdersForecast,
+    OrdersHealth,
+    OrdersQueryResponse,
+    OrderSummary,
+    PendingQueue,
 )
 from app.agents.orders.tools import ALL_ORDERS_TOOLS, OrdersTools
-from app.agents._shared import extract_order_id
 from app.intelligence.anomaly.detector import AnomalyDetector
 from app.intelligence.confidence.calculator import ConfidenceCalculator
-from app.intelligence.statistics.profiler import StatisticalProfiler
+from app.models.security import AgentPrediction, Notification, NotificationStatus, UserRole, _uuid
 from app.services.notification_service import notification_service
 
 logger = logging.getLogger(__name__)
@@ -78,10 +73,10 @@ class OrdersAgent:
 
     def __init__(self):
         self.agent_name = "orders"
-        self._cached_output: Optional[OrdersAgentOutput] = None
-        self._last_execution_id: Optional[str] = None
+        self._cached_output: OrdersAgentOutput | None = None
+        self._last_execution_id: str | None = None
 
-    def reset(self, db: Optional[Session] = None) -> None:
+    def reset(self, db: Session | None = None) -> None:
         """Clears cache and resolves all outstanding orders notifications."""
         self._cached_output = None
         self._last_execution_id = None
@@ -93,12 +88,12 @@ class OrdersAgent:
 
     def run_analysis(
         self,
-        db: Optional[Session] = None,
-        execution_id: Optional[str] = None,
-        snapshot_id: Optional[str] = None,
+        db: Session | None = None,
+        execution_id: str | None = None,
+        snapshot_id: str | None = None,
         generate_notifications: bool = True,
     ) -> OrdersAgentOutput:
-        now_dt = datetime.now(timezone.utc)
+        now_dt = datetime.now(UTC)
         now_str = now_dt.isoformat()
 
         if not execution_id:
@@ -119,7 +114,7 @@ class OrdersAgent:
                 # is already live-aware in `OrdersDataLayer`, ready to extend the
                 # rest of this pipeline onto.)
                 return self._insufficient_data_output(now_str, execution_id, snapshot_id)
-        except Exception:  # noqa: BLE001
+        except Exception:
             pass
 
         # ── PHASE 1: OBSERVE ──────────────────────────────────────────────────
@@ -144,13 +139,16 @@ class OrdersAgent:
         backlog_raw = OrdersTools.get_order_backlog(db=db)
         cancellation_raw = OrdersTools.get_cancellation_history(days=90, db=db)
         fulfillment_raw = OrdersTools.get_fulfillment_performance(db=db)
-        status_dist = OrdersTools.get_order_status_distribution(db=db)
+        OrdersTools.get_order_status_distribution(db=db)
         history_90 = OrdersTools.get_order_history(days=90, db=db)
         processing_dist = OrdersTools.get_order_processing_distribution(limit=3000, db=db)
         tools_executed = [
-            "get_order_state", "get_order_backlog",
-            "get_cancellation_history", "get_fulfillment_performance",
-            "get_order_status_distribution", "get_order_history",
+            "get_order_state",
+            "get_order_backlog",
+            "get_cancellation_history",
+            "get_fulfillment_performance",
+            "get_order_status_distribution",
+            "get_order_history",
             "get_order_processing_distribution",
         ]
         dimensions_investigated = [
@@ -177,17 +175,28 @@ class OrdersAgent:
         max_age = backlog_raw.get("max_age_hours")
 
         canc_rate = state.get("cancellation_rate_pct", 0.0)
-        total_cancelled = cancellation_raw.get("total_cancelled", 0) if cancellation_raw.get("status") == "OK" else state.get("cancelled_orders", 0)
-        canc_profile = cancellation_raw.get("daily_rate_profile", {}) if cancellation_raw.get("status") == "OK" else {}
+        total_cancelled = (
+            cancellation_raw.get("total_cancelled", 0)
+            if cancellation_raw.get("status") == "OK"
+            else state.get("cancelled_orders", 0)
+        )
+        canc_profile = (
+            cancellation_raw.get("daily_rate_profile", {}) if cancellation_raw.get("status") == "OK" else {}
+        )
 
-        delay_rate = fulfillment_raw.get("delay_rate_pct", 0.0) if fulfillment_raw.get("status") == "OK" else 0.0
-        sla_health = fulfillment_raw.get("sla_health", "UNKNOWN") if fulfillment_raw.get("status") == "OK" else "UNKNOWN"
+        delay_rate = (
+            fulfillment_raw.get("delay_rate_pct", 0.0) if fulfillment_raw.get("status") == "OK" else 0.0
+        )
+        sla_health = (
+            fulfillment_raw.get("sla_health", "UNKNOWN")
+            if fulfillment_raw.get("status") == "OK"
+            else "UNKNOWN"
+        )
 
         # ── PHASE 4: SELECTIVE DEEP INVESTIGATION ─────────────────────────────
-        order_anomalies: List[dict] = []
-        forecast_vol: Optional[dict] = None
-        forecast_canc: Optional[dict] = None
-        transitions: Optional[dict] = None
+        order_anomalies: list[dict] = []
+        forecast_vol: dict | None = None
+        forecast_canc: dict | None = None
         loop_count = 0
 
         # Investigate processing bottlenecks if pending queue is abnormally aged
@@ -206,11 +215,16 @@ class OrdersAgent:
         recent_orders = sum(int(d.get("total", 0)) for d in recent_days)
         recent_cancelled = sum(int(d.get("cancelled", 0)) for d in recent_days)
         recent_rate = round(recent_cancelled / recent_orders * 100.0, 3) if recent_orders > 0 else None
-        baseline_rate = round(
-            (cancellation_raw.get("total_cancelled", 0) or 0)
-            / max(1, (cancellation_raw.get("total_orders", 0) or 0)) * 100.0,
-            3,
-        ) if cancellation_raw.get("status") == "OK" else None
+        baseline_rate = (
+            round(
+                (cancellation_raw.get("total_cancelled", 0) or 0)
+                / max(1, (cancellation_raw.get("total_orders", 0) or 0))
+                * 100.0,
+                3,
+            )
+            if cancellation_raw.get("status") == "OK"
+            else None
+        )
         canc_z = 0.0
         if recent_rate is not None and baseline_rate is not None and recent_orders > 0:
             p = min(1.0, max(0.0, recent_cancelled / recent_orders))
@@ -241,11 +255,11 @@ class OrdersAgent:
 
         # Inspect transitions if backlog is non-trivial
         if pending_count > 0:
-            transitions = OrdersTools.analyze_status_transitions(db=db)
+            OrdersTools.analyze_status_transitions(db=db)
             tools_executed.append("analyze_status_transitions")
 
         # ── PHASE 5: DETECT ANOMALIES ─────────────────────────────────────────
-        canc_anomaly_score: Optional[float] = None
+        canc_anomaly_score: float | None = None
         if canc_profile.get("mean") is not None and canc_profile.get("std_dev") is not None:
             daily_rates = [r["cancellation_rate_pct"] for r in (cancellation_raw.get("daily_series") or [])]
             if len(daily_rates) >= 5:
@@ -258,7 +272,7 @@ class OrdersAgent:
                     canc_anomaly_score = canc_anom.anomaly_score
 
         # ── PHASE 6: ASSESS RISK — purely from data distributions ─────────────
-        findings: List[OrderFinding] = []
+        findings: list[OrderFinding] = []
         confidence_eval = ConfidenceCalculator.evaluate(
             sample_size=total_orders,
             data_quality=0.9 if state.get("data_source") in ["BOTH", "OLIST"] else 0.75,
@@ -266,30 +280,30 @@ class OrdersAgent:
         overall_confidence = confidence_eval.confidence_score
 
         # --- Backlog aging risk ---
-        if pending_count > 0 and p90_age is not None:
-            if anomalous_aging_count > 0:
-                excess_fraction = anomalous_aging_count / pending_count
-                # Derive severity from empirical percentile fences (IQR or MAD)
-                if backlog_raw.get("empirical_outlier_fence_hours") is not None:
-                    outlier_fence = backlog_raw["empirical_outlier_fence_hours"]
-                    fence_str = f"Tukey outlier fence ({outlier_fence:.1f}h)"
-                else:
-                    fence_str = f"empirical p90 ({p90_age:.1f}h)"
+        if pending_count > 0 and p90_age is not None and anomalous_aging_count > 0:
+            excess_fraction = anomalous_aging_count / pending_count
+            # Derive severity from empirical percentile fences (IQR or MAD)
+            if backlog_raw.get("empirical_outlier_fence_hours") is not None:
+                outlier_fence = backlog_raw["empirical_outlier_fence_hours"]
+                fence_str = f"Tukey outlier fence ({outlier_fence:.1f}h)"
+            else:
+                fence_str = f"empirical p90 ({p90_age:.1f}h)"
 
-                # Severity maps dynamically from the tail probability mass
-                if excess_fraction >= 0.25:
-                    age_severity = "CRITICAL"
-                elif excess_fraction >= 0.10:
-                    age_severity = "HIGH"
-                else:
-                    age_severity = "MEDIUM"
+            # Severity maps dynamically from the tail probability mass
+            if excess_fraction >= 0.25:
+                age_severity = "CRITICAL"
+            elif excess_fraction >= 0.10:
+                age_severity = "HIGH"
+            else:
+                age_severity = "MEDIUM"
 
-                aging_confidence = ConfidenceCalculator.evaluate(
-                    sample_size=pending_count,
-                    data_quality=0.9,
-                ).confidence_score
+            aging_confidence = ConfidenceCalculator.evaluate(
+                sample_size=pending_count,
+                data_quality=0.9,
+            ).confidence_score
 
-                findings.append(OrderFinding(
+            findings.append(
+                OrderFinding(
                     category="BACKLOG",
                     severity=age_severity,
                     what_happened=(
@@ -327,7 +341,8 @@ class OrdersAgent:
                         reasoning="Aging detection is derived mathematically from the pending age distribution.",
                         minimum_confidence_threshold=0.5,
                     ),
-                ))
+                )
+            )
 
         # --- Cancellation risk ---
         if total_orders > 0 and total_cancelled > 0:
@@ -336,7 +351,7 @@ class OrdersAgent:
                 data_quality=0.85,
             ).confidence_score
 
-            canc_risk_level: Optional[str] = None
+            canc_risk_level: str | None = None
             if canc_z >= 3.0 or (canc_anomaly_score is not None and canc_anomaly_score > 0.7):
                 canc_risk_level = "CRITICAL"
             elif canc_z >= 2.0 or (canc_anomaly_score is not None and canc_anomaly_score > 0.5):
@@ -346,46 +361,56 @@ class OrdersAgent:
 
             if canc_risk_level and canc_risk_level in ["MEDIUM", "HIGH", "CRITICAL"]:
                 predicted_canc = (
-                    int(forecast_canc.get("predicted_cancellations", 0))
-                    if forecast_canc
-                    else int(round(total_cancelled / max(1, len(daily_series_raw)) * 7.0))
-                ) if daily_series_raw else 0
-                findings.append(OrderFinding(
-                    category="CANCELLATION",
-                    severity=canc_risk_level,
-                    what_happened=(
-                        f"Recent 14-day cancellation rate is {recent_rate if recent_rate is not None else canc_rate:.2f}% "
-                        f"vs the 90-day baseline of {baseline_rate if baseline_rate is not None else canc_rate:.2f}% "
-                        f"(z={canc_z:.2f}). {total_cancelled} total cancellations observed in the window."
-                    ),
-                    why_it_matters=(
-                        f"A deviation of {canc_z:.2f} standard errors indicates a statistically significant "
-                        "shift in cancellation behavior, likely tied to fulfillment or payment friction."
-                    ),
-                    recommended_action=(
-                        "Inspect payment gateway failure logs and recent order cancellation tags. "
-                        "Cross-reference cancellations against seller and destination regions."
-                    ),
-                    evidence=(
-                        f"recent_14d_rate={recent_rate if recent_rate is not None else 'n/a'}%, "
-                        f"baseline_90d_rate={baseline_rate if baseline_rate is not None else 'n/a'}%, "
-                        f"recent_orders={recent_orders}, z_score={canc_z:.2f}"
-                        + (f", anomaly_score={canc_anomaly_score:.3f}." if canc_anomaly_score is not None else ".")
-                    ),
-                    probable_cause="Statistically significant divergence from baseline cancellation rate.",
-                    affected_entities=[f"cancelled:{total_cancelled}", f"predicted:{predicted_canc}"],
-                    confidence=round(canc_finding_confidence, 3),
-                    data_status=DataCategory.CALCULATED.value,
-                    sample_count=total_orders,
-                    method="z_score_baseline_divergence",
-                    automation_eligibility=AutomationEligibility(
-                        eligible=True,
-                        action_type="ESCALATE_CANCELLATION_REVIEW",
-                        requires_approval=True,
-                        reasoning="Statistically confirmed cancellation anomaly.",
-                        minimum_confidence_threshold=0.6,
-                    ),
-                ))
+                    (
+                        int(forecast_canc.get("predicted_cancellations", 0))
+                        if forecast_canc
+                        else int(round(total_cancelled / max(1, len(daily_series_raw)) * 7.0))
+                    )
+                    if daily_series_raw
+                    else 0
+                )
+                findings.append(
+                    OrderFinding(
+                        category="CANCELLATION",
+                        severity=canc_risk_level,
+                        what_happened=(
+                            f"Recent 14-day cancellation rate is {recent_rate if recent_rate is not None else canc_rate:.2f}% "
+                            f"vs the 90-day baseline of {baseline_rate if baseline_rate is not None else canc_rate:.2f}% "
+                            f"(z={canc_z:.2f}). {total_cancelled} total cancellations observed in the window."
+                        ),
+                        why_it_matters=(
+                            f"A deviation of {canc_z:.2f} standard errors indicates a statistically significant "
+                            "shift in cancellation behavior, likely tied to fulfillment or payment friction."
+                        ),
+                        recommended_action=(
+                            "Inspect payment gateway failure logs and recent order cancellation tags. "
+                            "Cross-reference cancellations against seller and destination regions."
+                        ),
+                        evidence=(
+                            f"recent_14d_rate={recent_rate if recent_rate is not None else 'n/a'}%, "
+                            f"baseline_90d_rate={baseline_rate if baseline_rate is not None else 'n/a'}%, "
+                            f"recent_orders={recent_orders}, z_score={canc_z:.2f}"
+                            + (
+                                f", anomaly_score={canc_anomaly_score:.3f}."
+                                if canc_anomaly_score is not None
+                                else "."
+                            )
+                        ),
+                        probable_cause="Statistically significant divergence from baseline cancellation rate.",
+                        affected_entities=[f"cancelled:{total_cancelled}", f"predicted:{predicted_canc}"],
+                        confidence=round(canc_finding_confidence, 3),
+                        data_status=DataCategory.CALCULATED.value,
+                        sample_count=total_orders,
+                        method="z_score_baseline_divergence",
+                        automation_eligibility=AutomationEligibility(
+                            eligible=True,
+                            action_type="ESCALATE_CANCELLATION_REVIEW",
+                            requires_approval=True,
+                            reasoning="Statistically confirmed cancellation anomaly.",
+                            minimum_confidence_threshold=0.6,
+                        ),
+                    )
+                )
 
         # --- Fulfillment/delivery risk ---
         if fulfillment_raw.get("status") == "OK" and delay_rate > 0:
@@ -401,36 +426,38 @@ class OrdersAgent:
                     "AT_RISK": "MEDIUM",
                     "ELEVATED": "MEDIUM",
                 }.get(sla_health, "LOW")
-                findings.append(OrderFinding(
-                    category="FULFILLMENT",
-                    severity=fulf_severity,
-                    what_happened=(
-                        f"Delivery delay rate is {delay_rate:.1f}% across {fulfilled_n} delivered orders. "
-                        f"SLA delivery margin is statistically {sla_health}. "
-                        f"Median delivery: {fulfillment_raw.get('median_delivery_days', '?')} days."
-                    ),
-                    why_it_matters=(
-                        "Positive delay margins signify that actual deliveries systematically exceed "
-                        "promised carrier dates, directly harming customer satisfaction and NPS."
-                    ),
-                    recommended_action=(
-                        "Audit carrier handover delays and regional transit hubs. "
-                        "Adjust estimated delivery lead-time models in fulfillment configuration."
-                    ),
-                    evidence=(
-                        f"sla_health={sla_health}, delay_rate={delay_rate:.1f}%, "
-                        f"delayed_count={fulfillment_raw.get('delayed_count', '?')}, "
-                        f"sample_count={fulfilled_n}, median_days={fulfillment_raw.get('median_delivery_days', '?')}."
-                    ),
-                    probable_cause=(
-                        "Carrier handover delay or distribution network capacity constraints."
-                    ),
-                    affected_entities=[f"delayed:{fulfillment_raw.get('delayed_count', '?')}"],
-                    confidence=round(fulfillment_confidence, 3),
-                    data_status=DataCategory.CALCULATED.value,
-                    sample_count=fulfilled_n,
-                    method="delay_margin_distribution_profiling",
-                ))
+                findings.append(
+                    OrderFinding(
+                        category="FULFILLMENT",
+                        severity=fulf_severity,
+                        what_happened=(
+                            f"Delivery delay rate is {delay_rate:.1f}% across {fulfilled_n} delivered orders. "
+                            f"SLA delivery margin is statistically {sla_health}. "
+                            f"Median delivery: {fulfillment_raw.get('median_delivery_days', '?')} days."
+                        ),
+                        why_it_matters=(
+                            "Positive delay margins signify that actual deliveries systematically exceed "
+                            "promised carrier dates, directly harming customer satisfaction and NPS."
+                        ),
+                        recommended_action=(
+                            "Audit carrier handover delays and regional transit hubs. "
+                            "Adjust estimated delivery lead-time models in fulfillment configuration."
+                        ),
+                        evidence=(
+                            f"sla_health={sla_health}, delay_rate={delay_rate:.1f}%, "
+                            f"delayed_count={fulfillment_raw.get('delayed_count', '?')}, "
+                            f"sample_count={fulfilled_n}, median_days={fulfillment_raw.get('median_delivery_days', '?')}."
+                        ),
+                        probable_cause=(
+                            "Carrier handover delay or distribution network capacity constraints."
+                        ),
+                        affected_entities=[f"delayed:{fulfillment_raw.get('delayed_count', '?')}"],
+                        confidence=round(fulfillment_confidence, 3),
+                        data_status=DataCategory.CALCULATED.value,
+                        sample_count=fulfilled_n,
+                        method="delay_margin_distribution_profiling",
+                    )
+                )
 
         # --- Volume anomaly findings ---
         for anom in order_anomalies[:2]:
@@ -438,32 +465,34 @@ class OrdersAgent:
                 sample_size=len(history_90),
                 data_quality=0.8,
             ).confidence_score
-            findings.append(OrderFinding(
-                category="VOLUME",
-                severity="HIGH" if anom["anomaly_score"] >= 0.7 else "MEDIUM",
-                what_happened=(
-                    f"Order volume anomaly on {anom['date']}: observed {anom['observed_count']} orders "
-                    f"vs expected baseline of {anom['expected_baseline']:.1f} "
-                    f"(deviation={anom['deviation']:.1f}, score={anom['anomaly_score']:.3f})."
-                ),
-                why_it_matters=(
-                    "Abrupt volume deviations indicate demand shocks, upstream catalog issues, "
-                    "or event pipeline disruptions."
-                ),
-                recommended_action=(
-                    "Verify data ingestion pipeline health and inspect marketing/sales events on this date."
-                ),
-                evidence=(
-                    f"method={anom['detection_method']}, anomaly_score={anom['anomaly_score']:.3f}, "
-                    f"observed={anom['observed_count']}, expected={anom['expected_baseline']:.1f}."
-                ),
-                probable_cause="Demand fluctuation or order pipeline event on anomalous date.",
-                affected_entities=[f"date:{anom['date']}"],
-                confidence=round(anom_confidence, 3),
-                data_status=DataCategory.CALCULATED.value,
-                sample_count=len(history_90),
-                method=anom.get("detection_method", "statistical_anomaly"),
-            ))
+            findings.append(
+                OrderFinding(
+                    category="VOLUME",
+                    severity="HIGH" if anom["anomaly_score"] >= 0.7 else "MEDIUM",
+                    what_happened=(
+                        f"Order volume anomaly on {anom['date']}: observed {anom['observed_count']} orders "
+                        f"vs expected baseline of {anom['expected_baseline']:.1f} "
+                        f"(deviation={anom['deviation']:.1f}, score={anom['anomaly_score']:.3f})."
+                    ),
+                    why_it_matters=(
+                        "Abrupt volume deviations indicate demand shocks, upstream catalog issues, "
+                        "or event pipeline disruptions."
+                    ),
+                    recommended_action=(
+                        "Verify data ingestion pipeline health and inspect marketing/sales events on this date."
+                    ),
+                    evidence=(
+                        f"method={anom['detection_method']}, anomaly_score={anom['anomaly_score']:.3f}, "
+                        f"observed={anom['observed_count']}, expected={anom['expected_baseline']:.1f}."
+                    ),
+                    probable_cause="Demand fluctuation or order pipeline event on anomalous date.",
+                    affected_entities=[f"date:{anom['date']}"],
+                    confidence=round(anom_confidence, 3),
+                    data_status=DataCategory.CALCULATED.value,
+                    sample_count=len(history_90),
+                    method=anom.get("detection_method", "statistical_anomaly"),
+                )
+            )
 
         # ── PHASE 7: BUILD STRUCTURED OUTPUT ──────────────────────────────────
         cancellation_rate = state.get("cancellation_rate_pct", 0.0)
@@ -493,12 +522,18 @@ class OrdersAgent:
             for b in age_distribution_raw
         ]
         # Ensure pending_queue percentiles are non-null data-driven values
-        median_age = backlog_raw.get("median_age_hours") if backlog_raw.get("median_age_hours") is not None else 0.0
+        median_age = (
+            backlog_raw.get("median_age_hours") if backlog_raw.get("median_age_hours") is not None else 0.0
+        )
         p75_age = backlog_raw.get("p75_age_hours") if backlog_raw.get("p75_age_hours") is not None else 0.0
         p90_age = backlog_raw.get("p90_age_hours") if backlog_raw.get("p90_age_hours") is not None else 0.0
         p95_age = backlog_raw.get("p95_age_hours") if backlog_raw.get("p95_age_hours") is not None else 0.0
         max_age = backlog_raw.get("max_age_hours") if backlog_raw.get("max_age_hours") is not None else 0.0
-        empirical_fence = backlog_raw.get("empirical_outlier_fence_hours") if backlog_raw.get("empirical_outlier_fence_hours") is not None else 48.0
+        empirical_fence = (
+            backlog_raw.get("empirical_outlier_fence_hours")
+            if backlog_raw.get("empirical_outlier_fence_hours") is not None
+            else 48.0
+        )
 
         pending_queue = PendingQueue(
             pending_count=pending_count,
@@ -530,7 +565,12 @@ class OrdersAgent:
         elif (
             canc_z >= 1.0
             or (canc_anomaly_score is not None and canc_anomaly_score > 0.3)
-            or (recent_rate is not None and baseline_rate is not None and recent_rate > baseline_rate and recent_orders >= 30)
+            or (
+                recent_rate is not None
+                and baseline_rate is not None
+                and recent_rate > baseline_rate
+                and recent_orders >= 30
+            )
         ):
             canc_risk_label = "MEDIUM"
 
@@ -559,21 +599,33 @@ class OrdersAgent:
                 f"({pending_count / total_orders * 100:.1f}% of the {total_orders:,} observed orders)."
             )
         predicted_canc_count = (
-            int(forecast_canc.get("predicted_cancellations", 0))
-            if forecast_canc
-            # Empirical flow forecast: mean observed cancellations per day over
-            # the 90-day window times 7 days ahead. (pending times lifetime-rate was
-            # wrong: it charged the whole in-flight stock with the historical
-            # share and ignored the actual daily cancellation flow.)
-            else int(round(total_cancelled / max(1, len(daily_series_raw)) * 7.0))
-        ) if daily_series_raw else 0
+            (
+                int(forecast_canc.get("predicted_cancellations", 0))
+                if forecast_canc
+                # Empirical flow forecast: mean observed cancellations per day over
+                # the 90-day window times 7 days ahead. (pending times lifetime-rate was
+                # wrong: it charged the whole in-flight stock with the historical
+                # share and ignored the actual daily cancellation flow.)
+                else int(round(total_cancelled / max(1, len(daily_series_raw)) * 7.0))
+            )
+            if daily_series_raw
+            else 0
+        )
         cancellation_risk = CancellationRisk(
             cancellation_rate_pct=cancellation_rate,
-            historical_baseline_rate_pct=baseline_rate if baseline_rate is not None else (round(cancellation_rate, 3) if cancellation_rate > 0 else None),
+            historical_baseline_rate_pct=(
+                baseline_rate
+                if baseline_rate is not None
+                else (round(cancellation_rate, 3) if cancellation_rate > 0 else None)
+            ),
             z_score=round(canc_z, 3),
             risk_level=canc_risk_label,
             predicted_cancellations=predicted_canc_count,
-            risk_drivers=risk_drivers if risk_drivers else ["No cancellation history observed yet in the current window."],
+            risk_drivers=(
+                risk_drivers
+                if risk_drivers
+                else ["No cancellation history observed yet in the current window."]
+            ),
             anomaly_score=round(canc_anomaly_score, 3) if canc_anomaly_score is not None else 0.0,
             data_source=state.get("data_source", "BOTH"),
             data_status=cancellation_raw.get("data_status", DataCategory.CALCULATED.value),
@@ -583,12 +635,32 @@ class OrdersAgent:
         )
 
         # Determine empirical processing & delivery metrics from data
-        proc_mean = processing_dist.get("mean_hours") if (processing_dist and processing_dist.get("status") == "OK") else None
-        proc_med = processing_dist.get("median_hours") if (processing_dist and processing_dist.get("status") == "OK") else None
-        proc_p90 = processing_dist.get("p90_hours") if (processing_dist and processing_dist.get("status") == "OK") else None
+        proc_mean = (
+            processing_dist.get("mean_hours")
+            if (processing_dist and processing_dist.get("status") == "OK")
+            else None
+        )
+        proc_med = (
+            processing_dist.get("median_hours")
+            if (processing_dist and processing_dist.get("status") == "OK")
+            else None
+        )
+        proc_p90 = (
+            processing_dist.get("p90_hours")
+            if (processing_dist and processing_dist.get("status") == "OK")
+            else None
+        )
 
-        deliv_mean = fulfillment_raw.get("mean_delivery_days") if (fulfillment_raw and fulfillment_raw.get("status") == "OK") else None
-        deliv_med = fulfillment_raw.get("median_delivery_days") if (fulfillment_raw and fulfillment_raw.get("status") == "OK") else None
+        deliv_mean = (
+            fulfillment_raw.get("mean_delivery_days")
+            if (fulfillment_raw and fulfillment_raw.get("status") == "OK")
+            else None
+        )
+        deliv_med = (
+            fulfillment_raw.get("median_delivery_days")
+            if (fulfillment_raw and fulfillment_raw.get("status") == "OK")
+            else None
+        )
 
         # Use actual data only; no hardcoded fallbacks
         avg_proc_val = proc_mean
@@ -610,7 +682,9 @@ class OrdersAgent:
             fulfillment_not_estimable = "Partial fulfillment data available; some metrics not estimable."
         else:
             fulfillment_data_status = DataCategory.NOT_ESTIMABLE.value
-            fulfillment_not_estimable = "No processing or delivery timestamps observed in database up to current simulated clock."
+            fulfillment_not_estimable = (
+                "No processing or delivery timestamps observed in database up to current simulated clock."
+            )
 
         fulfillment_health = FulfillmentHealth(
             avg_processing_hours=avg_proc_val,
@@ -620,10 +694,16 @@ class OrdersAgent:
             median_delivery_days=med_deliv_val,
             fulfillment_rate_pct=state.get("fulfillment_rate_pct", 0.0),
             delay_rate_pct=delay_rate,
-            sla_health=sla_health if sla_health != "UNKNOWN" else ("DEGRADED" if delay_rate > 15.0 else "HEALTHY"),
+            sla_health=(
+                sla_health if sla_health != "UNKNOWN" else ("DEGRADED" if delay_rate > 15.0 else "HEALTHY")
+            ),
             data_source=state.get("data_source", "BOTH"),
             data_status=fulfillment_data_status,
-            sample_count=fulfillment_raw.get("sample_count", total_orders) if fulfillment_raw.get("status") == "OK" else total_orders,
+            sample_count=(
+                fulfillment_raw.get("sample_count", total_orders)
+                if fulfillment_raw.get("status") == "OK"
+                else total_orders
+            ),
             method="delay_margin_distribution_profiling" if has_delivery_data else None,
             not_estimable_reason=fulfillment_not_estimable,
         )
@@ -654,7 +734,7 @@ class OrdersAgent:
             active_issues_count=len(findings),
         )
 
-        forecast: Optional[OrdersForecast] = None
+        forecast: OrdersForecast | None = None
         vol_trend = "STABLE"
         forecast_confidence = 0.0
         forecast_method = "INSUFFICIENT_DATA"
@@ -691,9 +771,21 @@ class OrdersAgent:
 
         # Always build a data-driven forecast based on the current order history & volume rate
         daily_rate = (total_orders / max(1, len(history_90))) if history_90 else float(total_orders)
-        pred_vol = forecast_vol.get("predicted_daily_volume") if (forecast_vol and forecast_vol.get("predicted_daily_volume") is not None) else round(daily_rate, 1)
-        pred_low = forecast_vol.get("lower_bound") if (forecast_vol and forecast_vol.get("lower_bound") is not None) else round(max(0.0, pred_vol * 0.82), 1)
-        pred_high = forecast_vol.get("upper_bound") if (forecast_vol and forecast_vol.get("upper_bound") is not None) else round(pred_vol * 1.18, 1)
+        pred_vol = (
+            forecast_vol.get("predicted_daily_volume")
+            if (forecast_vol and forecast_vol.get("predicted_daily_volume") is not None)
+            else round(daily_rate, 1)
+        )
+        pred_low = (
+            forecast_vol.get("lower_bound")
+            if (forecast_vol and forecast_vol.get("lower_bound") is not None)
+            else round(max(0.0, pred_vol * 0.82), 1)
+        )
+        pred_high = (
+            forecast_vol.get("upper_bound")
+            if (forecast_vol and forecast_vol.get("upper_bound") is not None)
+            else round(pred_vol * 1.18, 1)
+        )
 
         forecast = OrdersForecast(
             title="Orders Forecast",
@@ -712,19 +804,28 @@ class OrdersAgent:
                 "Order pipeline health directly impacts revenue recognition, customer satisfaction, and support load."
             ),
             recommended_action=(
-                findings[0].recommended_action if findings else
-                "Maintain current processing cadence. Monitor daily for anomalies."
+                findings[0].recommended_action
+                if findings
+                else "Maintain current processing cadence. Monitor daily for anomalies."
             ),
             confidence=round(overall_confidence, 3),
             data_source=state.get("data_source", "BOTH"),
-            forecast_method=forecast_method if forecast_method != "INSUFFICIENT_DATA" else "empirical_daily_rate_projection",
+            forecast_method=(
+                forecast_method
+                if forecast_method != "INSUFFICIENT_DATA"
+                else "empirical_daily_rate_projection"
+            ),
             sample_count=total_orders,
             observation_period=f"Simulated clock {state.get('as_of', now_str)}",
             not_estimable_reason=None,
         )
 
         investigation_summary = InvestigationSummary(
-            data_sources=["OLIST", "DATACO"] if state.get("data_source") == "BOTH" else [state.get("data_source", "BOTH")],
+            data_sources=(
+                ["OLIST", "DATACO"]
+                if state.get("data_source") == "BOTH"
+                else [state.get("data_source", "BOTH")]
+            ),
             records_analyzed=total_orders,
             dimensions_investigated=dimensions_investigated,
             signals_evaluated=total_orders + pending_count,
@@ -770,7 +871,7 @@ class OrdersAgent:
         self._last_execution_id = execution_id
         return output
 
-    def get_latest_analysis(self, db: Optional[Session] = None) -> OrdersAgentOutput:
+    def get_latest_analysis(self, db: Session | None = None) -> OrdersAgentOutput:
         """Returns the most recent analysis without re-running notifications."""
         return self.run_analysis(db=db, generate_notifications=False)
 
@@ -778,7 +879,9 @@ class OrdersAgent:
     # Internal helpers
     # ──────────────────────────────────────────────────────────────────────────
 
-    def query(self, message: str, db: Optional[Session] = None, history: Optional[list] = None) -> OrdersQueryResponse:
+    def query(
+        self, message: str, db: Session | None = None, history: list | None = None
+    ) -> OrdersQueryResponse:
         """
         Interactive order operations through the shared LangGraph ReAct loop:
         the LLM reads the question, dynamically selects the order tool(s) it
@@ -800,12 +903,14 @@ class OrdersAgent:
                     "switch back to Historic to use it."
                 )
                 return OrdersQueryResponse(intent="not_estimable", result=msg, success=False)
-        except Exception:  # noqa: BLE001
+        except Exception:
             pass
 
         clean = (message or "").strip()
         if not clean:
-            return OrdersQueryResponse(intent="empty", result="Please provide a message or order inquiry.", success=False)
+            return OrdersQueryResponse(
+                intent="empty", result="Please provide a message or order inquiry.", success=False
+            )
 
         trace: list[dict] = []
         from app.services.llm import get_chat_model
@@ -843,11 +948,13 @@ class OrdersAgent:
             logger.error(f"[OrdersAgent] Query execution failed: {e}", exc_info=True)
             return OrdersQueryResponse(
                 intent="error",
-                result=f"Failed to execute order request: {str(e)}",
+                result=f"Failed to execute order request: {e!s}",
                 success=False,
             )
 
-    def _insufficient_data_output(self, now_str: str, execution_id: str, snapshot_id: str) -> OrdersAgentOutput:
+    def _insufficient_data_output(
+        self, now_str: str, execution_id: str, snapshot_id: str
+    ) -> OrdersAgentOutput:
         return OrdersAgentOutput(
             agent="orders",
             execution_id=execution_id,
@@ -888,7 +995,7 @@ class OrdersAgent:
     def _handle_notifications(
         self,
         db: Session,
-        findings: List[OrderFinding],
+        findings: list[OrderFinding],
         cancellation_risk: CancellationRisk,
         pending_queue: PendingQueue,
         fulfillment_health: FulfillmentHealth,
@@ -900,10 +1007,21 @@ class OrdersAgent:
             if pending_queue.anomalous_aging_count > 0:
                 excess_frac = (
                     pending_queue.anomalous_aging_count / pending_queue.pending_count
-                    if pending_queue.pending_count > 0 else 0.0
+                    if pending_queue.pending_count > 0
+                    else 0.0
                 )
-                notif_severity = "CRITICAL" if excess_frac >= 0.25 else ("HIGH" if excess_frac >= 0.10 else "MEDIUM")
-                fence_desc = f"{pending_queue.empirical_outlier_fence_hours:.1f}h" if pending_queue.empirical_outlier_fence_hours is not None else (f"{pending_queue.p90_age_hours:.1f}h" if pending_queue.p90_age_hours is not None else "empirical fence")
+                notif_severity = (
+                    "CRITICAL" if excess_frac >= 0.25 else ("HIGH" if excess_frac >= 0.10 else "MEDIUM")
+                )
+                fence_desc = (
+                    f"{pending_queue.empirical_outlier_fence_hours:.1f}h"
+                    if pending_queue.empirical_outlier_fence_hours is not None
+                    else (
+                        f"{pending_queue.p90_age_hours:.1f}h"
+                        if pending_queue.p90_age_hours is not None
+                        else "empirical fence"
+                    )
+                )
                 notification_service.create_notification(
                     db=db,
                     title="Orders Backlog Aging Alert",
@@ -927,8 +1045,16 @@ class OrdersAgent:
 
             # Cancellation surge — only notify if statistically anomalous
             if cancellation_risk.risk_level in ["HIGH", "CRITICAL"]:
-                z_str = f"{cancellation_risk.z_score:.1f}σ" if cancellation_risk.z_score is not None else "significant deviation"
-                base_str = f"{cancellation_risk.historical_baseline_rate_pct:.2f}%" if cancellation_risk.historical_baseline_rate_pct is not None else "baseline"
+                z_str = (
+                    f"{cancellation_risk.z_score:.1f} sigma"
+                    if cancellation_risk.z_score is not None
+                    else "significant deviation"
+                )
+                base_str = (
+                    f"{cancellation_risk.historical_baseline_rate_pct:.2f}%"
+                    if cancellation_risk.historical_baseline_rate_pct is not None
+                    else "baseline"
+                )
                 canc_rate_val = cancellation_risk.cancellation_rate_pct or 0.0
                 notification_service.create_notification(
                     db=db,
@@ -987,23 +1113,27 @@ class OrdersAgent:
                 .filter(
                     Notification.responsible_agent == "orders",
                     Notification.notification_type == notif_type,
-                    Notification.status.in_([
-                        NotificationStatus.UNREAD,
-                        NotificationStatus.READ,
-                        NotificationStatus.ACKNOWLEDGED,
-                    ]),
-                ).all()
+                    Notification.status.in_(
+                        [
+                            NotificationStatus.UNREAD,
+                            NotificationStatus.READ,
+                            NotificationStatus.ACKNOWLEDGED,
+                        ]
+                    ),
+                )
+                .all()
             )
             for notif in active:
                 notification_service.mark_resolved(db, notif)
         except Exception as e:
             logger.debug(f"Could not auto-resolve notification {notif_type}: {e}")
 
-    def _resolve_all_orders_notifications(self, db: Optional[Session] = None, hard_delete: bool = False) -> None:
+    def _resolve_all_orders_notifications(self, db: Session | None = None, hard_delete: bool = False) -> None:
         should_close = False
         if db is None:
             try:
                 from app.database.session import SessionLocal
+
                 db = SessionLocal()
                 should_close = True
             except Exception:
@@ -1019,27 +1149,27 @@ class OrdersAgent:
                 q.delete(synchronize_session=False)
             else:
                 for n in q.filter(
-                    Notification.status.in_([
-                        NotificationStatus.UNREAD,
-                        NotificationStatus.READ,
-                        NotificationStatus.ACKNOWLEDGED,
-                    ])
+                    Notification.status.in_(
+                        [
+                            NotificationStatus.UNREAD,
+                            NotificationStatus.READ,
+                            NotificationStatus.ACKNOWLEDGED,
+                        ]
+                    )
                 ).all():
                     notification_service.mark_resolved(db, n)
             db.commit()
         except Exception as e:
             logger.warning(f"Error cleaning orders notifications: {e}")
-            try:
+            with contextlib.suppress(Exception):
                 db.rollback()
-            except Exception:
-                pass
         finally:
             if should_close:
                 db.close()
 
     def _persist_prediction(
         self,
-        db: Optional[Session],
+        db: Session | None,
         output: OrdersAgentOutput,
         now_dt: datetime,
         execution_id: str,
@@ -1070,15 +1200,14 @@ class OrdersAgent:
             db.commit()
         except Exception as e:
             logger.warning(f"Error persisting Orders Agent prediction: {e}")
-            try:
+            with contextlib.suppress(Exception):
                 db.rollback()
-            except Exception:
-                pass
 
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Utility
 # ──────────────────────────────────────────────────────────────────────────────
+
 
 class _OrdersChatAgent(DomainAgent):
     """Thin DomainAgent adapter that exposes the full orders toolset to the
@@ -1107,7 +1236,7 @@ class _OrdersChatAgent(DomainAgent):
 _ORDERS_CHAT_AGENT = _OrdersChatAgent()
 
 
-def _empirical_severity(fraction: float, thresholds: List[float]) -> str:
+def _empirical_severity(fraction: float, thresholds: list[float]) -> str:
     """
     Maps a normalised [0,1] fraction to a severity tier using caller-supplied thresholds.
     thresholds = [low_hi, medium_hi, high_hi] — values beyond high_hi are CRITICAL.

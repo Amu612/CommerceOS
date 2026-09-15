@@ -8,11 +8,13 @@ LangChain-native) and wraps it with:
   - PII scrub before anything is logged
   - `generate_structured(schema)` -> validated pydantic model or typed LLMException
 """
+
 from __future__ import annotations
 
 import re
 import time
-from typing import Any, Iterator, Optional, Type, TypeVar
+from collections.abc import Iterator
+from typing import Any, TypeVar
 
 from pydantic import BaseModel, ValidationError
 from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
@@ -26,7 +28,9 @@ logger = get_logger("llm.guard")
 T = TypeVar("T", bound=BaseModel)
 
 _INJECTION_PATTERNS = [
-    re.compile(r"ignore\s+(?:all|any|the|your)?\s*(?:previous|prior|above)?\s*(?:instructions|prompts|rules)", re.I),
+    re.compile(
+        r"ignore\s+(?:all|any|the|your)?\s*(?:previous|prior|above)?\s*(?:instructions|prompts|rules)", re.I
+    ),
     re.compile(r"disregard\s+(?:the|all|any|your)\s+(?:above|previous|system|instructions)", re.I),
     re.compile(r"you\s+are\s+now\s+(?:a|an|in|the)\b", re.I),
     re.compile(r"</?\s*(?:system|assistant|user)\s*>", re.I),
@@ -87,7 +91,7 @@ class GuardedLLM:
     def available(self) -> bool:
         try:
             return self._model() is not None
-        except Exception:  # noqa: BLE001
+        except Exception:
             return False
 
     def _cap(self, n: int) -> int:
@@ -122,23 +126,31 @@ class GuardedLLM:
             return (text or "").strip()
         except LLMException:
             raise
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             self._breaker.fail()
             raise LLMException(f"LLM call failed: {exc}") from exc
 
     def generate_text(
-        self, *, system: str, user: str, max_tokens: int = 800, temperature: float = 0.2, untrusted: bool = True
+        self,
+        *,
+        system: str,
+        user: str,
+        max_tokens: int = 800,
+        temperature: float = 0.2,
+        untrusted: bool = True,
     ) -> str:
         if not self.available():
             return ""
         from langchain_core.messages import HumanMessage, SystemMessage
 
         safe_user = sanitize_untrusted(user) if untrusted else user
-        return self._invoke([SystemMessage(content=system), HumanMessage(content=safe_user)], max_tokens=max_tokens)
+        return self._invoke(
+            [SystemMessage(content=system), HumanMessage(content=safe_user)], max_tokens=max_tokens
+        )
 
     def generate_json(
         self, *, system: str, user: str, max_tokens: int = 1200, untrusted: bool = True
-    ) -> Optional[dict[str, Any]]:
+    ) -> dict[str, Any] | None:
         if not self.available():
             return None
         text = self.generate_text(
@@ -150,14 +162,14 @@ class GuardedLLM:
         return _loose_json(text)
 
     def generate_structured(
-        self, *, system: str, user: str, schema: Type[T], max_tokens: int = 1200, untrusted: bool = True
-    ) -> Optional[T]:
+        self, *, system: str, user: str, schema: type[T], max_tokens: int = 1200, untrusted: bool = True
+    ) -> T | None:
         if not self.available():
             return None
         model = self._model()
         try:
             structured = model.with_structured_output(schema)
-        except Exception:  # noqa: BLE001 - provider may not support it; fall back to json+validate
+        except Exception:
             raw = self.generate_json(system=system, user=user, max_tokens=max_tokens, untrusted=untrusted)
             if raw is None:
                 return None
@@ -174,12 +186,18 @@ class GuardedLLM:
             result = structured.invoke([SystemMessage(content=system), HumanMessage(content=safe_user)])
             self._breaker.ok()
             return result
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             self._breaker.fail()
             raise LLMException(f"Structured LLM call failed: {exc}") from exc
 
     def stream_text(
-        self, *, system: str, user: str, max_tokens: int = 800, temperature: float = 0.2, untrusted: bool = True
+        self,
+        *,
+        system: str,
+        user: str,
+        max_tokens: int = 800,
+        temperature: float = 0.2,
+        untrusted: bool = True,
     ) -> Iterator[str]:
         if not self.available():
             return
@@ -196,12 +214,12 @@ class GuardedLLM:
                 if piece:
                     yield piece
             self._breaker.ok()
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             self._breaker.fail()
             raise LLMException(f"LLM stream failed: {exc}") from exc
 
 
-def _loose_json(text: str) -> Optional[dict[str, Any]]:
+def _loose_json(text: str) -> dict[str, Any] | None:
     import json
 
     s = (text or "").strip()

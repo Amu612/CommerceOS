@@ -3,10 +3,11 @@ Password hashing (bcrypt) and JWT (HS256 via python-jose).
 
 Kept dependency-light and side-effect free so it is trivially unit-testable.
 """
+
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
-from typing import Any, Optional
+from datetime import UTC, datetime, timedelta
+from typing import Any
 
 import bcrypt
 from jose import JWTError, jwt
@@ -27,9 +28,9 @@ def verify_password(password: str, hashed: str) -> bool:
         return False
 
 
-def create_access_token(subject: str, *, role: str, username: str, expires_minutes: Optional[int] = None) -> str:
+def create_access_token(subject: str, *, role: str, username: str, expires_minutes: int | None = None) -> str:
     ttl = expires_minutes if expires_minutes is not None else settings.JWT_TTL_MINUTES
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     payload = {
         "sub": subject,
         "role": role,
@@ -42,7 +43,7 @@ def create_access_token(subject: str, *, role: str, username: str, expires_minut
 
 
 def create_refresh_token(subject: str) -> str:
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     payload = {
         "sub": subject,
         "type": "refresh",
@@ -52,7 +53,7 @@ def create_refresh_token(subject: str) -> str:
     return jwt.encode(payload, settings.JWT_SECRET, algorithm=settings.JWT_ALGORITHM)
 
 
-def decode_token(token: str) -> Optional[dict[str, Any]]:
+def decode_token(token: str) -> dict[str, Any] | None:
     try:
         return jwt.decode(token, settings.JWT_SECRET, algorithms=[settings.JWT_ALGORITHM])
     except JWTError:

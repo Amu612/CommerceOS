@@ -8,9 +8,11 @@ is exercised. M4/R3 replaces the heartbeat loop with:
   - the orchestrator cron
   - housekeeping (prune old agent_runs / notifications)
 """
+
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import signal
 
 from app.core.logging import configure_logging, get_logger
@@ -32,10 +34,8 @@ async def _run() -> None:
     while not _stop.is_set():
         tick += 1
         logger.info("worker_heartbeat", tick=tick)
-        try:
+        with contextlib.suppress(TimeoutError):
             await asyncio.wait_for(_stop.wait(), timeout=30)
-        except asyncio.TimeoutError:
-            pass
     logger.info("worker_stop")
 
 

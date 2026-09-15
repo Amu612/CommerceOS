@@ -4,8 +4,9 @@ Evaluates empirical confidence dynamically from sample sizes, data completeness,
 variance, and underlying data availability.
 Zero constant values.
 """
+
 import math
-from typing import List, Optional
+
 from pydantic import BaseModel, Field
 
 
@@ -15,7 +16,7 @@ class ConfidenceEvaluation(BaseModel):
     data_quality_score: float = Field(..., ge=0.0, le=1.0)
     statistical_power: float = Field(..., ge=0.0, le=1.0)
     has_sufficient_data: bool
-    limitation_reason: Optional[str] = None
+    limitation_reason: str | None = None
 
 
 class ConfidenceCalculator:
@@ -30,7 +31,7 @@ class ConfidenceCalculator:
         cls,
         sample_size: int,
         data_quality: float = 1.0,
-        variance_ratio: Optional[float] = None,
+        variance_ratio: float | None = None,
         recency_weight: float = 1.0,
     ) -> ConfidenceEvaluation:
         """
@@ -71,4 +72,3 @@ class ConfidenceCalculator:
             has_sufficient_data=has_sufficient,
             limitation_reason=reason,
         )
-

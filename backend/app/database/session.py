@@ -9,6 +9,7 @@ Migrations are NOT run here — `alembic upgrade head` is an explicit deploy ste
 (container entrypoint / one-shot task). `init_db()` remains only as a dev/test
 convenience for SQLite.
 """
+
 from __future__ import annotations
 
 from sqlalchemy import create_engine, event, text
@@ -36,7 +37,7 @@ def _make_engine(url: str, *, readonly: bool = False):
         )
 
         @event.listens_for(engine, "connect")
-        def _sqlite_pragmas(dbapi_conn, _record):  # noqa: ANN001
+        def _sqlite_pragmas(dbapi_conn, _record):
             cur = dbapi_conn.cursor()
             # WAL: readers no longer block writers (or vice versa) — the
             # single biggest lever against "database is locked" with several
@@ -103,7 +104,7 @@ def check_db() -> bool:
         with engine.connect() as conn:
             conn.execute(text("SELECT 1"))
         return True
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         logger.warning("db_check_failed", error=str(exc))
         return False
 

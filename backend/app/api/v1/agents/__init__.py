@@ -1,5 +1,8 @@
 """Domain agent routers: logistics, pricing, marketing (orders/inventory/customer stay on legacy paths until M7)."""
+
 from __future__ import annotations
+
+import contextlib
 
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel
@@ -30,11 +33,13 @@ def _make_router(prefix: str, agent, tag: str) -> APIRouter:
 
         t0 = time.perf_counter()
         out = agent.run_analysis(db=db)
-        try:
-            record_analysis(out, agent=agent.agent_name, trigger="api",
-                            latency_ms=round((time.perf_counter() - t0) * 1000, 1))
-        except Exception:  # noqa: BLE001 - persistence must never fail the request
-            pass
+        with contextlib.suppress(Exception):
+            record_analysis(
+                out,
+                agent=agent.agent_name,
+                trigger="api",
+                latency_ms=round((time.perf_counter() - t0) * 1000, 1),
+            )
         return out
 
     @r.get("/runs", tags=[tag])
@@ -43,19 +48,35 @@ def _make_router(prefix: str, agent, tag: str) -> APIRouter:
 
         from app.models.operations import AgentRun
 
-        rows = db.query(AgentRun).filter(AgentRun.agent == agent.agent_name).order_by(desc(AgentRun.started_at)).limit(limit).all()
-        return {"items": [
-            {"id": x.id, "health": x.health, "confidence": x.confidence, "summary": x.summary,
-             "findings": len(x.findings), "llm_backed": x.llm_backed,
-             "started_at": x.started_at.isoformat() if x.started_at else None}
-            for x in rows
-        ]}
+        rows = (
+            db.query(AgentRun)
+            .filter(AgentRun.agent == agent.agent_name)
+            .order_by(desc(AgentRun.started_at))
+            .limit(limit)
+            .all()
+        )
+        return {
+            "items": [
+                {
+                    "id": x.id,
+                    "health": x.health,
+                    "confidence": x.confidence,
+                    "summary": x.summary,
+                    "findings": len(x.findings),
+                    "llm_backed": x.llm_backed,
+                    "started_at": x.started_at.isoformat() if x.started_at else None,
+                }
+                for x in rows
+            ]
+        }
 
     @r.post("/query", response_model=AgentQueryResponse)
     def query(payload: _Query, db: Session = Depends(get_db)):
         msg = (payload.query or payload.message or "").strip()
         if not msg:
-            return AgentQueryResponse(agent=agent.agent_name, answer="Please enter a question.", success=False)
+            return AgentQueryResponse(
+                agent=agent.agent_name, answer="Please enter a question.", success=False
+            )
         return agent.query(message=msg, db=db, history=payload.history)
 
     return r
@@ -110,7 +131,10 @@ def route_samples(limit_per_kind: int = 1, db: Session = Depends(get_db)):
         )
         .join(Order, Order.order_id == OrderItem.order_id)
         .join(Seller, Seller.seller_id == OrderItem.seller_id)
-        .filter(Order.order_purchase_timestamp <= clock, Order.order_purchase_timestamp >= clock - timedelta(days=365))
+        .filter(
+            Order.order_purchase_timestamp <= clock,
+            Order.order_purchase_timestamp >= clock - timedelta(days=365),
+        )
         .group_by(OrderItem.order_id)
         .order_by(func.max(Order.order_purchase_timestamp).desc())
         .limit(400)
@@ -137,10 +161,15 @@ def route_samples(limit_per_kind: int = 1, db: Session = Depends(get_db)):
         for order_id, sellers, origins, items, _ts in rows:
             if order_id in seen:
                 continue
-            samples.append({
-                "order_id": order_id, "label": f"{int(items)} item(s)",
-                "sellers": int(sellers), "origins": int(origins), "items": int(items),
-            })
+            samples.append(
+                {
+                    "order_id": order_id,
+                    "label": f"{int(items)} item(s)",
+                    "sellers": int(sellers),
+                    "origins": int(origins),
+                    "items": int(items),
+                }
+            )
             if len(samples) >= 3:
                 break
     return {"items": samples}
@@ -162,4 +191,4 @@ def competitor_feed_sync(category: str | None = None):
     return sync_competitor_prices(category=category)
 
 
-__all__ = ["logistics_router", "pricing_router", "marketing_router"]
+__all__ = ["logistics_router", "marketing_router", "pricing_router"]

@@ -12,6 +12,7 @@ to put first in the migrate task's command.
 
     python -m scripts.sync_datasets
 """
+
 from __future__ import annotations
 
 import logging
@@ -71,7 +72,7 @@ def main() -> int:
 
     try:
         count = sync_from_s3(dataset_dir, _LOCAL_RAW_DIR)
-    except Exception as exc:  # noqa: BLE001 - best-effort; seeding logs its own "no data" warning
+    except Exception as exc:
         logger.warning("s3_sync_failed", extra={"error": str(exc)})
         return 0
 

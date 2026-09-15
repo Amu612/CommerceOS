@@ -5,8 +5,9 @@ Dynamically chooses appropriate forecasting methods based on data availability a
 - Non-parametric rate velocity
 - None with explicit limitation when insufficient data exists.
 """
+
 import math
-from typing import Dict, Any, List, Optional
+
 from pydantic import BaseModel, Field
 
 from app.intelligence.confidence.calculator import ConfidenceCalculator
@@ -16,13 +17,13 @@ from app.intelligence.statistics.profiler import StatisticalProfiler
 class ForecastResult(BaseModel):
     prediction: float
     horizon: str
-    lower_bound: Optional[float] = None
-    upper_bound: Optional[float] = None
+    lower_bound: float | None = None
+    upper_bound: float | None = None
     model_method: str
     training_observations: int
     data_quality: float = Field(..., ge=0.0, le=1.0)
     confidence: float = Field(..., ge=0.0, le=1.0)
-    limitations: Optional[str] = None
+    limitations: str | None = None
 
 
 class ForecastEngine:
@@ -36,11 +37,11 @@ class ForecastEngine:
     @classmethod
     def forecast(
         cls,
-        time_series: List[float],
+        time_series: list[float],
         horizon: str = "7 days",
         steps_ahead: int = 1,
         data_quality: float = 1.0,
-    ) -> Optional[ForecastResult]:
+    ) -> ForecastResult | None:
         """
         Calculates forecast with empirical error bounds derived from the observed data.
         """
@@ -95,7 +96,11 @@ class ForecastEngine:
                 training_observations=n,
                 data_quality=data_quality,
                 confidence=conf_eval.confidence_score,
-                limitations=None if n >= 30 else f"Short observation window ({n} data points). High sensitivity to trend volatility.",
+                limitations=(
+                    None
+                    if n >= 30
+                    else f"Short observation window ({n} data points). High sensitivity to trend volatility."
+                ),
             )
 
         # Non-parametric median rate fallback for small n (2 <= n < 5)
@@ -112,4 +117,3 @@ class ForecastEngine:
             confidence=round(conf_eval.confidence_score * 0.85, 3),
             limitations=f"Small sample size ({n} < 5). Median baseline with standard error margin used instead of regression.",
         )
-

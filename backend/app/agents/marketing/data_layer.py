@@ -2,9 +2,10 @@
 Marketing data layer — RFM customer segmentation, repeat-purchase rate, category
 demand trend, and customer-segment mix, from Olist + DataCo up to the simulated clock.
 """
+
 from __future__ import annotations
 
-from typing import Any, Dict
+from typing import Any
 
 from sqlalchemy import func
 from sqlalchemy.orm import Session
@@ -16,7 +17,7 @@ from app.models.olist import Customer, Order, OrderItem, Product
 
 class MarketingData:
     @staticmethod
-    def rfm(db: Session) -> Dict[str, Any]:
+    def rfm(db: Session) -> dict[str, Any]:
         clock = simulated_clock(db)
         rows = (
             db.query(
@@ -38,13 +39,20 @@ class MarketingData:
         for uid, freq, last_dt, monetary in rows:
             last = tz(last_dt)
             recency_days = round((clock - last).total_seconds() / 86400.0, 1) if last else None
-            customers.append({"uid": uid, "frequency": int(freq), "recency_days": recency_days, "monetary": float(monetary or 0)})
+            customers.append(
+                {
+                    "uid": uid,
+                    "frequency": int(freq),
+                    "recency_days": recency_days,
+                    "monetary": float(monetary or 0),
+                }
+            )
 
         total = len(customers)
         total_orders = sum(c["frequency"] for c in customers)
         repeat = sum(1 for c in customers if c["frequency"] >= 2)
         monetary_vals = sorted(c["monetary"] for c in customers)
-        freq_vals = sorted(c["frequency"] for c in customers)
+        sorted(c["frequency"] for c in customers)
         rec_vals = sorted(c["recency_days"] for c in customers if c["recency_days"] is not None)
 
         def q(vals, p):
@@ -77,12 +85,14 @@ class MarketingData:
             # (a repeat customer's orders would otherwise inflate this figure —
             # that's customer lifetime value, a different metric).
             "avg_order_value": round(sum(monetary_vals) / max(1, total_orders), 2),
-            "segments": [{"segment": k, "customers": v, "share_pct": pct(v, total)} for k, v in segments.items()],
+            "segments": [
+                {"segment": k, "customers": v, "share_pct": pct(v, total)} for k, v in segments.items()
+            ],
             "top_monetary_threshold": round(m_hi, 2),
         }
 
     @staticmethod
-    def category_demand_trend(db: Session, limit: int = 10) -> Dict[str, Any]:
+    def category_demand_trend(db: Session, limit: int = 10) -> dict[str, Any]:
         clock = simulated_clock(db)
         rows = (
             db.query(
@@ -110,10 +120,14 @@ class MarketingData:
         }
 
     @staticmethod
-    def segment_mix(db: Session) -> Dict[str, Any]:
+    def segment_mix(db: Session) -> dict[str, Any]:
         clock = simulated_clock(db)
         rows = (
-            db.query(DataCoOrder.customer_segment, func.count(DataCoOrder.order_id), func.sum(DataCoOrder.order_total))
+            db.query(
+                DataCoOrder.customer_segment,
+                func.count(DataCoOrder.order_id),
+                func.sum(DataCoOrder.order_total),
+            )
             .filter(DataCoOrder.order_date <= clock)
             .group_by(DataCoOrder.customer_segment)
             .order_by(func.count(DataCoOrder.order_id).desc())
@@ -122,8 +136,12 @@ class MarketingData:
         total = sum(int(n) for _, n, _ in rows) or 1
         return {
             "segments": [
-                {"segment": s or "Unknown", "orders": int(n), "share_pct": pct(int(n), total),
-                 "revenue": round(float(rev or 0), 2)}
+                {
+                    "segment": s or "Unknown",
+                    "orders": int(n),
+                    "share_pct": pct(int(n), total),
+                    "revenue": round(float(rev or 0), 2),
+                }
                 for s, n, rev in rows
             ]
         }

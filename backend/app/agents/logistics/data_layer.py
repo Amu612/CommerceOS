@@ -3,13 +3,14 @@ Logistics data layer — carrier/lane performance, transit-time distributions, a
 SLA/late-delivery risk, computed from Olist + DataCo records observed up to the
 simulated clock. Zero hardcoded thresholds; severities come from empirical fences.
 """
+
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
 import json
 import logging
 import math
 import urllib.request
+from typing import Any
 
 from sqlalchemy import func
 from sqlalchemy.orm import Session
@@ -17,7 +18,7 @@ from sqlalchemy.orm import Session
 from app.agents._shared import pct, simulated_clock, tz
 from app.intelligence.statistics.profiler import StatisticalProfiler
 from app.models.dataco import DataCoOrder
-from app.models.olist import Customer, Geolocation, Order, OrderItem, OrderPayment, OrderReview, Product, Seller
+from app.models.olist import Customer, Geolocation, Order, OrderItem, OrderReview, Seller
 
 _logger = logging.getLogger(__name__)
 _OLIST_DELIVERED = "delivered"
@@ -25,7 +26,7 @@ _OLIST_DELIVERED = "delivered"
 
 class LogisticsData:
     @staticmethod
-    def carrier_performance(db: Session, limit: int = 12) -> Dict[str, Any]:
+    def carrier_performance(db: Session, limit: int = 12) -> dict[str, Any]:
         clock = simulated_clock(db)
         rows = (
             db.query(
@@ -41,10 +42,10 @@ class LogisticsData:
             .limit(limit)
             .all()
         )
-        carriers: List[Dict[str, Any]] = []
-        for mode, n, real, sched, late in rows:
-            real = float(real or 0.0)
-            sched = float(sched or 0.0)
+        carriers: list[dict[str, Any]] = []
+        for mode, n, real_raw, sched_raw, late in rows:
+            real = float(real_raw or 0.0)
+            sched = float(sched_raw or 0.0)
             carriers.append(
                 {
                     "carrier": mode or "Unknown",
@@ -58,7 +59,7 @@ class LogisticsData:
         return {"carriers": carriers, "sample_count": sum(c["shipments"] for c in carriers)}
 
     @staticmethod
-    def lane_performance(db: Session, limit: int = 12) -> Dict[str, Any]:
+    def lane_performance(db: Session, limit: int = 12) -> dict[str, Any]:
         clock = simulated_clock(db)
         rows = (
             db.query(
@@ -75,8 +76,8 @@ class LogisticsData:
             .all()
         )
         lanes = []
-        for region, n, real, sched, late in rows:
-            real, sched = float(real or 0), float(sched or 0)
+        for region, n, real_raw, sched_raw, late in rows:
+            real, sched = float(real_raw or 0), float(sched_raw or 0)
             lanes.append(
                 {
                     "lane": region or "Unknown",
@@ -89,19 +90,18 @@ class LogisticsData:
         return {"lanes": lanes}
 
     @staticmethod
-    def transit_distribution(db: Session, sample: int = 5000) -> Dict[str, Any]:
+    def transit_distribution(db: Session, sample: int = 5000) -> dict[str, Any]:
         clock = simulated_clock(db)
-        vals: List[float] = [
+        vals: list[float] = [
             float(v)
-            for (v,) in db.query(DataCoOrder.days_for_shipping_real)
-            .filter(DataCoOrder.order_date <= clock, DataCoOrder.days_for_shipping_real.isnot(None))
+            for (v,) in db.query(DataCoOrder.days_for_shipping_real).filter(
+                DataCoOrder.order_date <= clock, DataCoOrder.days_for_shipping_real.isnot(None)
+            )
             # Most-recent-first: without an explicit order, LIMIT returns
             # whatever order the database happens to store rows in — which,
             # after a chronological CSV import, silently biases the sample
             # toward the OLDEST records instead of a representative one.
-            .order_by(DataCoOrder.order_date.desc())
-            .limit(sample)
-            .all()
+            .order_by(DataCoOrder.order_date.desc()).limit(sample).all()
             if v is not None and float(v) >= 0
         ]
         if not vals:
@@ -119,7 +119,7 @@ class LogisticsData:
         }
 
     @staticmethod
-    def olist_delivery_sla(db: Session, sample: int = 6000) -> Dict[str, Any]:
+    def olist_delivery_sla(db: Session, sample: int = 6000) -> dict[str, Any]:
         clock = simulated_clock(db)
         rows = (
             db.query(Order.order_delivered_customer_date, Order.order_estimated_delivery_date)
@@ -136,9 +136,7 @@ class LogisticsData:
             .limit(sample)
             .all()
         )
-        margins = [
-            (tz(d) - tz(e)).total_seconds() / 86400.0 for d, e in rows if d and e
-        ]
+        margins = [(tz(d) - tz(e)).total_seconds() / 86400.0 for d, e in rows if d and e]
         if not margins:
             return {"status": "NOT_ESTIMABLE", "sample_count": 0}
         late = sum(1 for m in margins if m > 0)
@@ -160,7 +158,7 @@ class LogisticsData:
         }
 
     @staticmethod
-    def shipment_lookup(db: Session, order_id: str) -> Dict[str, Any]:
+    def shipment_lookup(db: Session, order_id: str) -> dict[str, Any]:
         """Resolves a single order/shipment id against DataCo (shipping-mode + transit data) then Olist."""
         clean = str(order_id or "").strip().replace("#", "")
         if not clean:
@@ -172,7 +170,9 @@ class LogisticsData:
             dc = None
         if dc is not None:
             real = float(dc.days_for_shipping_real) if dc.days_for_shipping_real is not None else None
-            sched = float(dc.days_for_shipment_scheduled) if dc.days_for_shipment_scheduled is not None else None
+            sched = (
+                float(dc.days_for_shipment_scheduled) if dc.days_for_shipment_scheduled is not None else None
+            )
             return {
                 "status": "OK",
                 "order_id": dc.order_id,
@@ -190,7 +190,11 @@ class LogisticsData:
         if order is not None:
             delivered = tz(order.order_delivered_customer_date)
             estimated = tz(order.order_estimated_delivery_date)
-            margin_days = round((delivered - estimated).total_seconds() / 86400.0, 2) if delivered and estimated else None
+            margin_days = (
+                round((delivered - estimated).total_seconds() / 86400.0, 2)
+                if delivered and estimated
+                else None
+            )
             return {
                 "status": "OK",
                 "order_id": order.order_id,
@@ -205,19 +209,25 @@ class LogisticsData:
         return {"status": "NOT_FOUND", "reason": f"No shipment found for order #{clean}."}
 
     @staticmethod
-    def late_risk_overview(db: Session) -> Dict[str, Any]:
+    def late_risk_overview(db: Session) -> dict[str, Any]:
         clock = simulated_clock(db)
-        total = db.query(func.count(DataCoOrder.order_id)).filter(DataCoOrder.order_date <= clock).scalar() or 0
+        total = (
+            db.query(func.count(DataCoOrder.order_id)).filter(DataCoOrder.order_date <= clock).scalar() or 0
+        )
         at_risk = (
             db.query(func.count(DataCoOrder.order_id))
             .filter(DataCoOrder.order_date <= clock, DataCoOrder.late_delivery_risk == 1)
             .scalar()
             or 0
         )
-        return {"total_shipments": int(total), "at_risk": int(at_risk), "at_risk_rate_pct": pct(at_risk, total)}
+        return {
+            "total_shipments": int(total),
+            "at_risk": int(at_risk),
+            "at_risk_rate_pct": pct(at_risk, total),
+        }
 
     @staticmethod
-    def _resolve_coordinates(db: Session, zip_prefix: int) -> Optional[Dict[str, Any]]:
+    def _resolve_coordinates(db: Session, zip_prefix: int) -> dict[str, Any] | None:
         """
         Fetches representative coordinates for a ZIP-code prefix from geolocation table
         (which stores median lat/lng computed from olist_geolocation_dataset.csv).
@@ -225,7 +235,7 @@ class LogisticsData:
         """
         if not zip_prefix:
             return None
-        
+
         geo = db.query(Geolocation).filter(Geolocation.geolocation_zip_code_prefix == zip_prefix).first()
         if geo:
             return {
@@ -235,7 +245,7 @@ class LogisticsData:
                 "city": geo.geolocation_city,
                 "state": geo.geolocation_state,
             }
-        
+
         # Fallback to nearest zip prefix within range (+/- 50)
         nearest = (
             db.query(Geolocation)
@@ -257,7 +267,9 @@ class LogisticsData:
         return None
 
     @staticmethod
-    def _calculate_road_route(origin_lng: float, origin_lat: float, dest_lng: float, dest_lat: float) -> Dict[str, Any]:
+    def _calculate_road_route(
+        origin_lng: float, origin_lat: float, dest_lng: float, dest_lat: float
+    ) -> dict[str, Any]:
         """
         Calculates the best suitable road route using TomTom Routing API.
         Downsamples high-density points to a clean, crisp polyline to eliminate UI lag.
@@ -289,13 +301,18 @@ class LogisticsData:
                         # Downsample points for smooth 60fps Cesium rendering without lag (target ~350-500 points)
                         total_pts = len(raw_points)
                         step = max(1, total_pts // 400)
-                        downsampled: List[List[float]] = []
+                        downsampled: list[list[float]] = []
                         for i in range(0, total_pts, step):
                             pt = raw_points[i]
                             downsampled.append([round(pt["longitude"], 6), round(pt["latitude"], 6)])
                         # Ensure exact end point is included
-                        if raw_points and downsampled[-1] != [round(raw_points[-1]["longitude"], 6), round(raw_points[-1]["latitude"], 6)]:
-                            downsampled.append([round(raw_points[-1]["longitude"], 6), round(raw_points[-1]["latitude"], 6)])
+                        if raw_points and downsampled[-1] != [
+                            round(raw_points[-1]["longitude"], 6),
+                            round(raw_points[-1]["latitude"], 6),
+                        ]:
+                            downsampled.append(
+                                [round(raw_points[-1]["longitude"], 6), round(raw_points[-1]["latitude"], 6)]
+                            )
 
                         return {
                             "status": "OK",
@@ -364,9 +381,8 @@ class LogisticsData:
             "service": "Geodesic Road Estimator (Fallback)",
         }
 
-
     @staticmethod
-    def order_route_lookup(db: Session, order_id: str, seller_id: Optional[str] = None) -> Dict[str, Any]:
+    def order_route_lookup(db: Session, order_id: str, seller_id: str | None = None) -> dict[str, Any]:
         """
         Dynamically resolves the full end-to-end logistics & route intelligence for a single Olist Order ID:
         1. Order -> Customer -> Customer ZIP Prefix -> Median Geolocation Coordinates (Destination).
@@ -385,12 +401,18 @@ class LogisticsData:
             .first()
         )
         if not order:
-            return {"status": "NOT_FOUND", "reason": f"No order found matching '{clean_id}' in Olist dataset."}
+            return {
+                "status": "NOT_FOUND",
+                "reason": f"No order found matching '{clean_id}' in Olist dataset.",
+            }
 
         # ── 1. Resolve Customer (Destination) ──
         customer = db.query(Customer).filter(Customer.customer_id == order.customer_id).first()
         if not customer:
-            return {"status": "ERROR", "reason": f"Customer record missing for customer_id '{order.customer_id}'."}
+            return {
+                "status": "ERROR",
+                "reason": f"Customer record missing for customer_id '{order.customer_id}'.",
+            }
 
         customer_coords = LogisticsData._resolve_coordinates(db, customer.customer_zip_code_prefix)
         if not customer_coords:
@@ -415,7 +437,7 @@ class LogisticsData:
             return {"status": "ERROR", "reason": f"No order items found for order '{order.order_id}'."}
 
         seller_ids = list(dict.fromkeys(item.seller_id for item in order_items if item.seller_id))
-        sellers_data: List[Dict[str, Any]] = []
+        sellers_data: list[dict[str, Any]] = []
 
         for sid in seller_ids:
             seller = db.query(Seller).filter(Seller.seller_id == sid).first()
@@ -430,20 +452,25 @@ class LogisticsData:
             seller_freight = sum(float(it.freight_value or 0.0) for it in items_for_seller)
             seller_subtotal = sum(float(it.price or 0.0) for it in items_for_seller)
 
-            sellers_data.append({
-                "seller_id": seller.seller_id,
-                "zip_code_prefix": seller.seller_zip_code_prefix,
-                "city": seller.seller_city,
-                "state": seller.seller_state,
-                "lat": seller_coords["lat"],
-                "lng": seller_coords["lng"],
-                "item_count": len(items_for_seller),
-                "freight_value": round(seller_freight, 2),
-                "subtotal_value": round(seller_subtotal, 2),
-            })
+            sellers_data.append(
+                {
+                    "seller_id": seller.seller_id,
+                    "zip_code_prefix": seller.seller_zip_code_prefix,
+                    "city": seller.seller_city,
+                    "state": seller.seller_state,
+                    "lat": seller_coords["lat"],
+                    "lng": seller_coords["lng"],
+                    "item_count": len(items_for_seller),
+                    "freight_value": round(seller_freight, 2),
+                    "subtotal_value": round(seller_subtotal, 2),
+                }
+            )
 
         if not sellers_data:
-            return {"status": "ERROR", "reason": "Unable to resolve valid geolocation coordinates for sellers."}
+            return {
+                "status": "ERROR",
+                "reason": "Unable to resolve valid geolocation coordinates for sellers.",
+            }
 
         # Determine chosen seller
         selected_seller = next((s for s in sellers_data if s["seller_id"] == seller_id), sellers_data[0])
@@ -475,9 +502,9 @@ class LogisticsData:
         total_items_price = sum(float(it.price or 0.0) for it in order_items)
 
         # Delivery delay / SLA calculation
-        delay_days: Optional[float] = None
+        delay_days: float | None = None
         is_late = False
-        transit_days: Optional[float] = None
+        transit_days: float | None = None
 
         if delivered_dt and estimated_dt:
             margin_seconds = (delivered_dt - estimated_dt).total_seconds()
@@ -497,7 +524,7 @@ class LogisticsData:
         # Logistics Risk Assessment (grounded on empirical data)
         distance_km = route_info.get("distance_km", 0.0)
         risk_level = "LOW"
-        risk_reasons: List[str] = []
+        risk_reasons: list[str] = []
 
         if is_late:
             risk_level = "HIGH" if (delay_days or 0) >= 3 else "MEDIUM"
@@ -506,12 +533,16 @@ class LogisticsData:
             risk_level = "CRITICAL"
             risk_reasons.append(f"Order status is {order.order_status.upper()}.")
         elif distance_km > 1000:
-            risk_reasons.append(f"Long-haul cross-state lane ({distance_km:,.0f} km) increases transit variance.")
+            risk_reasons.append(
+                f"Long-haul cross-state lane ({distance_km:,.0f} km) increases transit variance."
+            )
             if risk_level == "LOW":
                 risk_level = "MEDIUM"
 
         if len(sellers_data) > 1:
-            risk_reasons.append(f"Multi-seller order ({len(sellers_data)} fulfillment origins) requires split-dispatch.")
+            risk_reasons.append(
+                f"Multi-seller order ({len(sellers_data)} fulfillment origins) requires split-dispatch."
+            )
 
         if not risk_reasons:
             risk_reasons.append("Delivered within empirical SLA margins with single fulfillment origin.")
@@ -545,4 +576,3 @@ class LogisticsData:
                 "dest_state": destination_info["state"],
             },
         }
-

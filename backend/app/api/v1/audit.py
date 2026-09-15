@@ -1,14 +1,13 @@
 """Audit log read API (SUPER_ADMIN only). Append-only — no write/delete routes."""
-from __future__ import annotations
 
-from typing import Optional
+from __future__ import annotations
 
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy import desc
 from sqlalchemy.orm import Session
 
-from app.database.session import get_read_db
 from app.api.v1.deps import require_super_admin
+from app.database.session import get_read_db
 from app.models.security import AuditLog, User
 
 router = APIRouter(prefix="/audit", tags=["Audit"])
@@ -18,8 +17,8 @@ router = APIRouter(prefix="/audit", tags=["Audit"])
 def list_audit(
     limit: int = Query(100, ge=1, le=500),
     offset: int = Query(0, ge=0),
-    action: Optional[str] = Query(None),
-    actor: Optional[str] = Query(None),
+    action: str | None = Query(None),
+    actor: str | None = Query(None),
     _: User = Depends(require_super_admin),
     db: Session = Depends(get_read_db),
 ):

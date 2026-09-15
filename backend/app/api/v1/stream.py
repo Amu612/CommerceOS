@@ -6,9 +6,11 @@ decisions) from the Redis `commerceos:events` channel to connected clients. When
 Redis is off it falls back to an in-process subscription so a single-instance
 deployment still gets live updates.
 """
+
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 from typing import Any
 
@@ -28,10 +30,8 @@ _local_clients: set[asyncio.Queue] = set()
 
 def _fanout_local(envelope: dict[str, Any]) -> None:
     for q in list(_local_clients):
-        try:
+        with contextlib.suppress(Exception):
             q.put_nowait(envelope)
-        except Exception:  # noqa: BLE001
-            pass
 
 
 subscribe_platform_local(_fanout_local)
@@ -56,10 +56,10 @@ async def stream_ws(ws: WebSocket, token: str | None = Query(None)):
         while not stop.is_set():
             try:
                 await asyncio.wait_for(stop.wait(), timeout=25)
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 try:
                     await ws.send_json({"channel": "system", "data": {"type": "ping"}})
-                except Exception:  # noqa: BLE001
+                except Exception:
                     stop.set()
 
     async def _pump_redis():
@@ -72,8 +72,10 @@ async def stream_ws(ws: WebSocket, token: str | None = Query(None)):
                 if msg.get("type") != "message":
                     continue
                 try:
-                    await ws.send_text(msg["data"] if isinstance(msg["data"], str) else json.dumps(msg["data"]))
-                except Exception:  # noqa: BLE001
+                    await ws.send_text(
+                        msg["data"] if isinstance(msg["data"], str) else json.dumps(msg["data"])
+                    )
+                except Exception:
                     stop.set()
                     break
         finally:
@@ -88,7 +90,7 @@ async def stream_ws(ws: WebSocket, token: str | None = Query(None)):
                 env = await q.get()
                 try:
                     await ws.send_json(env)
-                except Exception:  # noqa: BLE001
+                except Exception:
                     stop.set()
                     break
         finally:

@@ -1,4 +1,5 @@
 """`get_llm()` — the process-wide guarded LLM singleton (LangChain-backed)."""
+
 from __future__ import annotations
 
 from functools import lru_cache
@@ -14,7 +15,13 @@ logger = get_logger("llm")
 def get_llm() -> GuardedLLM:
     guarded = GuardedLLM()
     provider, model = settings.resolve_llm()
-    logger.info("llm_selected", configured=settings.LLM_PROVIDER, resolved=provider, model=model, available=guarded.available())
+    logger.info(
+        "llm_selected",
+        configured=settings.LLM_PROVIDER,
+        resolved=provider,
+        model=model,
+        available=guarded.available(),
+    )
     return guarded
 
 
@@ -25,5 +32,5 @@ def reset_llm_cache() -> None:
         from app.services.llm.chat_model import get_chat_model
 
         get_chat_model.cache_clear()
-    except Exception:  # noqa: BLE001
+    except Exception:
         pass

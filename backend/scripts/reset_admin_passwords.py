@@ -7,6 +7,7 @@ when that password changes (e.g. after updating SEED_ADMIN_PASSWORD).
 
     python -m scripts.reset_admin_passwords
 """
+
 from __future__ import annotations
 
 import sys

@@ -11,10 +11,11 @@ extend-exclude = ["alembic/versions", ".venv"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "C4", "SIM", "PL", "RUF"]
-ignore = ["E501", "PLR0913", "PLR0912", "PLR0915", "PLR2004", "B008", "SIM108"]
+ignore = ["E501", "PLR0913", "PLR0912", "PLR0915", "PLR2004", "B008", "SIM108", "PLR0911"]
 
 [tool.ruff.lint.per-file-ignores]
-"tests/*" = ["PLR2004", "S101", "PLR0915"]
+"tests/*" = ["PLR2004", "S101", "PLR0915", "E402"]
+"scripts/*" = ["E402"]
 "eval/*" = ["PLR2004"]
 
 [tool.black]

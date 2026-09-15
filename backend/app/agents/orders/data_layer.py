@@ -4,28 +4,29 @@ Calculates state, backlog, cancellation risk, and fulfillment health exclusively
 from observed records available up to the current simulated/replay clock time T.
 Zero hardcoded business thresholds or fabricated estimates.
 """
+
 import logging
 import math
-from typing import Dict, Any, Optional, List
-from datetime import datetime, timezone, timedelta
+from datetime import UTC, datetime
+from typing import Any
+
+from sqlalchemy import func, text
 from sqlalchemy.orm import Session
-from sqlalchemy import func, text, and_
 
 from app.database.session import SessionLocal
-from app.models.olist import Order
-from app.models.dataco import DataCoOrder
-from app.intelligence.statistics.profiler import StatisticalProfiler
 from app.intelligence.anomaly.detector import AnomalyDetector
-from app.intelligence.confidence.calculator import ConfidenceCalculator
+from app.intelligence.statistics.profiler import StatisticalProfiler
+from app.models.dataco import DataCoOrder
+from app.models.olist import Order
 
 logger = logging.getLogger(__name__)
 
 
-def _normalize_dt(dt: Optional[datetime]) -> Optional[datetime]:
+def _normalize_dt(dt: datetime | None) -> datetime | None:
     if dt is None:
         return None
     if dt.tzinfo is None:
-        return dt.replace(tzinfo=timezone.utc)
+        return dt.replace(tzinfo=UTC)
     return dt
 
 
@@ -41,10 +42,10 @@ class OrdersDataLayer:
     Exclusively evaluates records whose timestamp <= simulated_clock.
     """
 
-    _db_available: Optional[bool] = None
+    _db_available: bool | None = None
 
     @classmethod
-    def _get_session(cls, db: Optional[Session]) -> tuple[Optional[Session], bool]:
+    def _get_session(cls, db: Session | None) -> tuple[Session | None, bool]:
         if db is not None:
             return db, False
         if cls._db_available is False:
@@ -59,7 +60,7 @@ class OrdersDataLayer:
             return None, False
 
     @classmethod
-    def get_order_summary(cls, db: Optional[Session] = None) -> Dict[str, Any]:
+    def get_order_summary(cls, db: Session | None = None) -> dict[str, Any]:
         """Calculates dynamic total, pending, completed, cancelled, delayed orders and fulfillment rate up to current simulated time T."""
         session, close = cls._get_session(db)
         if session is None:
@@ -84,7 +85,9 @@ class OrdersDataLayer:
                 )
                 o_total = sum(olist_status_counts.values())
                 o_completed = olist_status_counts.get("delivered", 0)
-                o_cancelled = olist_status_counts.get("canceled", 0) + olist_status_counts.get("unavailable", 0)
+                o_cancelled = olist_status_counts.get("canceled", 0) + olist_status_counts.get(
+                    "unavailable", 0
+                )
                 olist_pending_statuses = ["created", "approved", "invoiced", "processing"]
                 o_pending = sum(olist_status_counts.get(s, 0) for s in olist_pending_statuses)
 
@@ -114,8 +117,16 @@ class OrdersDataLayer:
                 )
                 dc_total = sum(dc_status_counts.values())
                 dc_completed = dc_status_counts.get("COMPLETE", 0) + dc_status_counts.get("CLOSED", 0)
-                dc_cancelled = dc_status_counts.get("CANCELED", 0) + dc_status_counts.get("SUSPECTED_FRAUD", 0)
-                dc_pending_statuses = ["PROCESSING", "PENDING", "PENDING_PAYMENT", "ON_HOLD", "PAYMENT_REVIEW"]
+                dc_cancelled = dc_status_counts.get("CANCELED", 0) + dc_status_counts.get(
+                    "SUSPECTED_FRAUD", 0
+                )
+                dc_pending_statuses = [
+                    "PROCESSING",
+                    "PENDING",
+                    "PENDING_PAYMENT",
+                    "ON_HOLD",
+                    "PAYMENT_REVIEW",
+                ]
                 dc_pending = sum(dc_status_counts.get(s, 0) for s in dc_pending_statuses)
 
                 dc_delayed = (
@@ -168,15 +179,21 @@ class OrdersDataLayer:
                 session.close()
 
     @classmethod
-    def _get_shopify_order_summary(cls, session: Session) -> Dict[str, Any]:
+    def _get_shopify_order_summary(cls, session: Session) -> dict[str, Any]:
         """Live-source counterpart of `get_order_summary` — real Shopify orders,
         no simulated clock (live orders are simply 'as of right now')."""
         from app.models.shopify import ShopifyOrder
 
         try:
-            rows = session.query(ShopifyOrder.fulfillment_status, ShopifyOrder.cancelled_at, func.count(ShopifyOrder.order_id)).group_by(
-                ShopifyOrder.fulfillment_status, ShopifyOrder.cancelled_at.isnot(None)
-            ).all()
+            rows = (
+                session.query(
+                    ShopifyOrder.fulfillment_status,
+                    ShopifyOrder.cancelled_at,
+                    func.count(ShopifyOrder.order_id),
+                )
+                .group_by(ShopifyOrder.fulfillment_status, ShopifyOrder.cancelled_at.isnot(None))
+                .all()
+            )
         except Exception as e:
             logger.warning(f"Shopify order summary query failed: {e}")
             return cls._empty_summary("DATABASE_UNAVAILABLE")
@@ -211,11 +228,11 @@ class OrdersDataLayer:
             "data_source": "SHOPIFY",
             "data_status": "OBSERVED",
             "sample_count": total,
-            "simulated_clock": datetime.now(timezone.utc).isoformat(),
+            "simulated_clock": datetime.now(UTC).isoformat(),
         }
 
     @classmethod
-    def _empty_summary(cls, reason: str = "NO_RECORDS") -> Dict[str, Any]:
+    def _empty_summary(cls, reason: str = "NO_RECORDS") -> dict[str, Any]:
         return {
             "total_orders": 0,
             "pending_orders": 0,
@@ -231,7 +248,7 @@ class OrdersDataLayer:
         }
 
     @classmethod
-    def get_pending_queue(cls, db: Optional[Session] = None) -> Dict[str, Any]:
+    def get_pending_queue(cls, db: Session | None = None) -> dict[str, Any]:
         """Calculates pending count, empirical age distribution, percentiles, and outlier fences from actual timestamps."""
         session, close = cls._get_session(db)
         if session is None:
@@ -239,7 +256,7 @@ class OrdersDataLayer:
 
         try:
             sim_clock = get_simulated_clock(session)
-            ages_hours: List[float] = []
+            ages_hours: list[float] = []
             has_olist = False
             has_dataco = False
 
@@ -266,7 +283,13 @@ class OrdersDataLayer:
 
             # 2. DataCo Pending Orders
             try:
-                dc_pending_statuses = ["PROCESSING", "PENDING", "PENDING_PAYMENT", "ON_HOLD", "PAYMENT_REVIEW"]
+                dc_pending_statuses = [
+                    "PROCESSING",
+                    "PENDING",
+                    "PENDING_PAYMENT",
+                    "ON_HOLD",
+                    "PAYMENT_REVIEW",
+                ]
                 dc_rows = (
                     session.query(DataCoOrder.order_date)
                     .filter(
@@ -297,7 +320,11 @@ class OrdersDataLayer:
                     "max_age_hours": None,
                     "anomalous_aging_count": 0,
                     "aging_over_48h": 0,
-                    "data_source": "BOTH" if (has_olist and has_dataco) else ("OLIST" if has_olist else ("DATACO" if has_dataco else "NONE")),
+                    "data_source": (
+                        "BOTH"
+                        if (has_olist and has_dataco)
+                        else ("OLIST" if has_olist else ("DATACO" if has_dataco else "NONE"))
+                    ),
                     "data_status": "NOT_ESTIMABLE",
                     "not_estimable_reason": "No pending orders in active queue as of current simulated clock.",
                     "sample_count": 0,
@@ -316,6 +343,7 @@ class OrdersDataLayer:
                 anom_threshold = profile.max_val if profile else 0.0
 
             sorted_ages = sorted(ages_hours)
+
             def _pct(p: float) -> float:
                 idx = int((len(sorted_ages) - 1) * p)
                 return sorted_ages[idx]
@@ -331,30 +359,38 @@ class OrdersDataLayer:
             max_h = max_age
             buckets = []
             if max_h <= min_h or n_pending < 4:
-                buckets.append({
-                    "label": f"{min_h:.1f}h - {max_h:.1f}h",
-                    "lower_bound_hours": round(min_h, 1),
-                    "upper_bound_hours": round(max_h, 1),
-                    "order_count": n_pending,
-                    "pct_of_pending": 100.0,
-                })
+                buckets.append(
+                    {
+                        "label": f"{min_h:.1f}h - {max_h:.1f}h",
+                        "lower_bound_hours": round(min_h, 1),
+                        "upper_bound_hours": round(max_h, 1),
+                        "order_count": n_pending,
+                        "pct_of_pending": 100.0,
+                    }
+                )
             else:
                 q1 = profile.q25 if profile else min_h
                 q2 = median_age or ((min_h + max_h) / 2.0)
                 q3 = profile.q75 if profile else max_h
                 cutoffs = [min_h, q1, q2, q3, max_h]
-                cutoffs = sorted(list(set(cutoffs)))
+                cutoffs = sorted(set(cutoffs))
                 for i in range(len(cutoffs) - 1):
                     low = cutoffs[i]
                     high = cutoffs[i + 1]
-                    c = sum(1 for a in ages_hours if (low <= a <= high if i == len(cutoffs) - 2 else low <= a < high))
-                    buckets.append({
-                        "label": f"{low:.1f}h - {high:.1f}h",
-                        "lower_bound_hours": round(low, 1),
-                        "upper_bound_hours": round(high, 1),
-                        "order_count": c,
-                        "pct_of_pending": round((c / n_pending) * 100.0, 1),
-                    })
+                    c = sum(
+                        1
+                        for a in ages_hours
+                        if (low <= a <= high if i == len(cutoffs) - 2 else low <= a < high)
+                    )
+                    buckets.append(
+                        {
+                            "label": f"{low:.1f}h - {high:.1f}h",
+                            "lower_bound_hours": round(low, 1),
+                            "upper_bound_hours": round(high, 1),
+                            "order_count": c,
+                            "pct_of_pending": round((c / n_pending) * 100.0, 1),
+                        }
+                    )
 
             data_src = "BOTH" if (has_olist and has_dataco) else ("OLIST" if has_olist else "DATACO")
             return {
@@ -380,7 +416,7 @@ class OrdersDataLayer:
                 session.close()
 
     @classmethod
-    def _empty_pending_queue(cls, reason: str = "NO_RECORDS") -> Dict[str, Any]:
+    def _empty_pending_queue(cls, reason: str = "NO_RECORDS") -> dict[str, Any]:
         return {
             "pending_count": 0,
             "age_distribution": [],
@@ -398,7 +434,7 @@ class OrdersDataLayer:
         }
 
     @classmethod
-    def get_cancellation_risk(cls, db: Optional[Session] = None) -> Dict[str, Any]:
+    def get_cancellation_risk(cls, db: Session | None = None) -> dict[str, Any]:
         """
         Calculates cancellation rate, empirical dispersion, risk tier, and predicted cancellations.
         Derived strictly from observed records without arbitrary fixed thresholds.
@@ -440,9 +476,12 @@ class OrdersDataLayer:
 
             # Get daily historical cancellation rate series up to sim_clock
             from app.agents.orders.tools import OrdersTools
+
             canc_hist = OrdersTools.get_cancellation_history(days=90, db=session)
             daily_series = canc_hist.get("daily_series", [])
-            daily_rates = [float(r["cancellation_rate_pct"]) for r in daily_series if "cancellation_rate_pct" in r]
+            daily_rates = [
+                float(r["cancellation_rate_pct"]) for r in daily_series if "cancellation_rate_pct" in r
+            ]
 
             risk_level = "LOW"
             z_score = None
@@ -463,22 +502,32 @@ class OrdersDataLayer:
                         # Modified Z-Score / Tukey outlier threshold
                         if z_score >= 3.0 or canc_rate > profile.upper_outer_fence:
                             risk_level = "CRITICAL"
-                            risk_drivers.append(f"Cancellation rate ({canc_rate}%) is an extreme statistical outlier (z={z_score}, upper fence={profile.upper_outer_fence}%).")
+                            risk_drivers.append(
+                                f"Cancellation rate ({canc_rate}%) is an extreme statistical outlier (z={z_score}, upper fence={profile.upper_outer_fence}%)."
+                            )
                         elif z_score >= 2.0 or canc_rate > profile.q75:
                             risk_level = "HIGH"
-                            risk_drivers.append(f"Cancellation rate ({canc_rate}%) exceeds the 75th percentile of historical daily rates (z={z_score}).")
+                            risk_drivers.append(
+                                f"Cancellation rate ({canc_rate}%) exceeds the 75th percentile of historical daily rates (z={z_score})."
+                            )
                         elif z_score >= 1.0 or canc_rate > profile.median:
                             risk_level = "MEDIUM"
-                            risk_drivers.append(f"Cancellation rate ({canc_rate}%) is above empirical median ({profile.median}%).")
+                            risk_drivers.append(
+                                f"Cancellation rate ({canc_rate}%) is above empirical median ({profile.median}%)."
+                            )
                         else:
                             risk_level = "LOW"
-                            risk_drivers.append(f"Cancellation rate ({canc_rate}%) is within normal empirical baseline range ({profile.q25}% - {profile.q75}%).")
+                            risk_drivers.append(
+                                f"Cancellation rate ({canc_rate}%) is within normal empirical baseline range ({profile.q25}% - {profile.q75}%)."
+                            )
             else:
                 # Small sample: derive risk from standard error of binomial proportion SE = sqrt(p*(1-p)/n)
                 p = cancelled / total
                 se = math.sqrt(p * (1.0 - p) / total) if total > 1 else p
                 if p > 0:
-                    risk_drivers.append(f"Cancellation rate ({canc_rate}%) evaluated from sample size n={total} (standard error={se*100:.2f}%).")
+                    risk_drivers.append(
+                        f"Cancellation rate ({canc_rate}%) evaluated from sample size n={total} (standard error={se*100:.2f}%)."
+                    )
                     if p >= 0.15:
                         risk_level = "HIGH"
                     elif p >= 0.05:
@@ -488,7 +537,9 @@ class OrdersDataLayer:
 
             return {
                 "cancellation_rate_pct": canc_rate,
-                "historical_baseline_rate_pct": round(baseline_mean, 2) if baseline_mean is not None else None,
+                "historical_baseline_rate_pct": (
+                    round(baseline_mean, 2) if baseline_mean is not None else None
+                ),
                 "z_score": z_score,
                 "risk_level": risk_level,
                 "predicted_cancellations": predicted,
@@ -514,7 +565,7 @@ class OrdersDataLayer:
                 session.close()
 
     @classmethod
-    def get_fulfillment_health(cls, db: Optional[Session] = None) -> Dict[str, Any]:
+    def get_fulfillment_health(cls, db: Session | None = None) -> dict[str, Any]:
         """
         Calculates processing time, delivery times, and SLA health dynamically from observed deliveries.
         Zero arbitrary fixed percentage cutoffs.
@@ -550,9 +601,9 @@ class OrdersDataLayer:
                 }
 
             # Collect empirical processing hours and delivery days up to sim_clock
-            proc_hours: List[float] = []
-            deliv_days: List[float] = []
-            delay_margins_days: List[float] = []
+            proc_hours: list[float] = []
+            deliv_days: list[float] = []
+            delay_margins_days: list[float] = []
 
             # 1. Olist delivered orders
             try:
@@ -653,7 +704,7 @@ class OrdersDataLayer:
                 session.close()
 
     @classmethod
-    def _empty_fulfillment_health(cls, reason: str = "NO_RECORDS") -> Dict[str, Any]:
+    def _empty_fulfillment_health(cls, reason: str = "NO_RECORDS") -> dict[str, Any]:
         return {
             "avg_processing_hours": None,
             "median_processing_hours": None,
@@ -670,7 +721,7 @@ class OrdersDataLayer:
         }
 
     @classmethod
-    def get_order_trend(cls, db: Optional[Session] = None) -> str:
+    def get_order_trend(cls, db: Session | None = None) -> str:
         """Determines recent order volume trend trajectory via statistically significant slope t-test."""
         session, close = cls._get_session(db)
         if session is None:
@@ -678,6 +729,7 @@ class OrdersDataLayer:
 
         try:
             from app.agents.orders.tools import OrdersTools
+
             history = OrdersTools.get_order_history(days=30, db=session)
             if len(history) < 3:
                 return "STABLE"
@@ -693,7 +745,7 @@ class OrdersDataLayer:
 
             slope = sum((x[i] - x_mean) * (y[i] - y_mean) for i in range(n)) / denom
             residuals = [(y[i] - (y_mean + slope * (x[i] - x_mean))) for i in range(n)]
-            rss = sum(r ** 2 for r in residuals)
+            rss = sum(r**2 for r in residuals)
             s_err = math.sqrt(rss / (n - 2)) if n > 2 else 0.0
             se_slope = s_err / math.sqrt(denom) if denom > 0 and s_err > 0 else 0.0
 

@@ -3,6 +3,7 @@ Logistics LangChain tools. Each tool is the real, data-driven computation
 (SQL + `app.intelligence` statistics); severities come from the observed
 distribution, never a hardcoded constant.
 """
+
 from __future__ import annotations
 
 from langchain_core.tools import tool
@@ -80,16 +81,20 @@ def detect_late_delivery_risk() -> dict:
         if total == 0 or at_risk == 0:
             return {"finding": None}
         frac = at_risk / total
-        return {"finding": {
-            "category": "LATE_DELIVERY_RISK",
-            "severity": severity_from_fraction(frac),
-            "title": "Many packages are at risk of arriving late",
-            "what_happened": f"{at_risk:,} out of {total:,} packages ({r['at_risk_rate_pct']}%) are likely to be late.",
-            "why_it_matters": "When packages arrive late, customers get upset, ask for money back, and stop buying from us.",
-            "recommended_action": "Fix the slowest delivery routes first. Tell buyers about delays early and add extra days to delivery estimates.",
-            "evidence": f"at_risk={at_risk}, total={total}, rate={r['at_risk_rate_pct']}%",
-            "confidence": sample_confidence(total), "data_status": "CALCULATED", "sample_count": total,
-        }}
+        return {
+            "finding": {
+                "category": "LATE_DELIVERY_RISK",
+                "severity": severity_from_fraction(frac),
+                "title": "Many packages are at risk of arriving late",
+                "what_happened": f"{at_risk:,} out of {total:,} packages ({r['at_risk_rate_pct']}%) are likely to be late.",
+                "why_it_matters": "When packages arrive late, customers get upset, ask for money back, and stop buying from us.",
+                "recommended_action": "Fix the slowest delivery routes first. Tell buyers about delays early and add extra days to delivery estimates.",
+                "evidence": f"at_risk={at_risk}, total={total}, rate={r['at_risk_rate_pct']}%",
+                "confidence": sample_confidence(total),
+                "data_status": "CALCULATED",
+                "sample_count": total,
+            }
+        }
     finally:
         db.close()
 
@@ -103,15 +108,20 @@ def detect_slow_carrier() -> dict:
         worst = max((c for c in cs if c["shipments"] >= 20), key=lambda c: c["avg_delay_days"], default=None)
         if not worst or worst["avg_delay_days"] <= 0:
             return {"finding": None}
-        return {"finding": {
-            "category": "CARRIER_PERFORMANCE",
-            "severity": "HIGH" if worst["avg_delay_days"] >= 1.5 else "MEDIUM",
-            "title": f"Delivery company '{worst['carrier']}' is too slow",
-            "what_happened": f"Delivery company '{worst['carrier']}' takes {worst['avg_transit_days']} days instead of the planned {worst['avg_scheduled_days']} days (it is {worst['avg_delay_days']} days late on average across {worst['shipments']:,} packages).",
-            "why_it_matters": "Using a slow delivery company makes packages late and hurts our customer reviews.",
-            "recommended_action": f"Send rush orders using faster delivery companies instead. Add {worst['avg_delay_days']} days to expected delivery dates for '{worst['carrier']}'.",
-            "evidence": fmt_evidence(worst), "confidence": sample_confidence(worst["shipments"]), "data_status": "CALCULATED", "sample_count": worst["shipments"],
-        }}
+        return {
+            "finding": {
+                "category": "CARRIER_PERFORMANCE",
+                "severity": "HIGH" if worst["avg_delay_days"] >= 1.5 else "MEDIUM",
+                "title": f"Delivery company '{worst['carrier']}' is too slow",
+                "what_happened": f"Delivery company '{worst['carrier']}' takes {worst['avg_transit_days']} days instead of the planned {worst['avg_scheduled_days']} days (it is {worst['avg_delay_days']} days late on average across {worst['shipments']:,} packages).",
+                "why_it_matters": "Using a slow delivery company makes packages late and hurts our customer reviews.",
+                "recommended_action": f"Send rush orders using faster delivery companies instead. Add {worst['avg_delay_days']} days to expected delivery dates for '{worst['carrier']}'.",
+                "evidence": fmt_evidence(worst),
+                "confidence": sample_confidence(worst["shipments"]),
+                "data_status": "CALCULATED",
+                "sample_count": worst["shipments"],
+            }
+        }
     finally:
         db.close()
 
@@ -122,18 +132,27 @@ def detect_lane_bottleneck() -> dict:
     db = _db()
     try:
         ls = LogisticsData.lane_performance(db)["lanes"]
-        worst = max((l for l in ls if l["shipments"] >= 20), key=lambda l: l["sla_gap_days"], default=None)
+        worst = max(
+            (lane for lane in ls if lane["shipments"] >= 20),
+            key=lambda lane: lane["sla_gap_days"],
+            default=None,
+        )
         if not worst or worst["sla_gap_days"] <= 0:
             return {"finding": None}
-        return {"finding": {
-            "category": "LANE_BOTTLENECK",
-            "severity": "HIGH" if worst["sla_gap_days"] >= 2 else "MEDIUM",
-            "title": f"Shipping to '{worst['lane']}' takes too long",
-            "what_happened": f"Deliveries to '{worst['lane']}' take {worst['avg_transit_days']} days, which is {worst['sla_gap_days']} days slower than promised ({worst['late_risk_rate_pct']}% are late).",
-            "why_it_matters": "This entire region has shipping slowdowns, meaning almost all packages sent here arrive late.",
-            "recommended_action": f"Check the sorting center for '{worst['lane']}' to see what is stuck, or try shipping from a closer warehouse.",
-            "evidence": fmt_evidence(worst), "confidence": sample_confidence(worst["shipments"]), "data_status": "CALCULATED", "sample_count": worst["shipments"],
-        }}
+        return {
+            "finding": {
+                "category": "LANE_BOTTLENECK",
+                "severity": "HIGH" if worst["sla_gap_days"] >= 2 else "MEDIUM",
+                "title": f"Shipping to '{worst['lane']}' takes too long",
+                "what_happened": f"Deliveries to '{worst['lane']}' take {worst['avg_transit_days']} days, which is {worst['sla_gap_days']} days slower than promised ({worst['late_risk_rate_pct']}% are late).",
+                "why_it_matters": "This entire region has shipping slowdowns, meaning almost all packages sent here arrive late.",
+                "recommended_action": f"Check the sorting center for '{worst['lane']}' to see what is stuck, or try shipping from a closer warehouse.",
+                "evidence": fmt_evidence(worst),
+                "confidence": sample_confidence(worst["shipments"]),
+                "data_status": "CALCULATED",
+                "sample_count": worst["shipments"],
+            }
+        }
     finally:
         db.close()
 
@@ -146,16 +165,22 @@ def detect_sla_degradation() -> dict:
         s = LogisticsData.olist_delivery_sla(db)
         if s.get("status") != "OK" or s.get("sla_health") not in ("AT_RISK", "DEGRADED"):
             return {"finding": None}
-        return {"finding": {
-            "category": "DELIVERY_SLA",
-            "severity": "HIGH" if s["sla_health"] == "DEGRADED" else "MEDIUM",
-            "title": "Too many packages are delivered past their promised date",
-            "what_happened": f"{s['late_deliveries']:,} out of {s['sample_count']:,} orders arrived later than the promised date.",
-            "why_it_matters": "Missing delivery promises makes buyers lose trust and call support asking where their orders are.",
-            "recommended_action": "Show buyers safer delivery dates with a few extra days added so packages arrive on time.",
-            "evidence": fmt_evidence({k: s[k] for k in ("on_time_rate_pct", "median_margin_days", "p90_margin_days")}),
-            "confidence": sample_confidence(s["sample_count"]), "data_status": "CALCULATED", "sample_count": s["sample_count"],
-        }}
+        return {
+            "finding": {
+                "category": "DELIVERY_SLA",
+                "severity": "HIGH" if s["sla_health"] == "DEGRADED" else "MEDIUM",
+                "title": "Too many packages are delivered past their promised date",
+                "what_happened": f"{s['late_deliveries']:,} out of {s['sample_count']:,} orders arrived later than the promised date.",
+                "why_it_matters": "Missing delivery promises makes buyers lose trust and call support asking where their orders are.",
+                "recommended_action": "Show buyers safer delivery dates with a few extra days added so packages arrive on time.",
+                "evidence": fmt_evidence(
+                    {k: s[k] for k in ("on_time_rate_pct", "median_margin_days", "p90_margin_days")}
+                ),
+                "confidence": sample_confidence(s["sample_count"]),
+                "data_status": "CALCULATED",
+                "sample_count": s["sample_count"],
+            }
+        }
     finally:
         db.close()
 
@@ -170,8 +195,19 @@ def shipment_lookup(order_id: str) -> dict:
         db.close()
 
 
-METRIC_TOOLS = [logistics_overview, carrier_scorecard, lane_scorecard, transit_time_distribution, olist_delivery_sla]
-DETECTOR_TOOLS = [detect_late_delivery_risk, detect_slow_carrier, detect_lane_bottleneck, detect_sla_degradation]
+METRIC_TOOLS = [
+    logistics_overview,
+    carrier_scorecard,
+    lane_scorecard,
+    transit_time_distribution,
+    olist_delivery_sla,
+]
+DETECTOR_TOOLS = [
+    detect_late_delivery_risk,
+    detect_slow_carrier,
+    detect_lane_bottleneck,
+    detect_sla_degradation,
+]
 LOOKUP_TOOLS = [shipment_lookup]
 
 
@@ -227,7 +263,9 @@ def logistics_analytics(metric: str) -> str:
             return "No delivered orders observed yet."
         cat_en = {
             r[0]: r[1]
-            for r in db.query(CategoryTranslation.product_category_name, CategoryTranslation.product_category_name_english).all()
+            for r in db.query(
+                CategoryTranslation.product_category_name, CategoryTranslation.product_category_name_english
+            ).all()
         }
 
         def disp(c):
@@ -240,7 +278,7 @@ def logistics_analytics(metric: str) -> str:
         early = on_time = late = 0
         year_days: dict = defaultdict(list)
 
-        for oid, purch, deliv, est, state, sid, cat in rows:
+        for _oid, purch, deliv, est, state, sid, cat in rows:
             if not purch or not deliv:
                 continue
             d_days = (deliv - purch).total_seconds() / 86400.0
@@ -265,7 +303,9 @@ def logistics_analytics(metric: str) -> str:
                     s["days_late"].append(diff)
 
         if metric == "delivery_by_state":
-            rows2 = sorted(((s, st.mean(v)) for s, v in state_days.items() if len(v) >= 10), key=lambda x: -x[1])
+            rows2 = sorted(
+                ((s, st.mean(v)) for s, v in state_days.items() if len(v) >= 10), key=lambda x: -x[1]
+            )
             parts = ", ".join(f"{s}: {d:.1f}d" for s, d in rows2[:5])
             return f"Five slowest states by average delivery time: {parts}"
         if metric == "late_pct":
@@ -281,16 +321,22 @@ def logistics_analytics(metric: str) -> str:
                     rows2.append((sid, s["late"] / s["n"] * 100, s["n"]))
             rows2.sort(key=lambda x: -x[1])
             parts = ", ".join(f"#{sid[:8]} {p:.0f}% of {n}" for sid, p, n in rows2[:6])
-            return f"Sellers with the highest late-delivery % (min 20 delivered orders): " + (parts or "none")
+            return "Sellers with the highest late-delivery % (min 20 delivered orders): " + (parts or "none")
         if metric == "monthly_delay_gap":
-            rows2 = sorted(((ym, st.mean(v)) for ym, v in monthly_gap.items() if len(v) >= 10), key=lambda x: -x[1])
+            rows2 = sorted(
+                ((ym, st.mean(v)) for ym, v in monthly_gap.items() if len(v) >= 10), key=lambda x: -x[1]
+            )
             parts = ", ".join(f"{ym}: +{g:.1f}d" for ym, g in rows2[:5])
             worst = rows2[0] if rows2 else None
-            return f"Months with the largest est-vs-actual delivery gap: {parts}" + (f". Worst: {worst[0]}" if worst else "")
+            return f"Months with the largest est-vs-actual delivery gap: {parts}" + (
+                f". Worst: {worst[0]}" if worst else ""
+            )
         if metric == "category_delay":
-            rows2 = sorted(((c, st.mean(v)) for c, v in cat_delay.items() if len(v) >= 10), key=lambda x: -x[1])
+            rows2 = sorted(
+                ((c, st.mean(v)) for c, v in cat_delay.items() if len(v) >= 10), key=lambda x: -x[1]
+            )
             parts = ", ".join(f"{disp(c)}: +{g:.1f}d" for c, g in rows2[:6])
-            return f"Categories with the highest average delivery delay: " + (parts or "none")
+            return "Categories with the highest average delivery delay: " + (parts or "none")
         if metric == "state_spread":
             rows2 = [(s, st.mean(v)) for s, v in state_days.items() if len(v) >= 10]
             if len(rows2) < 2:
@@ -310,8 +356,10 @@ def logistics_analytics(metric: str) -> str:
                 if s["n"] >= max(20, med_n) and s["late"] / s["n"] > 0.1
             ]
             out.sort(key=lambda x: -x[1])
-            parts = ", ".join(f"#{sid[:8]} ({n} orders, {p:.0f}% late, +{d:.1f}d avg)" for sid, n, p, d in out[:6])
-            return f"High-volume sellers with poor delivery: " + (parts or "none")
+            parts = ", ".join(
+                f"#{sid[:8]} ({n} orders, {p:.0f}% late, +{d:.1f}d avg)" for sid, n, p, d in out[:6]
+            )
+            return "High-volume sellers with poor delivery: " + (parts or "none")
         if metric == "delivery_by_year":
             rows2 = sorted(((y, st.mean(v)) for y, v in year_days.items()), key=lambda x: x[0])
             parts = ", ".join(f"{y}: {d:.1f}d" for y, d in rows2)
@@ -328,18 +376,21 @@ def logistics_analytics(metric: str) -> str:
                 scored.append((sid, risk, s["n"], late_p, avg_late))
             scored.sort(key=lambda x: -x[1])
             parts = "; ".join(
-                f"#{sid[:8]} (risk {r:.2f} = vol {n}/100 × late {p:.0f}% × +{d:.1f}d)"
+                f"#{sid[:8]} (risk {r:.2f} = vol {n}/100 x late {p:.0f}% x +{d:.1f}d)"
                 for sid, r, n, p, d in scored[:10]
             )
-            return f"Top 10 logistics-risk sellers (delivered-order volume × late-rate × avg delay): " + (parts or "none")
+            return "Top 10 logistics-risk sellers (delivered-order volume x late-rate x avg delay): " + (
+                parts or "none"
+            )
         return (
             "Unknown metric. Use one of: delivery_by_state, late_pct, avg_days_late, seller_late_pct, "
             "monthly_delay_gap, category_delay, state_spread, punctuality_split, volume_vs_late, "
             "delivery_by_year, seller_risk_rank"
         )
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         return f"❌ Analytics failed: {exc}"
     finally:
         db.close()
+
 
 LOOKUP_TOOLS = [shipment_lookup, logistics_analytics]

@@ -1,12 +1,12 @@
 import asyncio
 import logging
-from typing import Optional, Dict, Any
-from fastapi import APIRouter, Depends, Request
-from sqlalchemy.orm import Session
-from pydantic import BaseModel
 
+from fastapi import APIRouter, Depends, Request
+from pydantic import BaseModel
+from sqlalchemy.orm import Session
+
+from app.agents.orders import OrdersAgentOutput, OrdersQueryResponse, orders_agent
 from app.database.session import get_db
-from app.agents.orders import orders_agent, OrdersAgentOutput, OrdersQueryResponse
 
 logger = logging.getLogger(__name__)
 
@@ -16,21 +16,21 @@ orders_router = router
 
 class AnalysisRequest(BaseModel):
     generate_notifications: bool = True
-    execution_id: Optional[str] = None
-    snapshot_id: Optional[str] = None
+    execution_id: str | None = None
+    snapshot_id: str | None = None
 
 
 class QueryRequest(BaseModel):
-    message: Optional[str] = None
-    query: Optional[str] = None
-    history: Optional[list] = None
+    message: str | None = None
+    query: str | None = None
+    history: list | None = None
 
 
 @router.post("/analyze", response_model=OrdersAgentOutput)
 @router.get("/analyze", response_model=OrdersAgentOutput)
 def analyze_orders(
     request: Request,
-    payload: Optional[AnalysisRequest] = None,
+    payload: AnalysisRequest | None = None,
     db: Session = Depends(get_db),
 ):
     """
@@ -99,13 +99,13 @@ def reset_orders_agent(db: Session = Depends(get_db)):
 
 
 class IngestionControlRequest(BaseModel):
-    action: Optional[str] = "start"  # "start", "pause", "resume", "stop", "reset", "step", "complete"
-    speed: Optional[int] = None
-    step: Optional[int] = 50
-    clear_db: Optional[bool] = True
+    action: str | None = "start"  # "start", "pause", "resume", "stop", "reset", "step", "complete"
+    speed: int | None = None
+    step: int | None = 50
+    clear_db: bool | None = True
 
 
-from app.services.replay_engine import replay_engine
+from app.services.replay_engine import replay_engine  # noqa: E402
 
 # A dedicated router, not more routes on `orders_router` — ingestion/replay
 # control mutates the shared dataset every single agent reads (and `reset`
@@ -187,4 +187,3 @@ def get_simulation_status():
 @nexus_sim_router.post("/control")
 async def control_simulation(payload: IngestionControlRequest):
     return await control_ingestion(payload)
-

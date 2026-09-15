@@ -8,6 +8,7 @@ Endpoints (mirrors the E-Commerce AI Customer Support Agent project):
 
 Aliased under /api/v1/agents/customer/* for parity with the Inventory agent.
 """
+
 import asyncio
 import json
 import logging
@@ -17,9 +18,9 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 from starlette.concurrency import run_in_threadpool
 
-from app.database.session import get_db
-from app.agents.customer import customer_support_agent, CustomerAgentResponse
+from app.agents.customer import CustomerAgentResponse, customer_support_agent
 from app.agents.customer.schemas import CustomerQueryRequest
+from app.database.session import get_db
 
 logger = logging.getLogger(__name__)
 

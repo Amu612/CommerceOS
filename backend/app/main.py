@@ -5,6 +5,7 @@ M1 wires the production foundation (settings, structured logging, request
 context, typed error handling, security middleware) while keeping every existing
 route working. API consolidation under /api/v1 happens in milestone M7.
 """
+
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -36,7 +37,7 @@ async def lifespan(app: FastAPI):
 
         indexed = replay_engine.index_events_from_datasets(max_orders=settings.REPLAY_MAX_ORDERS)
         logger.info("replay_indexed", events=indexed)
-    except Exception as exc:  # noqa: BLE001 - startup best-effort
+    except Exception as exc:
         logger.warning("replay_index_failed", error=str(exc))
 
     # Auto-seed an empty database from the bundled dataset (dev convenience).
@@ -60,7 +61,7 @@ async def lifespan(app: FastAPI):
 
                 seed_data(db=db)
                 logger.info("db_seed_complete")
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 logger.warning("db_seed_failed", error=str(exc))
 
         # `replay_engine`'s ingest-progress counters are in-memory only, so a
@@ -78,7 +79,7 @@ async def lifespan(app: FastAPI):
             try:
                 msg = replay_engine.complete_now()
                 logger.info("replay_synced_to_existing_data", message=msg)
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 logger.warning("replay_sync_failed", error=str(exc))
     finally:
         db.close()
@@ -125,7 +126,13 @@ from app.api.routes import ingestion_router, nexus_sim_router, orders_router, si
 from app.api.v1 import audit as v1_audit  # noqa: E402
 from app.api.v1 import auth as v1_auth  # noqa: E402
 from app.api.v1 import users as v1_users  # noqa: E402
-from app.api.v1.deps import agent_dependency, auth_dependency, get_current_user, ingestion_dependency, orchestrator_dependency  # noqa: E402
+from app.api.v1.deps import (  # noqa: E402
+    agent_dependency,
+    auth_dependency,
+    get_current_user,
+    ingestion_dependency,
+    orchestrator_dependency,
+)
 
 # Public v1 (auth flows) — no dependency
 app.include_router(v1_auth.router, prefix=settings.API_V1_PREFIX)
@@ -144,11 +151,7 @@ from app.api.v1 import orchestrator as v1_orchestrator  # noqa: E402
 from app.api.v1 import runs as v1_runs  # noqa: E402
 from app.api.v1 import stream as v1_stream  # noqa: E402
 from app.api.v1 import system as v1_system  # noqa: E402
-from app.api.v1.agents import (  # noqa: E402
-    logistics_router,
-    marketing_router,
-    pricing_router,
-)
+from app.api.v1.agents import logistics_router, marketing_router, pricing_router  # noqa: E402
 
 # RBAC — see app.core.rbac for the single source of truth these dependencies
 # read from. Each domain agent's router is gated by its own admin role: an

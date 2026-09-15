@@ -6,6 +6,7 @@ Prod: run once; then rotate passwords and store in Secrets Manager.
 
     python -m scripts.seed_users
 """
+
 from __future__ import annotations
 
 import sys

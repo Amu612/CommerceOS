@@ -1,4 +1,5 @@
 """Pricing & Margin LangChain tools — real SQL + statistics, empirical severities."""
+
 from __future__ import annotations
 
 from langchain_core.tools import tool
@@ -62,16 +63,30 @@ def detect_loss_making_orders() -> dict:
         if m.get("status") != "OK" or m["loss_making_rate_pct"] <= 2:
             return {"finding": None}
         frac = m["loss_making_orders"] / max(1, m["sample_count"])
-        return {"finding": {
-            "category": "LOSS_MAKING_ORDERS",
-            "severity": severity_from_fraction(frac),
-            "title": "Some orders are losing money",
-            "what_happened": f"{m['loss_making_orders']:,} out of {m['sample_count']:,} orders ({m['loss_making_rate_pct']}%) lost money instead of making a profit.",
-            "why_it_matters": "Selling items at a loss burns through cash and wastes advertising money.",
-            "recommended_action": "Find items that lose money and raise their price. Do not allow buyers to combine too many discounts.",
-            "evidence": fmt_evidence({k: m[k] for k in ("loss_making_orders", "loss_making_rate_pct", "p25_margin_pct", "lower_fence_pct")}),
-            "confidence": sample_confidence(m["sample_count"]), "data_status": "CALCULATED", "sample_count": m["sample_count"],
-        }}
+        return {
+            "finding": {
+                "category": "LOSS_MAKING_ORDERS",
+                "severity": severity_from_fraction(frac),
+                "title": "Some orders are losing money",
+                "what_happened": f"{m['loss_making_orders']:,} out of {m['sample_count']:,} orders ({m['loss_making_rate_pct']}%) lost money instead of making a profit.",
+                "why_it_matters": "Selling items at a loss burns through cash and wastes advertising money.",
+                "recommended_action": "Find items that lose money and raise their price. Do not allow buyers to combine too many discounts.",
+                "evidence": fmt_evidence(
+                    {
+                        k: m[k]
+                        for k in (
+                            "loss_making_orders",
+                            "loss_making_rate_pct",
+                            "p25_margin_pct",
+                            "lower_fence_pct",
+                        )
+                    }
+                ),
+                "confidence": sample_confidence(m["sample_count"]),
+                "data_status": "CALCULATED",
+                "sample_count": m["sample_count"],
+            }
+        }
     finally:
         db.close()
 
@@ -88,15 +103,20 @@ def detect_weak_segment() -> dict:
         weak = min((s for s in seg if s["orders"] >= 30), key=lambda s: s["margin_pct"], default=None)
         if not weak or weak["margin_pct"] >= m["blended_margin_pct"]:
             return {"finding": None}
-        return {"finding": {
-            "category": "SEGMENT_MARGIN",
-            "severity": "HIGH" if weak["margin_pct"] < 0 else "MEDIUM",
-            "title": f"Sales to '{weak['segment']}' make very little profit",
-            "what_happened": f"Sales to '{weak['segment']}' only make {weak['margin_pct']}% profit ({money(weak['profit'])} profit on {money(weak['revenue'])} in sales), which is much lower than normal.",
-            "why_it_matters": "If a big group of buyers makes low profit, overall business earnings go down.",
-            "recommended_action": f"Lower discounts and charge fair shipping costs for buyers in '{weak['segment']}'.",
-            "evidence": fmt_evidence(weak), "confidence": sample_confidence(weak["orders"]), "data_status": "CALCULATED", "sample_count": weak["orders"],
-        }}
+        return {
+            "finding": {
+                "category": "SEGMENT_MARGIN",
+                "severity": "HIGH" if weak["margin_pct"] < 0 else "MEDIUM",
+                "title": f"Sales to '{weak['segment']}' make very little profit",
+                "what_happened": f"Sales to '{weak['segment']}' only make {weak['margin_pct']}% profit ({money(weak['profit'])} profit on {money(weak['revenue'])} in sales), which is much lower than normal.",
+                "why_it_matters": "If a big group of buyers makes low profit, overall business earnings go down.",
+                "recommended_action": f"Lower discounts and charge fair shipping costs for buyers in '{weak['segment']}'.",
+                "evidence": fmt_evidence(weak),
+                "confidence": sample_confidence(weak["orders"]),
+                "data_status": "CALCULATED",
+                "sample_count": weak["orders"],
+            }
+        }
     finally:
         db.close()
 
@@ -109,19 +129,27 @@ def detect_discount_leakage() -> dict:
         leak = PricingData.discount_leakage(db)
         if not leak["available"]:
             return {"finding": None}
-        leaky = max((c for c in leak["categories"] if c["lines"] >= 20 and c["avg_discount_rate_pct"] > 0),
-                    key=lambda c: c["avg_discount_rate_pct"] - c["avg_profit_ratio_pct"], default=None)
+        leaky = max(
+            (c for c in leak["categories"] if c["lines"] >= 20 and c["avg_discount_rate_pct"] > 0),
+            key=lambda c: c["avg_discount_rate_pct"] - c["avg_profit_ratio_pct"],
+            default=None,
+        )
         if not leaky or leaky["avg_discount_rate_pct"] <= leaky["avg_profit_ratio_pct"]:
             return {"finding": None}
-        return {"finding": {
-            "category": "DISCOUNT_LEAKAGE",
-            "severity": "MEDIUM",
-            "title": f"Discounts are too high in '{leaky['category']}'",
-            "what_happened": f"Items in '{leaky['category']}' have an average discount of {leaky['avg_discount_rate_pct']}%, leaving almost no profit ({money(leaky['total_discount_given'])} given away in discounts).",
-            "why_it_matters": "Giving away big discounts without gaining extra sales is simply losing money.",
-            "recommended_action": f"Cut back on discounts for '{leaky['category']}' and only offer coupons to buyers who really need them to purchase.",
-            "evidence": fmt_evidence(leaky), "confidence": sample_confidence(leaky["lines"]), "data_status": "CALCULATED", "sample_count": leaky["lines"],
-        }}
+        return {
+            "finding": {
+                "category": "DISCOUNT_LEAKAGE",
+                "severity": "MEDIUM",
+                "title": f"Discounts are too high in '{leaky['category']}'",
+                "what_happened": f"Items in '{leaky['category']}' have an average discount of {leaky['avg_discount_rate_pct']}%, leaving almost no profit ({money(leaky['total_discount_given'])} given away in discounts).",
+                "why_it_matters": "Giving away big discounts without gaining extra sales is simply losing money.",
+                "recommended_action": f"Cut back on discounts for '{leaky['category']}' and only offer coupons to buyers who really need them to purchase.",
+                "evidence": fmt_evidence(leaky),
+                "confidence": sample_confidence(leaky["lines"]),
+                "data_status": "CALCULATED",
+                "sample_count": leaky["lines"],
+            }
+        }
     finally:
         db.close()
 
@@ -135,15 +163,20 @@ def detect_freight_drag() -> dict:
         hf = max((c for c in cats if c["units"] >= 50), key=lambda c: c["freight_pct_of_price"], default=None)
         if not hf or hf["freight_pct_of_price"] < 25:
             return {"finding": None}
-        return {"finding": {
-            "category": "FREIGHT_DRAG",
-            "severity": "MEDIUM",
-            "title": f"Shipping costs eat up sales for '{hf['category']}'",
-            "what_happened": f"In '{hf['category']}', shipping costs ({money(hf['avg_freight'])}) make up {hf['freight_pct_of_price']}% of the item price ({money(hf['avg_price'])}).",
-            "why_it_matters": "When shipping costs are too high, buyers leave their carts without paying, or shipping wipes out our earnings.",
-            "recommended_action": f"Sell items in pairs/bundles or adjust the item price to cover delivery costs.",
-            "evidence": fmt_evidence(hf), "confidence": sample_confidence(hf["units"]), "data_status": "CALCULATED", "sample_count": hf["units"],
-        }}
+        return {
+            "finding": {
+                "category": "FREIGHT_DRAG",
+                "severity": "MEDIUM",
+                "title": f"Shipping costs eat up sales for '{hf['category']}'",
+                "what_happened": f"In '{hf['category']}', shipping costs ({money(hf['avg_freight'])}) make up {hf['freight_pct_of_price']}% of the item price ({money(hf['avg_price'])}).",
+                "why_it_matters": "When shipping costs are too high, buyers leave their carts without paying, or shipping wipes out our earnings.",
+                "recommended_action": "Sell items in pairs/bundles or adjust the item price to cover delivery costs.",
+                "evidence": fmt_evidence(hf),
+                "confidence": sample_confidence(hf["units"]),
+                "data_status": "CALCULATED",
+                "sample_count": hf["units"],
+            }
+        }
     finally:
         db.close()
 
@@ -177,7 +210,10 @@ def competitor_price_benchmark(category: str) -> dict:
             .all()
         )
         if not rows:
-            return {"status": "NOT_ESTIMABLE", "reason": f"No competitor price data scraped yet for '{category}'."}
+            return {
+                "status": "NOT_ESTIMABLE",
+                "reason": f"No competitor price data scraped yet for '{category}'.",
+            }
 
         ours = PricingData.olist_category_prices(db)["categories"]
         our_match = next((c for c in ours if category.lower() in c["category"].lower()), None)
@@ -200,7 +236,12 @@ def competitor_price_benchmark(category: str) -> dict:
 
 
 METRIC_TOOLS = [margin_overview, margin_by_segment, discount_leakage, category_price_benchmarks]
-DETECTOR_TOOLS = [detect_loss_making_orders, detect_weak_segment, detect_discount_leakage, detect_freight_drag]
+DETECTOR_TOOLS = [
+    detect_loss_making_orders,
+    detect_weak_segment,
+    detect_discount_leakage,
+    detect_freight_drag,
+]
 LOOKUP_TOOLS = [order_margin_lookup, competitor_price_benchmark]
 
 
@@ -249,7 +290,9 @@ def pricing_analytics(metric: str) -> str:
             return "No pricing data observed yet."
         cat_en = {
             r[0]: r[1]
-            for r in db.query(CategoryTranslation.product_category_name, CategoryTranslation.product_category_name_english).all()
+            for r in db.query(
+                CategoryTranslation.product_category_name, CategoryTranslation.product_category_name_english
+            ).all()
         }
 
         def disp(c):
@@ -315,9 +358,13 @@ def pricing_analytics(metric: str) -> str:
             ys = [float(f or 0) for _, f in line_rows]
             if len(xs) > 2 and st.pstdev(xs) > 0 and st.pstdev(ys) > 0:
                 mx, my = st.mean(xs), st.mean(ys)
-                cov = sum((x - mx) * (y - my) for x, y in zip(xs, ys)) / len(xs)
+                cov = sum((x - mx) * (y - my) for x, y in zip(xs, ys, strict=False)) / len(xs)
                 r = cov / (st.pstdev(xs) * st.pstdev(ys))
-                verdict = "freight generally rises with price" if r > 0.3 else ("weak relationship" if r > 0 else "no positive relationship")
+                verdict = (
+                    "freight generally rises with price"
+                    if r > 0.3
+                    else ("weak relationship" if r > 0 else "no positive relationship")
+                )
                 return f"Pearson r between product price and freight = {r:.2f} over {len(xs):,} line items — {verdict}."
             return "Not enough data for a correlation."
         if metric == "freight_heavy":
@@ -357,7 +404,7 @@ def pricing_analytics(metric: str) -> str:
             "Unknown metric. Use one of: category_price_stats, price_skew, freight_burden, popular_vs_rest, "
             "price_freight_corr, freight_heavy, category_value_rank, seller_price_variation, increase_scenario"
         )
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         return f"❌ Analytics failed: {exc}"
     finally:
         db.close()

@@ -8,17 +8,18 @@ LLM layer — LangChain-native.
 Providers (env `LLM_PROVIDER`, default `auto`): groq | openai | anthropic | bedrock | deterministic.
 `auto` uses whichever key is present.
 """
+
 from app.services.llm.chat_model import chat_model_status, get_chat_model, last_error
 from app.services.llm.factory import get_llm, reset_llm_cache
 from app.services.llm.guardrails import GuardedLLM, sanitize_untrusted, scrub_pii
 
 __all__ = [
-    "get_llm",
-    "get_chat_model",
+    "GuardedLLM",
     "chat_model_status",
+    "get_chat_model",
+    "get_llm",
     "last_error",
     "reset_llm_cache",
-    "GuardedLLM",
-    "scrub_pii",
     "sanitize_untrusted",
+    "scrub_pii",
 ]

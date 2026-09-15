@@ -1,6 +1,7 @@
 import logging
-from typing import Dict, Any, List, Optional
-from datetime import datetime, timezone
+from datetime import UTC, datetime
+from typing import Any
+
 from app.services.event_bus import OperationalEvent, event_bus
 
 logger = logging.getLogger(__name__)
@@ -28,9 +29,9 @@ class BusinessStateService:
 
         self.total_items_sold: int = 0
         self.sources_seen: set = set()
-        self.sim_start_date: Optional[datetime] = None
-        self.sim_current_date: Optional[datetime] = None
-        self.recent_events: List[Dict[str, Any]] = []
+        self.sim_start_date: datetime | None = None
+        self.sim_current_date: datetime | None = None
+        self.recent_events: list[dict[str, Any]] = []
 
     def reset(self) -> None:
         self.reset_state()
@@ -42,7 +43,7 @@ class BusinessStateService:
 
         evt_dt = event.event_timestamp
         if evt_dt is not None and getattr(evt_dt, "tzinfo", None) is None:
-            evt_dt = evt_dt.replace(tzinfo=timezone.utc)
+            evt_dt = evt_dt.replace(tzinfo=UTC)
 
         if self.sim_start_date is None or (evt_dt and evt_dt < self.sim_start_date):
             self.sim_start_date = evt_dt
@@ -97,17 +98,13 @@ class BusinessStateService:
                 self.pending_orders -= 1
             self.cancelled_orders += 1
 
-    def get_overview(self) -> Dict[str, Any]:
+    def get_overview(self) -> dict[str, Any]:
         """Returns standard business overview metrics."""
         fulfillment_rate = (
-            round((self.delivered_orders / self.total_orders) * 100.0, 2)
-            if self.total_orders > 0
-            else 0.0
+            round((self.delivered_orders / self.total_orders) * 100.0, 2) if self.total_orders > 0 else 0.0
         )
         cancellation_rate = (
-            round((self.cancelled_orders / self.total_orders) * 100.0, 2)
-            if self.total_orders > 0
-            else 0.0
+            round((self.cancelled_orders / self.total_orders) * 100.0, 2) if self.total_orders > 0 else 0.0
         )
         return {
             "total_orders": self.total_orders,

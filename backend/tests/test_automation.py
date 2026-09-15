@@ -10,6 +10,7 @@ Covers the two real bugs found and fixed in this pass:
      an action type ("FLAG_FOR_REVIEW" etc.) that is otherwise low-blast-radius
      and auto-executes at lower severities.
 """
+
 from __future__ import annotations
 
 import uuid
@@ -45,7 +46,10 @@ def test_auto_action_executes_and_verifies_without_a_second_session():
         action = created[0]
         db.refresh(action)
         assert action.mode == "AUTO"
-        assert action.status in ("VERIFIED", "EXECUTED"), f"expected success, got {action.status}: {action.result}"
+        assert action.status in (
+            "VERIFIED",
+            "EXECUTED",
+        ), f"expected success, got {action.status}: {action.result}"
         assert action.result and action.result.get("notification_id")
     finally:
         db.close()
@@ -71,15 +75,24 @@ def test_critical_severity_forces_manual_approval_even_for_an_auto_action_type()
 def test_approving_a_pending_action_executes_it():
     db: Session = SessionLocal()
     try:
-        created = propose_for_run(db, agent="pricing", findings=[
-            _finding(category="SEGMENT_MARGIN", severity="CRITICAL", evidence="segment=Enterprise"),
-        ])
+        created = propose_for_run(
+            db,
+            agent="pricing",
+            findings=[
+                _finding(category="SEGMENT_MARGIN", severity="CRITICAL", evidence="segment=Enterprise"),
+            ],
+        )
         action = created[0]
         approval = db.query(Approval).filter(Approval.action_id == action.id).first()
         assert approval is not None and approval.status == "PENDING"
 
-        decided = decide(db, approval.id, approved=True, actor={"sub": None, "username": "test", "role": "SUPER_ADMIN"})
-        assert decided.status in ("VERIFIED", "EXECUTED"), f"expected success, got {decided.status}: {decided.result}"
+        decided = decide(
+            db, approval.id, approved=True, actor={"sub": None, "username": "test", "role": "SUPER_ADMIN"}
+        )
+        assert decided.status in (
+            "VERIFIED",
+            "EXECUTED",
+        ), f"expected success, got {decided.status}: {decided.result}"
 
         db.refresh(approval)
         assert approval.status == "APPROVED"
@@ -91,13 +104,19 @@ def test_approving_a_pending_action_executes_it():
 def test_rejecting_a_pending_action_never_executes_it():
     db: Session = SessionLocal()
     try:
-        created = propose_for_run(db, agent="marketing", findings=[
-            _finding(category="CHURN_RISK", severity="CRITICAL", evidence="segment=At Risk"),
-        ])
+        created = propose_for_run(
+            db,
+            agent="marketing",
+            findings=[
+                _finding(category="CHURN_RISK", severity="CRITICAL", evidence="segment=At Risk"),
+            ],
+        )
         action = created[0]
         approval = db.query(Approval).filter(Approval.action_id == action.id).first()
 
-        decided = decide(db, approval.id, approved=False, actor={"sub": None, "username": "test", "role": "SUPER_ADMIN"})
+        decided = decide(
+            db, approval.id, approved=False, actor={"sub": None, "username": "test", "role": "SUPER_ADMIN"}
+        )
         assert decided.status == "REJECTED"
         assert decided.result is None
     finally:

@@ -5,6 +5,7 @@ M1/M3 slice: gives every test an authenticated TestClient by overriding the
 auth dependency with a synthetic SUPER_ADMIN. Full ephemeral-Postgres + factory
 infrastructure lands in milestone M10/T1.
 """
+
 from __future__ import annotations
 
 import os
@@ -21,13 +22,13 @@ os.environ["DATABASE_URL"] = "sqlite:///" + os.path.abspath(
 for _k in ("GEMINI_WEB2API_BASE_URL", "OPENAI_API_KEY", "GROQ_API_KEY", "ANTHROPIC_API_KEY"):
     os.environ.pop(_k, None)
 
-import pytest  # noqa: E402
-from fastapi.testclient import TestClient  # noqa: E402
+import pytest
+from fastapi.testclient import TestClient
 
-from app.api.v1.deps import get_current_user, get_optional_user  # noqa: E402
-from app.database.session import SessionLocal, init_db  # noqa: E402
-from app.main import app  # noqa: E402
-from app.models.security import User, UserRole  # noqa: E402
+from app.api.v1.deps import get_current_user, get_optional_user
+from app.database.session import SessionLocal, init_db
+from app.main import app
+from app.models.security import User, UserRole
 
 
 @pytest.fixture(scope="session", autouse=True)

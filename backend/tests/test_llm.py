@@ -1,4 +1,5 @@
 """Tests for the LangChain-backed GuardedLLM (fake chat model injected)."""
+
 import pytest
 from pydantic import BaseModel
 

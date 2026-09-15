@@ -3,26 +3,25 @@ Inventory Agent Tools.
 Empirical inventory data queries, sales analysis, Reorder Point (ROP),
 EOQ calculations, and stock adjustments.
 """
-import math
+
 import logging
-from datetime import datetime, timezone, timedelta
-from typing import List, Dict, Any, Optional, Tuple
+import math
+from datetime import UTC, datetime, timedelta
+from typing import Any
 
-from sqlalchemy.orm import Session
-from sqlalchemy import func, desc, and_, or_
 from langchain_core.tools import tool
+from sqlalchemy import desc, func, or_
+from sqlalchemy.orm import Session
 
-from app.models.olist import Product, OrderItem, Order, CategoryTranslation
-from app.models.dataco import DataCoOrder, DataCoOrderItem
 from app.agents.inventory.schemas import (
+    InventoryAction,
+    InventoryAgentMetrics,
+    InventoryAlert,
     InventoryProduct,
     ReorderRecommendation,
     SalesAnalysis,
-    InventoryAlert,
-    InventoryAction,
-    ToolCallRecord,
-    InventoryAgentMetrics,
 )
+from app.models.olist import CategoryTranslation, Order, OrderItem, Product
 
 logger = logging.getLogger(__name__)
 
@@ -44,10 +43,10 @@ _RECENT_WINDOW_DAYS = 180
 # alerts and trends all funnel through here and were re-running the same two
 # grouped SQL scans over every product on every call (the agent's multi-second
 # load time).
-_DEMAND_CACHE: Dict[Any, Dict[str, Dict[str, float]]] = {}
+_DEMAND_CACHE: dict[Any, dict[str, dict[str, float]]] = {}
 
 
-def _demand_stats(db: Session, product_ids: Optional[List[str]] = None) -> Dict[str, Dict[str, float]]:
+def _demand_stats(db: Session, product_ids: list[str] | None = None) -> dict[str, dict[str, float]]:
     """Real per-product demand: total units, units in the recent window, first/last sale."""
     from app.agents._shared import simulated_clock
 
@@ -82,14 +81,14 @@ def _demand_stats(db: Session, product_ids: Optional[List[str]] = None) -> Dict[
     )
     recent = {pid: int(n) for pid, n in recent_q.all()}
 
-    clk = clock if clock.tzinfo else clock.replace(tzinfo=timezone.utc)
+    clk = clock if clock.tzinfo else clock.replace(tzinfo=UTC)
 
-    out: Dict[str, Dict[str, float]] = {}
+    out: dict[str, dict[str, float]] = {}
     for pid, total, first_dt, last_dt in q.all():
         if not first_dt:
             continue
-        f_dt = first_dt if first_dt.tzinfo else first_dt.replace(tzinfo=timezone.utc)
-        l_dt = last_dt if (last_dt and last_dt.tzinfo) else (last_dt.replace(tzinfo=timezone.utc) if last_dt else f_dt)
+        f_dt = first_dt if first_dt.tzinfo else first_dt.replace(tzinfo=UTC)
+        l_dt = last_dt if (last_dt and last_dt.tzinfo) else (last_dt.replace(tzinfo=UTC) if last_dt else f_dt)
         # Calendar spans, not active-day spans: the recent rate divides by the
         # days the recent window actually covers for THIS product, and the
         # lifetime rate by the days since its first sale. Both rates now use
@@ -127,11 +126,17 @@ def _turnover_band(daily_demand: float) -> str:
     return "slow"
 
 
-def _modelled_stock(stats: Optional[Dict[str, float]]) -> Dict[str, Any]:
+def _modelled_stock(stats: dict[str, float] | None) -> dict[str, Any]:
     """On-hand position modelled from real demand. Returns on_hand, ROP, cover days, band."""
     if not stats or stats.get("units_total", 0) == 0:
-        return {"on_hand": 0, "daily_demand": 0.0, "reorder_point": 0, "days_of_cover": 0.0,
-                "band": "none", "data_status": "NOT_ESTIMABLE"}
+        return {
+            "on_hand": 0,
+            "daily_demand": 0.0,
+            "reorder_point": 0,
+            "days_of_cover": 0.0,
+            "band": "none",
+            "data_status": "NOT_ESTIMABLE",
+        }
     life = stats["lifetime_daily_demand"] or 0.0
     recent = stats["daily_demand"] or 0.0
     # planning demand: recency-weighted blend of the recent-90d rate and the
@@ -180,11 +185,11 @@ class InventoryTools:
     @staticmethod
     def query_products(
         db: Session,
-        threshold: Optional[int] = None,
-        category: Optional[str] = None,
+        threshold: int | None = None,
+        category: str | None = None,
         limit: int = 50,
         low_stock_only: bool = False,
-    ) -> List[InventoryProduct]:
+    ) -> list[InventoryProduct]:
         """
         Products with a MODELLED stock position derived from real sales demand.
         Only products with observed sales are returned (they are the ones we can model).
@@ -197,7 +202,9 @@ class InventoryTools:
 
         cat_en = {
             r[0]: r[1]
-            for r in db.query(CategoryTranslation.product_category_name, CategoryTranslation.product_category_name_english).all()
+            for r in db.query(
+                CategoryTranslation.product_category_name, CategoryTranslation.product_category_name_english
+            ).all()
         }
 
         ranked = sorted(demand.items(), key=lambda kv: (-kv[1]["units_recent_180d"], -kv[1]["units_total"]))
@@ -206,7 +213,7 @@ class InventoryTools:
         # it is applied BEFORE touching the database — only the handful of
         # products actually returned get Product/price row lookups. This keeps
         # the SQL `IN` clauses tiny instead of scanning the whole catalogue.
-        candidates: List[tuple] = []
+        candidates: list[tuple] = []
         for pid, stats in ranked:
             pos = _modelled_stock(stats)
             is_low = pos["on_hand"] < pos["reorder_point"]
@@ -219,7 +226,9 @@ class InventoryTools:
             return []
 
         cand_ids = [c[0] for c in candidates]
-        prod_rows = {p.product_id: p for p in db.query(Product).filter(Product.product_id.in_(cand_ids)).all()}
+        prod_rows = {
+            p.product_id: p for p in db.query(Product).filter(Product.product_id.in_(cand_ids)).all()
+        }
         price_rows = dict(
             db.query(OrderItem.product_id, func.avg(OrderItem.price))
             .filter(OrderItem.product_id.in_(cand_ids))
@@ -227,24 +236,33 @@ class InventoryTools:
             .all()
         )
 
-        out: List[InventoryProduct] = []
-        for pid, stats, pos, is_low in candidates:
+        out: list[InventoryProduct] = []
+        for pid, _stats, pos, is_low in candidates:
             p = prod_rows.get(pid)
             if category:
                 cat_raw = (p.product_category_name if p else "") or ""
-                if category.lower() not in cat_raw.lower() and category.lower() not in cat_en.get(cat_raw, "").lower():
+                if (
+                    category.lower() not in cat_raw.lower()
+                    and category.lower() not in cat_en.get(cat_raw, "").lower()
+                ):
                     continue
             cat_raw = (p.product_category_name if p else None) or "unknown"
             cat_disp = cat_en.get(cat_raw, cat_raw).replace("_", " ").title()
             weight = (p.product_weight_g if p else None) or None
             out.append(
                 InventoryProduct(
-                    id=pid, product_id=pid, sku=f"SKU-{pid[:8].upper()}",
-                    name=f"{cat_disp} · {pid[:8]}", category=cat_disp,
-                    stockQuantity=pos["on_hand"], stock_quantity=pos["on_hand"], available_stock=pos["on_hand"],
+                    id=pid,
+                    product_id=pid,
+                    sku=f"SKU-{pid[:8].upper()}",
+                    name=f"{cat_disp} · {pid[:8]}",
+                    category=cat_disp,
+                    stockQuantity=pos["on_hand"],
+                    stock_quantity=pos["on_hand"],
+                    available_stock=pos["on_hand"],
                     price=round(float(price_rows.get(pid) or 0.0), 2),
                     weight_g=weight,
-                    reorder_required=is_low, reorder_flag=is_low,
+                    reorder_required=is_low,
+                    reorder_flag=is_low,
                     lead_time_days=_DEFAULT_LEAD_TIME if (weight or 0) < 1000 else _DEFAULT_LEAD_TIME + 3,
                 )
             )
@@ -253,21 +271,25 @@ class InventoryTools:
         return out
 
     @staticmethod
-    def get_product_by_id(db: Session, product_id: str) -> Optional[InventoryProduct]:
+    def get_product_by_id(db: Session, product_id: str) -> InventoryProduct | None:
         """Look up a product by id/SKU/prefix or a category keyword (PT or EN)."""
         clean_id = str(product_id).strip()
         for junk in ("SKU-", "sku-", "PROD-", "prod-", "DC-", "dc-", "#"):
             clean_id = clean_id.replace(junk, "")
         clean_id = clean_id.strip()
 
-        p = db.query(Product).filter(
-            or_(Product.product_id == clean_id, Product.product_id.like(f"{clean_id}%"))
-        ).first()
+        p = (
+            db.query(Product)
+            .filter(or_(Product.product_id == clean_id, Product.product_id.like(f"{clean_id}%")))
+            .first()
+        )
         if not p and clean_id:
             # keyword: match PT category or EN translation
             pt = [
-                r[0] for r in db.query(CategoryTranslation.product_category_name)
-                .filter(CategoryTranslation.product_category_name_english.ilike(f"%{clean_id}%")).all()
+                r[0]
+                for r in db.query(CategoryTranslation.product_category_name)
+                .filter(CategoryTranslation.product_category_name_english.ilike(f"%{clean_id}%"))
+                .all()
             ]
             cond = [Product.product_category_name.ilike(f"%{clean_id}%")]
             if pt:
@@ -287,42 +309,52 @@ class InventoryTools:
         pos = _modelled_stock(stats)
         avg_price = db.query(func.avg(OrderItem.price)).filter(OrderItem.product_id == p.product_id).scalar()
         cat_raw = p.product_category_name or "unknown"
-        trans = db.query(CategoryTranslation.product_category_name_english).filter(
-            CategoryTranslation.product_category_name == cat_raw
-        ).scalar()
+        trans = (
+            db.query(CategoryTranslation.product_category_name_english)
+            .filter(CategoryTranslation.product_category_name == cat_raw)
+            .scalar()
+        )
         cat_disp = (trans or cat_raw).replace("_", " ").title()
         weight = p.product_weight_g or None
         low = pos["on_hand"] < pos["reorder_point"]
         return InventoryProduct(
-            id=p.product_id, product_id=p.product_id, sku=f"SKU-{p.product_id[:8].upper()}",
-            name=f"{cat_disp} · {p.product_id[:8]}", category=cat_disp,
-            stockQuantity=pos["on_hand"], stock_quantity=pos["on_hand"], available_stock=pos["on_hand"],
-            price=round(float(avg_price or 0.0), 2), weight_g=weight,
-            reorder_required=low, reorder_flag=low,
+            id=p.product_id,
+            product_id=p.product_id,
+            sku=f"SKU-{p.product_id[:8].upper()}",
+            name=f"{cat_disp} · {p.product_id[:8]}",
+            category=cat_disp,
+            stockQuantity=pos["on_hand"],
+            stock_quantity=pos["on_hand"],
+            available_stock=pos["on_hand"],
+            price=round(float(avg_price or 0.0), 2),
+            weight_g=weight,
+            reorder_required=low,
+            reorder_flag=low,
             lead_time_days=_DEFAULT_LEAD_TIME if (weight or 0) < 1000 else _DEFAULT_LEAD_TIME + 3,
         )
 
     @staticmethod
     def analyze_sales_trends(
         db: Session,
-        product_id: Optional[str] = None,
+        product_id: str | None = None,
         days: int = 30,
         limit: int = 20,
-    ) -> List[SalesAnalysis]:
+    ) -> list[SalesAnalysis]:
         """
         Calculates sales velocity, historical sales totals, daily averages,
         and demand trend (INCREASING, STABLE, DECREASING).
         """
-        results: List[SalesAnalysis] = []
+        results: list[SalesAnalysis] = []
 
-        ids = [product_id] if product_id else None
         demand = _demand_stats(db, [str(product_id).strip()]) if product_id else _demand_stats(db)
         if not demand:
             return []
 
         cat_en = {
             r[0]: r[1]
-            for r in db.query(CategoryTranslation.product_category_name, CategoryTranslation.product_category_name_english).all()
+            for r in db.query(
+                CategoryTranslation.product_category_name, CategoryTranslation.product_category_name_english
+            ).all()
         }
         pids = list(demand.keys())
         prod_rows = {p.product_id: p for p in db.query(Product).filter(Product.product_id.in_(pids)).all()}
@@ -343,20 +375,28 @@ class InventoryTools:
                 trend = "DECREASING"
             else:
                 trend = "STABLE"
-            lt = _DEFAULT_LEAD_TIME if ((p.product_weight_g if p else 0) or 0) < 1000 else _DEFAULT_LEAD_TIME + 3
+            lt = (
+                _DEFAULT_LEAD_TIME
+                if ((p.product_weight_g if p else 0) or 0) < 1000
+                else _DEFAULT_LEAD_TIME + 3
+            )
             # Same reorder-quantity rule as get_reorder_recommendations
             # (cover lead time + a 30-day cycle, at least up to the ROP) so
             # this table and the Reorder Recommendations table agree.
             pos = _modelled_stock(s)
             reorder_qty = max(int(math.ceil(daily * (lt + 30))), pos["reorder_point"]) if daily > 0 else 1
-            results.append(SalesAnalysis(
-                product_id=pid, sku=f"SKU-{pid[:8].upper()}", name=f"{cat_disp} · {pid[:8]}",
-                total_sales=s["units_total"],
-                average_daily_sales=round(daily, 3),
-                sales_velocity=round(life, 3),
-                trend=trend,
-                reorder_quantity=max(1, reorder_qty),
-            ))
+            results.append(
+                SalesAnalysis(
+                    product_id=pid,
+                    sku=f"SKU-{pid[:8].upper()}",
+                    name=f"{cat_disp} · {pid[:8]}",
+                    total_sales=s["units_total"],
+                    average_daily_sales=round(daily, 3),
+                    sales_velocity=round(life, 3),
+                    trend=trend,
+                    reorder_quantity=max(1, reorder_qty),
+                )
+            )
         return results
 
     @staticmethod
@@ -364,7 +404,7 @@ class InventoryTools:
         db: Session,
         threshold: int = 50,
         limit: int = 15,
-    ) -> List[ReorderRecommendation]:
+    ) -> list[ReorderRecommendation]:
         """
         Calculates optimal Reorder Point (ROP = d * L + SS) and suggested reorder quantities (EOQ-derived).
         Safety Stock is modelled as 40% of lead-time demand plus one unit — the documented
@@ -376,7 +416,7 @@ class InventoryTools:
         pids = [p.product_id for p in low_stock_prods]
         stats_map = _demand_stats(db, pids)
 
-        recommendations: List[ReorderRecommendation] = []
+        recommendations: list[ReorderRecommendation] = []
         for prod in low_stock_prods:
             lead_time = prod.lead_time_days or _DEFAULT_LEAD_TIME
             s = stats_map.get(prod.product_id, {})
@@ -388,7 +428,9 @@ class InventoryTools:
             lead_time_demand = daily_sales * lead_time
             safety_stock = pos.get("safety_stock") or max(1, int(math.ceil(lead_time_demand * 0.5)))
             rop = pos["reorder_point"] or int(math.ceil(lead_time_demand + safety_stock))
-            suggested_qty = max(int(math.ceil(daily_sales * (lead_time + 30))), rop)  # cover lead time + a 30-day cycle
+            suggested_qty = max(
+                int(math.ceil(daily_sales * (lead_time + 30))), rop
+            )  # cover lead time + a 30-day cycle
             # Cost basis is the observed selling price per unit (avg of real
             # order_items rows) — Est. Cost = suggested reorder qty x unit
             # price. The old hidden 0.62 "supplier discount" made the column
@@ -430,18 +472,19 @@ class InventoryTools:
         db: Session,
         threshold: int = 50,
         limit: int = 10,
-        recommendations: Optional[List[ReorderRecommendation]] = None,
-    ) -> List[InventoryAlert]:
+        recommendations: list[ReorderRecommendation] | None = None,
+    ) -> list[InventoryAlert]:
         """
         Generates alerts for low stock, impending stockouts, and high sales velocity.
         Pass an already-computed `recommendations` list to avoid recomputing it.
         """
         recs = (
-            recommendations[:limit] if recommendations is not None
+            recommendations[:limit]
+            if recommendations is not None
             else InventoryTools.get_reorder_recommendations(db, threshold=threshold, limit=limit)
         )
-        alerts: List[InventoryAlert] = []
-        now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+        alerts: list[InventoryAlert] = []
+        now_str = datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S UTC")
 
         for idx, r in enumerate(recs):
             stock = r.current_stock or 0
@@ -483,18 +526,22 @@ class InventoryTools:
         """
         High-level metrics, all from real data: catalog size, products with observed
         demand (the ones we can model), low-stock count, and a MODELLED inventory
-        valuation = Σ(modelled on-hand × observed avg price) over demand-bearing products.
+        valuation = sum(modelled on-hand x observed avg price) over demand-bearing products.
         """
         total_catalog = db.query(func.count(Product.product_id)).scalar() or 0
         demand = _demand_stats(db)
         active_pids = list(demand.keys())
 
-        price_rows = dict(
-            db.query(OrderItem.product_id, func.avg(OrderItem.price))
-            .filter(OrderItem.product_id.in_(active_pids))
-            .group_by(OrderItem.product_id)
-            .all()
-        ) if active_pids else {}
+        price_rows = (
+            dict(
+                db.query(OrderItem.product_id, func.avg(OrderItem.price))
+                .filter(OrderItem.product_id.in_(active_pids))
+                .group_by(OrderItem.product_id)
+                .all()
+            )
+            if active_pids
+            else {}
+        )
 
         low_stock_count = 0
         inv_value = 0.0
@@ -515,8 +562,8 @@ class InventoryTools:
     def get_aggregates(
         db: Session,
         metric: str = "COUNT",
-        group_by: Optional[str] = "category",
-    ) -> Dict[str, Any]:
+        group_by: str | None = "category",
+    ) -> dict[str, Any]:
         """
         Calculates aggregate statistics across products or order items.
         """
@@ -549,7 +596,7 @@ class InventoryTools:
         db: Session,
         product_id: str,
         quantity: int,
-        supplier_notes: Optional[str] = None,
+        supplier_notes: str | None = None,
     ) -> InventoryAction:
         """
         Executes a formal reorder request, logging an action and updating inventory status.
@@ -571,21 +618,31 @@ class InventoryTools:
 
 # ── LangChain ReAct Tools ─────────────────────────────────────────
 
+
 @tool
 def tool_query_inventory(threshold: int = 50, low_stock_only: bool = True) -> str:
     """Query inventory products and filter by low stock quantity threshold.
     Returns up to 15 rows plus the TOTAL number of matching products — always
     use the reported total (not the row count) when the question says "all"."""
     from app.database.session import SessionLocal
+
     db = SessionLocal()
     try:
-        prods = InventoryTools.query_products(db, threshold=threshold, limit=15, low_stock_only=low_stock_only)
+        prods = InventoryTools.query_products(
+            db, threshold=threshold, limit=15, low_stock_only=low_stock_only
+        )
         # Aggregate count across the whole catalogue (demand stats are cached,
         # so this is cheap) so answers over "all" products are not truncated.
-        total = len(InventoryTools.query_products(db, threshold=threshold, limit=100000, low_stock_only=low_stock_only))
+        total = len(
+            InventoryTools.query_products(
+                db, threshold=threshold, limit=100000, low_stock_only=low_stock_only
+            )
+        )
         lines = [f"Found {total} products matching threshold {threshold} (showing first {len(prods)}):"]
         for p in prods:
-            lines.append(f"- {p.name} (ID: {p.product_id}): Stock={p.stockQuantity}, Price=R${p.price:.2f}, Reorder={p.reorder_required}")
+            lines.append(
+                f"- {p.name} (ID: {p.product_id}): Stock={p.stockQuantity}, Price=R${p.price:.2f}, Reorder={p.reorder_required}"
+            )
         return "\n".join(lines)
     finally:
         db.close()
@@ -595,6 +652,7 @@ def tool_query_inventory(threshold: int = 50, low_stock_only: bool = True) -> st
 def tool_get_product_stock(product_id: str) -> str:
     """Look up complete inventory stock, price, category, and lead time for a specific product ID or keyword."""
     from app.database.session import SessionLocal
+
     db = SessionLocal()
     try:
         p = InventoryTools.get_product_by_id(db, product_id)
@@ -622,6 +680,7 @@ def tool_suggest_reorders(threshold: int = 50) -> str:
     estimated reorder cost across ALL low-stock products — use those aggregates
     (not the per-row sums) for "how many / total cost" questions."""
     from app.database.session import SessionLocal
+
     db = SessionLocal()
     try:
         recs = InventoryTools.get_reorder_recommendations(db, threshold=threshold, limit=10)
@@ -645,6 +704,7 @@ def tool_suggest_reorders(threshold: int = 50) -> str:
 def tool_analyze_sales_trends(product_id: str = "", days: int = 30) -> str:
     """Analyze sales velocity, daily sales averages, and demand trajectory over a time period."""
     from app.database.session import SessionLocal
+
     db = SessionLocal()
     try:
         trends = InventoryTools.analyze_sales_trends(db, product_id=product_id or None, days=days, limit=10)
@@ -713,20 +773,36 @@ def tool_demand_analytics(metric: str) -> str:
 
     # Triage LLMs sometimes paraphrase the metric; normalize and alias.
     aliases = {
-        "top20": "top20_share", "top_products": "top20_share", "top20products": "top20_share",
-        "share": "top20_share", "concentration": "volume_concentration",
-        "volatility": "volatility", "cv": "volatility",
-        "restock": "restock_priority", "priority": "restock_priority",
-        "restocking": "restock_priority", "restocking_priority": "restock_priority",
-        "velocity": "monthly_velocity", "growth": "velocity_growth",
-        "yoy": "category_yoy", "category_growth": "category_yoy",
-        "seasonality": "seasonal_concentration", "units_per_order": "units_per_order_cat",
+        "top20": "top20_share",
+        "top_products": "top20_share",
+        "top20products": "top20_share",
+        "share": "top20_share",
+        "concentration": "volume_concentration",
+        "volatility": "volatility",
+        "cv": "volatility",
+        "restock": "restock_priority",
+        "priority": "restock_priority",
+        "restocking": "restock_priority",
+        "restocking_priority": "restock_priority",
+        "velocity": "monthly_velocity",
+        "growth": "velocity_growth",
+        "yoy": "category_yoy",
+        "category_growth": "category_yoy",
+        "seasonality": "seasonal_concentration",
+        "units_per_order": "units_per_order_cat",
         "sellers": "seller_contribution",
     }
     norm = str(metric or "").strip().lower().replace(" ", "_").replace("-", "_")
     valid = {
-        "volume_concentration", "top20_share", "monthly_velocity", "category_yoy", "volatility",
-        "seasonal_concentration", "units_per_order_cat", "seller_contribution", "velocity_growth",
+        "volume_concentration",
+        "top20_share",
+        "monthly_velocity",
+        "category_yoy",
+        "volatility",
+        "seasonal_concentration",
+        "units_per_order_cat",
+        "seller_contribution",
+        "velocity_growth",
         "restock_priority",
     }
     if norm in valid:
@@ -736,25 +812,25 @@ def tool_demand_analytics(metric: str) -> str:
     else:
         # Last resort: keyword scan of whatever text the triage passed through.
         q = norm
-        if ("restock" in q or "priority" in q):
+        if "restock" in q or "priority" in q:
             metric = "restock_priority"
-        elif ("volatil" in q or "coefficient" in q or " cv " in f" {q} "):
+        elif "volatil" in q or "coefficient" in q or " cv " in f" {q} ":
             metric = "volatility"
-        elif ("20" in q or "share" in q or "percent" in q or "largest percentage" in q):
+        elif "20" in q or "share" in q or "percent" in q or "largest percentage" in q:
             metric = "top20_share"
-        elif ("twice" in q or "2x" in q or "average" in q and "sold" in q):
+        elif "twice" in q or "2x" in q or ("average" in q and "sold" in q):
             metric = "volume_concentration"
-        elif ("2017" in q or "2018" in q or "yoy" in q):
+        elif "2017" in q or "2018" in q or "yoy" in q:
             metric = "category_yoy"
-        elif ("50" in q or "growth" in q):
+        elif "50" in q or "growth" in q:
             metric = "velocity_growth"
-        elif ("per order" in q or "units_per_order" in q):
+        elif "per order" in q or "units_per_order" in q:
             metric = "units_per_order_cat"
-        elif ("seller" in q):
+        elif "seller" in q:
             metric = "seller_contribution"
-        elif ("velocity" in q or "monthly" in q):
+        elif "velocity" in q or "monthly" in q:
             metric = "monthly_velocity"
-        elif ("season" in q or "few months" in q or "concentrat" in q):
+        elif "season" in q or "few months" in q or "concentrat" in q:
             metric = "seasonal_concentration"
 
     db = SessionLocal()
@@ -781,12 +857,11 @@ def tool_demand_analytics(metric: str) -> str:
             totals[pid] = totals.get(pid, 0) + int(c)
         cat_en = {
             r[0]: r[1]
-            for r in db.query(CategoryTranslation.product_category_name, CategoryTranslation.product_category_name_english).all()
+            for r in db.query(
+                CategoryTranslation.product_category_name, CategoryTranslation.product_category_name_english
+            ).all()
         }
-        prod_cat = {
-            r[0]: r[1]
-            for r in db.query(Product.product_id, Product.product_category_name).all()
-        }
+        prod_cat = {r[0]: r[1] for r in db.query(Product.product_id, Product.product_category_name).all()}
 
         def disp(pid):
             raw = prod_cat.get(pid) or "unknown"
@@ -854,7 +929,9 @@ def tool_demand_analytics(metric: str) -> str:
                 if k <= 3 and t >= avg_total:
                     out.append((pid, t, k))
             parts = ", ".join(f"{disp(p)[:20]} (80% of {t:,} units in {k} month(s))" for p, t, k in out[:8])
-            return "High-demand products concentrated in few months: " + (parts or "none in the current slice")
+            return "High-demand products concentrated in few months: " + (
+                parts or "none in the current slice"
+            )
         if metric == "units_per_order_cat":
             items_per_order = (
                 db.query(
@@ -870,7 +947,8 @@ def tool_demand_analytics(metric: str) -> str:
             )
             rows2 = [
                 (cat_en.get(c, (c or "unknown")).replace("_", " ").title(), n / max(1, d))
-                for c, n, d in items_per_order if c
+                for c, n, d in items_per_order
+                if c
             ]
             rows2.sort(key=lambda r: -r[1])
             parts = ", ".join(f"{c}: {v:.2f}" for c, v in rows2[:8])
@@ -899,7 +977,9 @@ def tool_demand_analytics(metric: str) -> str:
                     out.append((pid, v17, v18, (v18 - v17) / v17 * 100))
             out.sort(key=lambda r: -r[3])
             parts = ", ".join(f"{disp(p)[:18]} {a:.1f}→{b:.1f}/mo (+{g:.0f}%)" for p, a, b, g in out[:8])
-            return f"Products with ≥50% velocity growth 2017→2018: {len(out)} found. Highest: " + (parts or "none")
+            return f"Products with ≥50% velocity growth 2017→2018: {len(out)} found. Highest: " + (
+                parts or "none"
+            )
         if metric == "restock_priority":
             scored = []
             for pid, t in totals.items():
@@ -922,7 +1002,7 @@ def tool_demand_analytics(metric: str) -> str:
             "Unknown metric. Use one of: volume_concentration, top20_share, monthly_velocity, category_yoy, "
             "volatility, seasonal_concentration, units_per_order_cat, seller_contribution, velocity_growth, restock_priority"
         )
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         return f"❌ Analytics failed: {exc}"
     finally:
         db.close()

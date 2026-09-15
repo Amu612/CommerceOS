@@ -2,9 +2,10 @@
 Authentication service: user lookup, credential verification, audit logging.
 Token creation/decoding lives in `app.core.security`.
 """
+
 from __future__ import annotations
 
-from typing import Any, Optional
+from typing import Any
 
 from sqlalchemy.orm import Session
 
@@ -15,15 +16,15 @@ from app.models.security import AuditLog, User, UserRole, _uuid
 logger = get_logger("auth")
 
 
-def get_user_by_username(db: Session, username: str) -> Optional[User]:
+def get_user_by_username(db: Session, username: str) -> User | None:
     return db.query(User).filter(User.username == username).first()
 
 
-def get_user_by_id(db: Session, user_id: str) -> Optional[User]:
+def get_user_by_id(db: Session, user_id: str) -> User | None:
     return db.query(User).filter(User.id == user_id).first()
 
 
-def authenticate_user(db: Session, username: str, password: str) -> Optional[User]:
+def authenticate_user(db: Session, username: str, password: str) -> User | None:
     user = get_user_by_username(db, username)
     if not user or not user.is_active:
         return None
@@ -51,16 +52,16 @@ def log_audit(
     db: Session,
     *,
     action: str,
-    actor_id: Optional[str] = None,
-    actor_username: Optional[str] = None,
-    actor_role: Optional[str] = None,
-    target_type: Optional[str] = None,
-    target_id: Optional[str] = None,
-    status_code: Optional[int] = None,
-    latency_ms: Optional[float] = None,
-    details: Optional[dict[str, Any]] = None,
-    ip_address: Optional[str] = None,
-    request_id: Optional[str] = None,
+    actor_id: str | None = None,
+    actor_username: str | None = None,
+    actor_role: str | None = None,
+    target_type: str | None = None,
+    target_id: str | None = None,
+    status_code: int | None = None,
+    latency_ms: float | None = None,
+    details: dict[str, Any] | None = None,
+    ip_address: str | None = None,
+    request_id: str | None = None,
 ) -> None:
     entry = AuditLog(
         id=_uuid(),
@@ -79,6 +80,6 @@ def log_audit(
     db.add(entry)
     try:
         db.commit()
-    except Exception:  # noqa: BLE001 - audit must never break the request
+    except Exception:
         db.rollback()
         logger.warning("audit_persist_failed", action=action)

@@ -1,7 +1,8 @@
 """Shared response schemas for the logistics / pricing / marketing agents + orchestrator."""
+
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from pydantic import BaseModel, Field
 
@@ -16,7 +17,7 @@ class Finding(BaseModel):
     evidence: str = ""
     confidence: float = 0.0
     data_status: str = "CALCULATED"
-    sample_count: Optional[int] = None
+    sample_count: int | None = None
 
 
 class Recommendation(BaseModel):
@@ -30,15 +31,15 @@ class Recommendation(BaseModel):
 class MetricCard(BaseModel):
     label: str
     value: Any
-    unit: Optional[str] = None
-    description: Optional[str] = None
+    unit: str | None = None
+    description: str | None = None
     data_status: str = "OBSERVED"
 
 
 class ToolCall(BaseModel):
     tool: str
-    input: Optional[Any] = None
-    output: Optional[Any] = None
+    input: Any | None = None
+    output: Any | None = None
 
 
 class AgentAnalysisOutput(BaseModel):
@@ -49,19 +50,19 @@ class AgentAnalysisOutput(BaseModel):
     confidence: float = 0.0
     health: str = "HEALTHY"  # HEALTHY | NEEDS_ATTENTION | CRITICAL | NOT_ESTIMABLE
     summary: str = ""
-    metrics: List[MetricCard] = Field(default_factory=list)
-    findings: List[Finding] = Field(default_factory=list)
-    recommendations: List[Recommendation] = Field(default_factory=list)
-    charts: Dict[str, Any] = Field(default_factory=dict)
-    tool_calls: List[ToolCall] = Field(default_factory=list)
+    metrics: list[MetricCard] = Field(default_factory=list)
+    findings: list[Finding] = Field(default_factory=list)
+    recommendations: list[Recommendation] = Field(default_factory=list)
+    charts: dict[str, Any] = Field(default_factory=dict)
+    tool_calls: list[ToolCall] = Field(default_factory=list)
     llm_backed: bool = False
-    not_estimable_reason: Optional[str] = None
+    not_estimable_reason: str | None = None
 
 
 class AgentQueryResponse(BaseModel):
     agent: str
     intent: str = "general"
     answer: str
-    data: Optional[Dict[str, Any]] = None
+    data: dict[str, Any] | None = None
     llm_backed: bool = False
     success: bool = True

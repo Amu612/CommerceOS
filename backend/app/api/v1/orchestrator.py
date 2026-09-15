@@ -1,4 +1,5 @@
 """Orchestrator API — one cross-domain sweep of all agents."""
+
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends
@@ -19,13 +20,17 @@ def _persist(result: OrchestrationResult) -> None:
         db = SessionLocal()
         try:
             decision = OrchestrationDecision(
-                id=_uuid(), execution_id=result.execution_id,
-                overall_health=result.overall_health, overall_confidence=result.overall_confidence,
+                id=_uuid(),
+                execution_id=result.execution_id,
+                overall_health=result.overall_health,
+                overall_confidence=result.overall_confidence,
                 summary=result.summary,
                 domains=[d.model_dump() for d in result.domains],
                 systemic_findings=[s.model_dump() for s in result.systemic_findings],
                 conflicts=[c.model_dump() for c in result.conflicts],
-                priority_actions=result.priority_actions, kpis=result.kpis, llm_backed=result.llm_backed,
+                priority_actions=result.priority_actions,
+                kpis=result.kpis,
+                llm_backed=result.llm_backed,
             )
             db.add(decision)
             db.commit()
@@ -36,21 +41,33 @@ def _persist(result: OrchestrationResult) -> None:
 
                 for d in result.domains:
                     findings = [
-                        {"category": f.category, "severity": f.severity, "title": f.title,
-                         "recommended_action": f.recommended_action, "confidence": f.confidence}
+                        {
+                            "category": f.category,
+                            "severity": f.severity,
+                            "title": f.title,
+                            "recommended_action": f.recommended_action,
+                            "confidence": f.confidence,
+                        }
                         for f in d.findings
                     ]
                     if findings:
                         propose_for_run(db, agent=d.agent, findings=findings, decision_id=decision.id)
-            except Exception:  # noqa: BLE001
+            except Exception:
                 pass
             from app.services.event_bus import publish_event
 
-            publish_event("orchestrator", {"type": "sweep_completed", "execution_id": result.execution_id,
-                                           "health": result.overall_health, "systemic": len(result.systemic_findings)})
+            publish_event(
+                "orchestrator",
+                {
+                    "type": "sweep_completed",
+                    "execution_id": result.execution_id,
+                    "health": result.overall_health,
+                    "systemic": len(result.systemic_findings),
+                },
+            )
         finally:
             db.close()
-    except Exception:  # noqa: BLE001
+    except Exception:
         pass
 
 
@@ -74,11 +91,7 @@ def latest(db: Session = Depends(get_db)):
 
     from app.models.operations import OrchestrationDecision
 
-    row = (
-        db.query(OrchestrationDecision)
-        .order_by(desc(OrchestrationDecision.created_at))
-        .first()
-    )
+    row = db.query(OrchestrationDecision).order_by(desc(OrchestrationDecision.created_at)).first()
     if row is None:
         result = orchestrator.run(db=db)
         _persist(result)
@@ -115,13 +128,21 @@ def decisions(limit: int = 20, db: Session = Depends(get_db)):
     from app.models.operations import OrchestrationDecision
 
     rows = db.query(OrchestrationDecision).order_by(desc(OrchestrationDecision.created_at)).limit(limit).all()
-    return {"items": [
-        {"id": r.id, "execution_id": r.execution_id, "overall_health": r.overall_health,
-         "summary": r.summary, "systemic_findings": r.systemic_findings, "conflicts": r.conflicts,
-         "priority_actions": r.priority_actions,
-         "created_at": r.created_at.isoformat() if r.created_at else None}
-        for r in rows
-    ]}
+    return {
+        "items": [
+            {
+                "id": r.id,
+                "execution_id": r.execution_id,
+                "overall_health": r.overall_health,
+                "summary": r.summary,
+                "systemic_findings": r.systemic_findings,
+                "conflicts": r.conflicts,
+                "priority_actions": r.priority_actions,
+                "created_at": r.created_at.isoformat() if r.created_at else None,
+            }
+            for r in rows
+        ]
+    }
 
 
 @router.get("/overview", response_model=OrchestrationResult)

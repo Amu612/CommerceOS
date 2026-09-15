@@ -2,20 +2,10 @@
 Operational platform tables: agent runs & findings, HITL automation actions &
 approvals, orchestration decisions, and customer conversations/memory.
 """
+
 from __future__ import annotations
 
-from sqlalchemy import (
-    Boolean,
-    Column,
-    DateTime,
-    Float,
-    ForeignKey,
-    Index,
-    Integer,
-    JSON,
-    String,
-    Text,
-)
+from sqlalchemy import JSON, Boolean, Column, DateTime, Float, ForeignKey, Index, Integer, String, Text
 from sqlalchemy.orm import relationship
 
 from app.models.olist import Base
@@ -92,9 +82,13 @@ class AutomationAction(Base):
     title = Column(String(300), nullable=False)
     detail = Column(Text, nullable=True)
     finding_id = Column(String(36), ForeignKey("agent_findings.id", ondelete="SET NULL"), nullable=True)
-    decision_id = Column(String(36), ForeignKey("orchestration_decisions.id", ondelete="SET NULL"), nullable=True)
+    decision_id = Column(
+        String(36), ForeignKey("orchestration_decisions.id", ondelete="SET NULL"), nullable=True
+    )
     mode = Column(String(20), nullable=False, default="NEEDS_APPROVAL")  # AUTO | NEEDS_APPROVAL | BLOCKED
-    status = Column(String(24), nullable=False, default="PROPOSED", index=True)  # PROPOSED|EXECUTED|VERIFIED|ROLLED_BACK|REJECTED|BLOCKED|FAILED
+    status = Column(
+        String(24), nullable=False, default="PROPOSED", index=True
+    )  # PROPOSED|EXECUTED|VERIFIED|ROLLED_BACK|REJECTED|BLOCKED|FAILED
     confidence = Column(Float, nullable=True)
     payload = Column(JSON, nullable=True)
     result = Column(JSON, nullable=True)
@@ -111,9 +105,13 @@ class Approval(Base):
     __tablename__ = "approvals"
 
     id = Column(String(36), primary_key=True, default=_uuid)
-    action_id = Column(String(36), ForeignKey("automation_actions.id", ondelete="CASCADE"), nullable=False, unique=True)
+    action_id = Column(
+        String(36), ForeignKey("automation_actions.id", ondelete="CASCADE"), nullable=False, unique=True
+    )
     required_role = Column(String(40), nullable=False, index=True)
-    status = Column(String(16), nullable=False, default="PENDING", index=True)  # PENDING | APPROVED | REJECTED
+    status = Column(
+        String(16), nullable=False, default="PENDING", index=True
+    )  # PENDING | APPROVED | REJECTED
     requested_at = Column(DateTime(timezone=True), nullable=False, default=_utcnow)
     decided_by = Column(String(100), nullable=True)
     decided_at = Column(DateTime(timezone=True), nullable=True)
@@ -133,14 +131,18 @@ class Conversation(Base):
     created_at = Column(DateTime(timezone=True), nullable=False, default=_utcnow)
     last_message_at = Column(DateTime(timezone=True), nullable=False, default=_utcnow, index=True)
 
-    messages = relationship("ConversationMessage", back_populates="conversation", cascade="all, delete-orphan")
+    messages = relationship(
+        "ConversationMessage", back_populates="conversation", cascade="all, delete-orphan"
+    )
 
 
 class ConversationMessage(Base):
     __tablename__ = "conversation_messages"
 
     id = Column(String(36), primary_key=True, default=_uuid)
-    conversation_id = Column(String(36), ForeignKey("conversations.id", ondelete="CASCADE"), nullable=False, index=True)
+    conversation_id = Column(
+        String(36), ForeignKey("conversations.id", ondelete="CASCADE"), nullable=False, index=True
+    )
     role = Column(String(16), nullable=False)  # user | assistant | agent
     content = Column(Text, nullable=False)
     agent = Column(String(40), nullable=True)

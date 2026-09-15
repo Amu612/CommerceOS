@@ -17,21 +17,22 @@ on any other domain's approvals or run history. A domain admin can still see
 and decide the approvals that already require their own role — that's the
 system's Human-In-The-Loop design working as intended, not a hole in it.
 """
+
 from __future__ import annotations
 
 from app.models.security import AGENT_ROLE_MAP, ROLE_AGENTS, UserRole
 
 __all__ = [
-    "is_super_admin",
     "agent_for_role",
-    "role_for_agent",
     "can_access_agent",
     "can_access_orchestrator",
-    "can_view_approval",
-    "can_decide_approval",
     "can_access_run_history",
-    "permitted_agents",
+    "can_decide_approval",
+    "can_view_approval",
     "is_admin_only_route_allowed",
+    "is_super_admin",
+    "permitted_agents",
+    "role_for_agent",
 ]
 
 

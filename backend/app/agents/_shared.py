@@ -2,11 +2,12 @@
 Shared helpers for the domain agents. Keeps every agent source-aware to the
 replay simulated clock and consistent about provenance tagging.
 """
+
 from __future__ import annotations
 
 import re
-from datetime import datetime, timezone
-from typing import Any, Optional
+from datetime import UTC, datetime
+from typing import Any
 
 from sqlalchemy import func
 from sqlalchemy.orm import Session
@@ -26,6 +27,7 @@ def period_bucket(db: Session, column, fmt: str):
         return func.to_char(column, pg)
     return func.strftime(fmt, column)
 
+
 # 32-char Olist UUID, a "#1234" style id, or a bare 2-10 digit DataCo id
 _ORDER_ID_RE = re.compile(r"#?\b([0-9a-fA-F]{32}|\d{2,10})\b")
 
@@ -36,7 +38,9 @@ def extract_order_id(message: str) -> str:
         return ""
     # If the message specifically identifies the ID as belonging to another entity, don't hijack it
     low = message.lower()
-    if any(k in low for k in ("customer", "seller", "vendor", "review")) and not any(k in low for k in ("order", "invoice", "tracking", "shipment", "rma")):
+    if any(k in low for k in ("customer", "seller", "vendor", "review")) and not any(
+        k in low for k in ("order", "invoice", "tracking", "shipment", "rma")
+    ):
         return ""
     # Prefer an explicit "order <id>" / "order #<id>" / "invoice <id>" mention
     m = re.search(
@@ -57,19 +61,39 @@ def extract_entity_id(message: str) -> tuple[str, str]:
     """
     if not message:
         return "", ""
-    m_cust = re.search(r"(?:customer|cust|user|account)\s*(?:unique\s*)?(?:id|number|no\.?|#)?\s*[:#]?\s*([0-9a-fA-F]{8,32}|\d{1,10})", message, re.IGNORECASE)
+    m_cust = re.search(
+        r"(?:customer|cust|user|account)\s*(?:unique\s*)?(?:id|number|no\.?|#)?\s*[:#]?\s*([0-9a-fA-F]{8,32}|\d{1,10})",
+        message,
+        re.IGNORECASE,
+    )
     if m_cust:
         return m_cust.group(1), "customer"
-    m_seller = re.search(r"(?:seller|vendor|merchant)\s*(?:id|number|no\.?|#)?\s*[:#]?\s*([0-9a-fA-F]{8,32}|\d{1,10})", message, re.IGNORECASE)
+    m_seller = re.search(
+        r"(?:seller|vendor|merchant)\s*(?:id|number|no\.?|#)?\s*[:#]?\s*([0-9a-fA-F]{8,32}|\d{1,10})",
+        message,
+        re.IGNORECASE,
+    )
     if m_seller:
         return m_seller.group(1), "seller"
-    m_prod = re.search(r"(?:product|item|catalog|sku)\s*(?:id|number|no\.?|#)?\s*[:#]?\s*([0-9a-fA-F]{8,32}|sku-[\w-]+|\d{1,10})", message, re.IGNORECASE)
+    m_prod = re.search(
+        r"(?:product|item|catalog|sku)\s*(?:id|number|no\.?|#)?\s*[:#]?\s*([0-9a-fA-F]{8,32}|sku-[\w-]+|\d{1,10})",
+        message,
+        re.IGNORECASE,
+    )
     if m_prod:
         return m_prod.group(1), "product"
-    m_rev = re.search(r"(?:review|rating|feedback)\s*(?:id|number|no\.?|#)?\s*[:#]?\s*([0-9a-fA-F]{8,32}|\d{1,10})", message, re.IGNORECASE)
+    m_rev = re.search(
+        r"(?:review|rating|feedback)\s*(?:id|number|no\.?|#)?\s*[:#]?\s*([0-9a-fA-F]{8,32}|\d{1,10})",
+        message,
+        re.IGNORECASE,
+    )
     if m_rev:
         return m_rev.group(1), "review"
-    m_ord = re.search(r"(?:order|invoice|rma|tracking|shipment)\s*(?:id|number|no\.?|#)?\s*[:#]?\s*([0-9a-fA-F]{4,32}|\d{1,10})", message, re.IGNORECASE)
+    m_ord = re.search(
+        r"(?:order|invoice|rma|tracking|shipment)\s*(?:id|number|no\.?|#)?\s*[:#]?\s*([0-9a-fA-F]{4,32}|\d{1,10})",
+        message,
+        re.IGNORECASE,
+    )
     if m_ord:
         return m_ord.group(1), "order"
     m_bare = _ORDER_ID_RE.search(message)
@@ -78,7 +102,7 @@ def extract_entity_id(message: str) -> tuple[str, str]:
     return "", ""
 
 
-def extract_order_id_from_history(message: str, history: Optional[list] = None) -> str:
+def extract_order_id_from_history(message: str, history: list | None = None) -> str:
     """
     Resolves an order id for a follow-up question: prefer the current message,
     else scan prior turns (most recent first) for the last one mentioned.
@@ -94,13 +118,13 @@ def extract_order_id_from_history(message: str, history: Optional[list] = None) 
     return ""
 
 
-def tz(dt: Optional[datetime]) -> Optional[datetime]:
+def tz(dt: datetime | None) -> datetime | None:
     if dt is None:
         return None
-    return dt.replace(tzinfo=timezone.utc) if dt.tzinfo is None else dt
+    return dt.replace(tzinfo=UTC) if dt.tzinfo is None else dt
 
 
-def simulated_clock(db: Optional[Session] = None) -> datetime:
+def simulated_clock(db: Session | None = None) -> datetime:
     """
     Current simulated time T. Only records with timestamp <= T are 'observed'.
 
@@ -116,7 +140,7 @@ def simulated_clock(db: Optional[Session] = None) -> datetime:
         from app.services.data_source_service import data_source_service
 
         if data_source_service.is_live():
-            return datetime.now(timezone.utc)
+            return datetime.now(UTC)
     except Exception:
         pass
 
@@ -153,7 +177,7 @@ def simulated_clock(db: Optional[Session] = None) -> datetime:
     finally:
         if own is not None:
             own.close()
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 def severity_from_fraction(fraction: float) -> str:
@@ -198,11 +222,17 @@ def deterministic_answer(message: str, out: Any, agent_label: str, topic_map: di
     low = (message or "").lower().strip()
     lines: list[str] = [f"**{agent_label}** — {out.summary}", ""]
 
-    if not low or any(k in low for k in ("hello", "hi ", "hey", "help", "what can you", "capabilit", "what do you")):
-        lines.append(f"I analyse: {', '.join(topic_map.keys())}. Ask about any of those, or ask 'what should I do?'.")
+    if not low or any(
+        k in low for k in ("hello", "hi ", "hey", "help", "what can you", "capabilit", "what do you")
+    ):
+        lines.append(
+            f"I analyse: {', '.join(topic_map.keys())}. Ask about any of those, or ask 'what should I do?'."
+        )
         lines.append("")
         for m in out.metrics:
-            lines.append(f"- {m.label}: {m.value}" + (f" — {m.description}" if getattr(m, 'description', None) else ""))
+            lines.append(
+                f"- {m.label}: {m.value}" + (f" — {m.description}" if getattr(m, "description", None) else "")
+            )
         return "\n".join(lines)
 
     for keys, render in topic_map.values():
@@ -222,7 +252,10 @@ def deterministic_answer(message: str, out: Any, agent_label: str, topic_map: di
 
     if any(k in low for k in ("recommend", "should i", "action", "do next", "fix", "improve", "advice")):
         for r in out.recommendations:
-            lines.append(f"- **{r.title}** ({r.priority}) — {r.detail}" + (f" Impact: {r.expected_impact}" if r.expected_impact else ""))
+            lines.append(
+                f"- **{r.title}** ({r.priority}) — {r.detail}"
+                + (f" Impact: {r.expected_impact}" if r.expected_impact else "")
+            )
         lines += ["", _hint()]
         return "\n".join(lines)
 
@@ -247,7 +280,9 @@ def fmt_evidence(v: Any) -> str:
     nesting depth.
     """
     if isinstance(v, dict):
-        return "; ".join(f"{str(k).replace('_', ' ')}: {fmt_evidence(vv)}" for k, vv in v.items() if vv is not None)
+        return "; ".join(
+            f"{str(k).replace('_', ' ')}: {fmt_evidence(vv)}" for k, vv in v.items() if vv is not None
+        )
     if isinstance(v, list):
         return " | ".join(fmt_evidence(x) for x in v[:4])
     return str(v)
