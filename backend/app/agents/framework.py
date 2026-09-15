@@ -16,12 +16,15 @@ distribution (Tukey fences / modified z-score / binomial SE) inside the tools.
 """
 from __future__ import annotations
 
+import contextvars
 import json
+import re
+import time
 import uuid
 from datetime import datetime, timezone
 from typing import Any, Callable, Optional
 
-from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.tools import BaseTool, tool
 
 from app.agents._shared import extract_order_id_from_history, money
@@ -37,6 +40,38 @@ from app.intelligence.confidence.calculator import ConfidenceCalculator
 from app.services.llm import get_chat_model, get_llm
 
 logger = get_logger("agent.framework")
+
+
+# ── side-effect confirmation gate ─────────────────────────────────────────
+# Tools that change state (create a purchase order, open an RMA) may only run
+# after the USER — never the model — explicitly affirmed in the current
+# conversation. The chat loop records the user's own words here before the
+# ReAct agent runs; the side-effecting tools re-check them at execution time,
+# so a model cannot "self-confirm" by passing confirm=True.
+_recent_user_messages: contextvars.ContextVar[tuple[str, ...]] = contextvars.ContextVar(
+    "recent_user_messages", default=(),
+)
+
+_CONFIRM_RE = re.compile(
+    r"^\s*(?:please\s+)?(?:yes|yeah|yep|yup|sure|ok(?:ay)?|confirm(?:ed)?|approved?|go ahead|proceed)\b",
+    re.IGNORECASE,
+)
+
+
+def register_user_message(text: str) -> None:
+    """Record the user's own words for this turn so side-effecting tools can
+    verify explicit human confirmation."""
+    if not text:
+        return
+    current = _recent_user_messages.get()
+    _recent_user_messages.set((text,) + current[-2:])
+
+
+def user_explicitly_confirmed() -> bool:
+    """True only when the user's most recent message begins with an explicit
+    affirmative ('confirm', 'yes — go ahead', 'proceed', …)."""
+    msgs = _recent_user_messages.get()
+    return bool(msgs) and bool(_CONFIRM_RE.match(msgs[0]))
 
 
 @tool
@@ -278,8 +313,11 @@ class DomainAgent:
         model = get_chat_model()
         if model is not None:
             try:
-                answer = self._react_chat(model, message, history=history, analysis=analysis)
+                trace: list[dict] = []
+                answer = self._react_chat(model, message, history=history, analysis=analysis, trace=trace)
                 if answer:
+                    if trace:
+                        context = {**context, "tool_trace": trace}
                     return AgentQueryResponse(agent=self.agent_name, intent="react", answer=answer,
                                               data=context, llm_backed=True)
             except Exception as exc:  # noqa: BLE001
@@ -290,15 +328,23 @@ class DomainAgent:
             answer=self._deterministic_chat(message, analysis, history=history), data=context, llm_backed=False,
         )
 
-    def _react_chat(self, model, message: str, history: Optional[list] = None, analysis: Optional[AgentAnalysisOutput] = None) -> str:
+    def _react_chat(
+        self,
+        model,
+        message: str,
+        history: Optional[list] = None,
+        analysis: Optional[AgentAnalysisOutput] = None,
+        trace: list[dict] | None = None,
+    ) -> str:
         from langgraph.prebuilt import create_react_agent
         from app.agents.customer.langchain_tools import resolve_unknown_id
 
+        register_user_message(message)
         tools = list(self.metric_tools) + list(self.lookup_tools) + [resolve_unknown_id] + _CALCULATOR
         live = ""
         if analysis is not None:
-            metric_lines = "; ".join(f"{m.label}={m.value}" for m in analysis.metrics[:8])
-            finding_lines = " | ".join(f"[{f.severity}] {f.title}" for f in analysis.findings[:4])
+            metric_lines = "; ".join(f"{m.label}={m.value}" for m in analysis.metrics[:5])
+            finding_lines = " | ".join(f"[{f.severity}] {f.title}" for f in analysis.findings[:3])
             live = (
                 f"\n\nCurrent analysis snapshot for this agent (already computed from the live database — "
                 f"reuse these numbers instead of re-querying when they answer the question):\n"
@@ -328,7 +374,13 @@ class DomainAgent:
                 "general context with business data, fetch the data and fold it in.\n"
                 "6. If a requested business figure genuinely doesn't exist in the data, say so in "
                 "one sentence and offer the closest available figure.\n"
-                "7. Use the conversation history to resolve follow-ups (\"what about its status?\")."
+                "7. Use the conversation history to resolve follow-ups (\"what about its status?\").\n"
+                "8. Tools that change state (creating a purchase order / reorder, opening an RMA) "
+                "are ONE-STEP-BEFORE-CONFIRMATION: when the user asks for such an action, first "
+                "fetch/preview the exact plan with the read-only tools, present it, and ask the "
+                "user to reply with an explicit 'confirm'. Only pass confirm=True after the user "
+                "has actually replied with that confirmation. If the tool returns "
+                "CONFIRMATION_REQUIRED, do NOT retry — tell the user what you need."
                 f"{live}"
             ),
         )
@@ -340,15 +392,35 @@ class DomainAgent:
                 continue
             messages.append(HumanMessage(content=text) if role == "user" else AIMessage(content=text))
         messages.append(HumanMessage(content=message))
-        result = agent.invoke(
-            {"messages": messages},
-            config={"recursion_limit": 12},
-        )
+        result = self._invoke_react_with_retry(agent, messages, model)
         msgs = result.get("messages", [])
+        executed = _collect_tool_trace(msgs)
+        if trace is not None:
+            trace.extend(executed)
+        logger.info(
+            "react_completed",
+            agent=self.agent_name,
+            tool_calls=len(executed),
+            tools_used=[t.get("tool") for t in executed],
+        )
         for m in reversed(msgs):
             if isinstance(m, AIMessage) and m.content and not getattr(m, "tool_calls", None):
                 return m.content if isinstance(m.content, str) else str(m.content)
         return ""
+
+    @staticmethod
+    def _invoke_react_with_retry(agent, messages: list, model):
+        """Invoke the ReAct graph once, retrying a metered-provider rate limit
+        (429) after the provider-suggested wait. Anything else propagates."""
+        try:
+            return agent.invoke({"messages": messages}, config={"recursion_limit": 12})
+        except Exception as exc:
+            wait = _rate_limit_wait(exc)
+            if wait is None:
+                raise
+            logger.warning("react_rate_limited_retry", agent=getattr(agent, "name", "agent"), wait_s=round(wait, 1))
+            time.sleep(wait)
+            return agent.invoke({"messages": messages}, config={"recursion_limit": 12})
 
     def _deterministic_chat(self, message: str, analysis: AgentAnalysisOutput, history: Optional[list] = None) -> str:
         """
@@ -404,7 +476,7 @@ class DomainAgent:
         if not rendered:
             scored: list[tuple[int, BaseTool]] = []
             toks = {w for w in _re_words(low) if len(w) > 2}
-            for t in list(self.metric_tools):
+            for t in list(self.metric_tools) + list(self.lookup_tools):
                 hay = f"{t.name} {t.description}".lower()
                 score = sum(1 for w in toks if w in hay)
                 if score:
@@ -439,6 +511,36 @@ class DomainAgent:
 
 
 # ── helpers ────────────────────────────────────────────────────
+def _rate_limit_wait(exc: Exception) -> float | None:
+    """Seconds to wait before retrying a provider rate limit, or None when the
+    exception is not a rate limit. Honours the provider's suggested delay."""
+    text = str(exc)
+    name = type(exc).__name__
+    if name not in ("RateLimitError", "APIStatusError") and "rate_limit" not in text and "429" not in text:
+        return None
+    delay = 6.0
+    match = re.search(r"try again in ([0-9.]+)s", text, re.IGNORECASE)
+    if match:
+        delay = max(delay, float(match.group(1)))
+    return min(delay + 0.5, 15.0)
+
+
+def _collect_tool_trace(msgs: list) -> list[dict]:
+    """Pair each AIMessage.tool_calls entry with its ToolMessage output, in
+    execution order — the audit trail proving which tools answered a query."""
+    trace: list[dict] = []
+    for m in msgs:
+        if isinstance(m, AIMessage):
+            for tc in getattr(m, "tool_calls", None) or []:
+                trace.append({"tool": tc.get("name"), "input": tc.get("args")})
+        elif isinstance(m, ToolMessage) and trace:
+            for entry in reversed(trace):
+                if "output" not in entry:
+                    entry["output"] = str(m.content)[:1500]
+                    break
+    return trace
+
+
 def _as_obj(raw: Any) -> Any:
     if isinstance(raw, (dict, list)):
         return raw

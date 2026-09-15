@@ -14,6 +14,18 @@ from sqlalchemy.orm import Session
 from app.models.dataco import DataCoOrder
 from app.models.olist import Order
 
+
+def period_bucket(db: Session, column, fmt: str):
+    """Portable calendar bucketing for GROUP BY queries: SQLite has strftime,
+    PostgreSQL has to_char — the same '%Y'/'%Y-%m' bucket on both dialects."""
+    dialect = getattr(getattr(db, "bind", None), "dialect", None)
+    if dialect is not None and dialect.name == "postgresql":
+        pg = {"%Y": "YYYY", "%Y-%m": "YYYY-MM"}.get(fmt)
+        if pg is None:
+            raise ValueError(f"unsupported period format: {fmt}")
+        return func.to_char(column, pg)
+    return func.strftime(fmt, column)
+
 # 32-char Olist UUID, a "#1234" style id, or a bare 2-10 digit DataCo id
 _ORDER_ID_RE = re.compile(r"#?\b([0-9a-fA-F]{32}|\d{2,10})\b")
 

@@ -48,11 +48,15 @@ def test_02_inventory_agent_monitor():
 
 
 def test_03_inventory_agent_query():
+    """With no LLM configured the query falls back to the database-backed
+    monitoring snapshot; with an LLM it answers through the ReAct loop.
+    Either way the response contract must hold and the answer be non-empty."""
     db = SessionLocal()
     try:
         res = inventory_agent.query("What products are low on stock?", db=db)
         assert res.status == "SUCCESS"
-        assert res.output is not None
-        assert "Watchdog" in res.output or "product" in res.output.lower() or "stock" in res.output.lower()
+        assert res.output is not None and len(res.output) > 0
+        assert res.products is not None
+        assert res.low_stock_products is not None
     finally:
         db.close()

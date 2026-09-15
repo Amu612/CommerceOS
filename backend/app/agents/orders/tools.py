@@ -90,7 +90,8 @@ def _tz(dt: Optional[datetime]) -> Optional[datetime]:
 # The one canonical clock implementation now lives in `app.agents._shared`
 # (it also handles the live-Shopify-source case); kept as `get_simulated_clock`
 # here since that's the name every call site in this file already uses.
-from app.agents._shared import simulated_clock as get_simulated_clock  # noqa: E402
+from app.agents._shared import simulated_clock as get_simulated_clock, period_bucket  # noqa: E402
+
 
 
 def _percentile_from_profile(values: List[float], p: float) -> float:
@@ -1755,19 +1756,21 @@ class OrdersTools:
             fmt = "%Y" if group_by == "year" else "%Y-%m"
             counts: Dict[str, int] = {}
 
+            order_bucket = period_bucket(db, Order.order_purchase_timestamp, fmt)
             for period, cnt in (
-                db.query(func.strftime(fmt, Order.order_purchase_timestamp), func.count(Order.order_id))
+                db.query(order_bucket, func.count(Order.order_id))
                 .filter(Order.order_purchase_timestamp <= sim_clock)
-                .group_by(func.strftime(fmt, Order.order_purchase_timestamp))
+                .group_by(order_bucket)
                 .all()
             ):
                 if period:
                     counts[period] = counts.get(period, 0) + int(cnt)
 
+            dataco_bucket = period_bucket(db, DataCoOrder.order_date, fmt)
             for period, cnt in (
-                db.query(func.strftime(fmt, DataCoOrder.order_date), func.count(DataCoOrder.order_id))
+                db.query(dataco_bucket, func.count(DataCoOrder.order_id))
                 .filter(DataCoOrder.order_date <= sim_clock)
-                .group_by(func.strftime(fmt, DataCoOrder.order_date))
+                .group_by(dataco_bucket)
                 .all()
             ):
                 if period:
@@ -2036,8 +2039,24 @@ def tool_check_return_eligibility(order_id: str) -> str:
 
 
 @tool
-def tool_initiate_return(order_id: str, reason: str) -> str:
-    """Initiates an official return for an order and generates an RMA authorization."""
+def tool_initiate_return(order_id: str, reason: str, confirm: bool = False) -> str:
+    """Open an official RMA return for an order (SIDE-EFFECTING).
+
+    Two-step protocol — never call with confirm=True on the first request:
+      1. Check eligibility with `tool_check_return_eligibility`, present the
+         order and refund summary, and ask the user to reply with an explicit
+         "confirm".
+      2. Only after the user's latest message is that confirmation, pass
+         confirm=True. The tool re-verifies the user's own words and refuses
+         otherwise (the model cannot confirm on the user's behalf).
+    """
+    from app.agents.framework import user_explicitly_confirmed
+
+    if not confirm or not user_explicitly_confirmed():
+        return (
+            "CONFIRMATION_REQUIRED: no RMA was created. Present the return plan and ask the "
+            f"user to reply 'confirm' to execute: order_id={order_id}, reason={reason}."
+        )
     try:
         ret = OrdersTools.initiate_return(order_id, reason)
         return (

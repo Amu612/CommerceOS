@@ -20,7 +20,7 @@ Data Honesty:
 """
 import logging
 import uuid
-from typing import List, Optional, Tuple
+from typing import ClassVar, List, Optional, Tuple
 from datetime import datetime, timezone
 
 from sqlalchemy.orm import Session
@@ -33,6 +33,7 @@ from app.models.security import (
     UserRole,
     _uuid,
 )
+from app.agents.framework import DomainAgent
 from app.agents.orders.schemas import (
     OrdersQueryResponse,
     OrdersAgentOutput,
@@ -48,7 +49,8 @@ from app.agents.orders.schemas import (
     AutomationEligibility,
     DataCategory,
 )
-from app.agents.orders.tools import OrdersTools
+from app.agents.orders.tools import ALL_ORDERS_TOOLS, OrdersTools
+from app.agents._shared import extract_order_id
 from app.intelligence.anomaly.detector import AnomalyDetector
 from app.intelligence.confidence.calculator import ConfidenceCalculator
 from app.intelligence.statistics.profiler import StatisticalProfiler
@@ -733,12 +735,15 @@ class OrdersAgent:
 
     def query(self, message: str, db: Optional[Session] = None, history: Optional[list] = None) -> OrdersQueryResponse:
         """
-        Executes interactive order operations using the LangGraph ReAct workflow
-        (lookup order, search product, track package, check return eligibility, initiate RMA, analytics).
+        Interactive order operations through the shared LangGraph ReAct loop:
+        the LLM reads the question, dynamically selects the order tool(s) it
+        needs (lookup, search, tracking, analytics, value/period aggregates),
+        reads real PostgreSQL results, chains further tools / the calculator
+        when required, and writes the final answer.
 
-        `history` is the last few {role, text} turns from the chat widget — passed
-        through so the triage node can resolve a follow-up question ("what about
-        its status?") to an order id mentioned earlier in the conversation.
+        There is no intent triage and no fixed question→tool routing anywhere
+        on this path. `history` (last {role, text} turns) resolves follow-ups
+        such as "what about its status?".
         """
         try:
             from app.services.data_source_service import data_source_service
@@ -753,36 +758,40 @@ class OrdersAgent:
         except Exception:  # noqa: BLE001
             pass
 
-        from app.agents.orders.graph import orders_agent_graph
+        clean = (message or "").strip()
+        if not clean:
+            return OrdersQueryResponse(intent="empty", result="Please provide a message or order inquiry.", success=False)
+
+        trace: list[dict] = []
+        from app.services.llm import get_chat_model
+
+        model = get_chat_model()
+        if model is not None:
+            try:
+                text = _ORDERS_CHAT_AGENT._react_chat(
+                    model, clean, history=history, analysis=None, trace=trace
+                )
+                if text:
+                    return OrdersQueryResponse(
+                        intent="react",
+                        order_id=extract_order_id(clean) or None,
+                        result=text,
+                        raw_data={"llm_backed": True, "tool_trace": trace},
+                        success=True,
+                    )
+            except Exception as e:
+                logger.error(f"[OrdersAgent] ReAct query failed: {e}", exc_info=True)
+
+        # Deterministic fallback (no LLM configured, or LLM failure): still
+        # database-backed via the same LangChain tools — never invented data.
         try:
-            prior_messages = [
-                {"role": "user" if (t.get("role") == "user") else "assistant", "content": t.get("text", "")}
-                for t in (history or [])[-6:]
-                if t.get("text")
-            ]
-            initial_state = {
-                "messages": prior_messages + [{"role": "user", "content": message}],
-                "intent": "",
-                "order_id": "",
-                "product_id": "",
-                "search_query": "",
-                "tracking_number": "",
-                "customer_email": "",
-                "tool_results": {},
-                "final_response": "",
-                "retry_count": 0,
-                "error_message": "",
-            }
-
-            result = orders_agent_graph.invoke(initial_state)
-
-            intent = result.get("intent", "general")
-            ord_id = result.get("order_id") if intent in ["order_status", "shipping_tracking", "return_request"] else None
+            analysis = _ORDERS_CHAT_AGENT.analyze(db=db)
+            text = _ORDERS_CHAT_AGENT._deterministic_chat(clean, analysis, history=history)
             return OrdersQueryResponse(
-                intent=intent,
-                order_id=ord_id or None,
-                result=result.get("final_response", "Operation completed."),
-                raw_data=result.get("tool_results"),
+                intent="deterministic",
+                order_id=extract_order_id(clean) or None,
+                result=text,
+                raw_data={"llm_backed": False},
                 success=True,
             )
         except Exception as e:
@@ -1025,6 +1034,33 @@ class OrdersAgent:
 # ──────────────────────────────────────────────────────────────────────────────
 # Utility
 # ──────────────────────────────────────────────────────────────────────────────
+
+class _OrdersChatAgent(DomainAgent):
+    """Thin DomainAgent adapter that exposes the full orders toolset to the
+    shared LangGraph ReAct loop. It intentionally has no metric/detector
+    tools: the monitoring pipeline stays in OrdersAgent.run_analysis, while
+    interactive queries let the LLM pick any order tool dynamically."""
+
+    agent_name = "orders"
+    display_name = "Orders Operations"
+    persona = (
+        "You are the Orders Operations Agent for an e-commerce operation. You answer questions "
+        "about orders, order items, products, customers, payments, shipments, cancellations, "
+        "delivery performance and order analytics. Every business figure must come from tool "
+        "output — never invent IDs or numbers. Order ids are either Olist UUIDs or small integer "
+        "ids; when unsure which tool fits, inspect the data with the closest read-only tool first. "
+        "State-changing tools (returns/RMA) require explicit user confirmation as described in "
+        "their tool descriptions."
+    )
+    metric_tools: ClassVar[list] = []
+    detector_tools: ClassVar[list] = []
+    lookup_tools: ClassVar[list] = ALL_ORDERS_TOOLS
+    recommendation_playbook: ClassVar[list] = []
+    supports_live_source = True  # live-source gating is done by OrdersAgent.query
+
+
+_ORDERS_CHAT_AGENT = _OrdersChatAgent()
+
 
 def _empirical_severity(fraction: float, thresholds: List[float]) -> str:
     """

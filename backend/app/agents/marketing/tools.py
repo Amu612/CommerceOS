@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from langchain_core.tools import tool
 
-from app.agents._shared import fmt_evidence, money, sample_confidence
+from app.agents._shared import fmt_evidence, money, sample_confidence, period_bucket
 from app.agents.marketing.data_layer import MarketingData
 from app.database.session import SessionLocal
 
@@ -168,7 +168,7 @@ def marketing_analytics(metric: str) -> str:
                 Product.product_id,
                 Customer.customer_state,
                 Order.order_id,
-                func.strftime("%Y", Order.order_purchase_timestamp),
+                period_bucket(db, Order.order_purchase_timestamp, "%Y"),
                 OrderItem.price,
                 OrderItem.freight_value,
             )

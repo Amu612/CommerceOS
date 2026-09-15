@@ -390,6 +390,8 @@ const INTENT_LABEL: Record<string, string> = {
   return_request: "Return",
   return_policy: "Policy",
   general: "Answer",
+  react: "LLM Answer",
+  deterministic: "Data Answer",
   not_estimable: "Not Estimable",
 };
 

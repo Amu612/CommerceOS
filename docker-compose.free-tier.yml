@@ -59,6 +59,7 @@ services:
       REDIS_URL: redis://redis:6379/0
       REDIS_ENABLED: "true"
       DATASET_DIR: ${DATASET_DIR:-/app/data/raw}
+      JWT_SECRET: ${JWT_SECRET}
       SEED_ADMIN_PASSWORD: ${SEED_ADMIN_PASSWORD}
     volumes:
       - ./backend/data:/app/data
@@ -112,6 +113,11 @@ services:
       context: ./backend
     restart: unless-stopped
     command: ["python", "-m", "app.worker.main"]
+    # The worker is a background consumer, not an HTTP service — without this
+    # override it inherits the backend image HEALTHCHECK (curl :8000/health)
+    # and Docker permanently marks it unhealthy.
+    healthcheck:
+      disable: true
     environment:
       ENVIRONMENT: production
       DATABASE_URL: postgresql://${POSTGRES_USER:-commerceos}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-commerceos}

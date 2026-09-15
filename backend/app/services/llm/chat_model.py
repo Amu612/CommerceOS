@@ -5,9 +5,18 @@ Returns a `BaseChatModel` for the resolved provider, or `None` when no provider
 is configured. This is what every LangGraph agent (`create_react_agent`),
 LangChain tool-calling chain, and structured-output call binds to — so the whole
 agent layer is LangChain-native and swaps providers by env alone.
+
+Free-tier friendliness: hosted providers (Groq in particular) meter tokens per
+minute, so every request is sent with an explicit completion budget
+(`settings.LLM_COMPLETION_TOKEN_LIMIT`) and a small retry count that honours the
+provider's `Retry-After` hint instead of surfacing a 429 to the user.
+`chat_model_status()` also caches its reachability probe — the dashboard polls
+it frequently and a live "ping" on every poll would burn the token budget that
+real agent queries need.
 """
 from __future__ import annotations
 
+import time
 from functools import lru_cache
 from typing import Optional
 
@@ -18,9 +27,27 @@ logger = get_logger("llm.chat")
 
 _LAST_ERROR: Optional[str] = None
 
+# Reachability probe cache — holder dict avoids a module-level `global`.
+# The ping costs real tokens on metered providers, so it runs at most once per
+# TTL even when the dashboard polls every few seconds.
+_STATUS_TTL_OK = 120.0
+_STATUS_TTL_ERROR = 30.0
+_status_cache: dict = {"entry": None, "expires_at": 0.0}  # {"entry": dict|None, "expires_at": float}
+
 
 def last_error() -> Optional[str]:
     return _LAST_ERROR
+
+
+def _groq_reasoning_effort() -> Optional[str]:
+    """gpt-oss models emit hidden reasoning tokens that consume a large share
+    of the free-tier TPM budget; "low" trims them. ChatGroq (langchain-groq)
+    takes this as a first-class constructor field, and only for models that
+    support the parameter."""
+    _, model = settings.resolve_llm()
+    if settings.GROQ_REASONING_EFFORT and "gpt-oss" in (model or ""):
+        return settings.GROQ_REASONING_EFFORT
+    return None
 
 
 @lru_cache
@@ -39,8 +66,10 @@ def get_chat_model():  # -> Optional[BaseChatModel]
                 model=model,
                 api_key=settings.GROQ_API_KEY,
                 temperature=0.2,
-                max_retries=0,
+                max_retries=settings.LLM_MAX_RETRIES,
                 timeout=settings.LLM_TIMEOUT_SECONDS,
+                max_tokens=settings.LLM_COMPLETION_TOKEN_LIMIT,
+                reasoning_effort=_groq_reasoning_effort(),
             )
 
         if provider == "openai":
@@ -58,8 +87,9 @@ def get_chat_model():  # -> Optional[BaseChatModel]
                 api_key=key,
                 base_url=base,
                 temperature=0.2,
-                max_retries=0,
+                max_retries=settings.LLM_MAX_RETRIES,
                 timeout=settings.LLM_TIMEOUT_SECONDS,
+                max_tokens=settings.LLM_COMPLETION_TOKEN_LIMIT,
             )
 
         if provider == "anthropic":
@@ -72,6 +102,7 @@ def get_chat_model():  # -> Optional[BaseChatModel]
                 api_key=settings.ANTHROPIC_API_KEY,
                 temperature=0.2,
                 timeout=settings.LLM_TIMEOUT_SECONDS,
+                max_tokens=settings.LLM_COMPLETION_TOKEN_LIMIT,
             )
 
         if provider == "bedrock":
@@ -90,6 +121,11 @@ def get_chat_model():  # -> Optional[BaseChatModel]
 
 
 def chat_model_status() -> dict:
+    now = time.monotonic()
+    cached = _status_cache["entry"]
+    if cached is not None and _status_cache["expires_at"] > now:
+        return cached
+
     provider, model = settings.resolve_llm()
     m = get_chat_model()
     ok = m is not None
@@ -98,10 +134,10 @@ def chat_model_status() -> dict:
         try:
             m.invoke("ping")
             reachable = True
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             reachable = False
             globals()["_LAST_ERROR"] = f"invoke failed: {exc}"
-    return {
+    status = {
         "configured_provider": settings.LLM_PROVIDER,
         "resolved_provider": provider if ok else "deterministic",
         "model": model if ok else None,
@@ -109,3 +145,9 @@ def chat_model_status() -> dict:
         "reachable": reachable,
         "last_error": _LAST_ERROR,
     }
+    # A probe that errors may just be a transient 429 — retry sooner than a
+    # healthy probe so the dashboard recovers quickly.
+    ttl = _STATUS_TTL_OK if (ok and reachable) else _STATUS_TTL_ERROR
+    _status_cache["entry"] = status
+    _status_cache["expires_at"] = now + ttl
+    return status

@@ -548,12 +548,17 @@ class InventoryTools:
 
 @tool
 def tool_query_inventory(threshold: int = 50, low_stock_only: bool = True) -> str:
-    """Query inventory products and filter by low stock quantity threshold."""
+    """Query inventory products and filter by low stock quantity threshold.
+    Returns up to 15 rows plus the TOTAL number of matching products — always
+    use the reported total (not the row count) when the question says "all"."""
     from app.database.session import SessionLocal
     db = SessionLocal()
     try:
         prods = InventoryTools.query_products(db, threshold=threshold, limit=15, low_stock_only=low_stock_only)
-        lines = [f"Found {len(prods)} products (threshold: {threshold}):"]
+        # Aggregate count across the whole catalogue (demand stats are cached,
+        # so this is cheap) so answers over "all" products are not truncated.
+        total = len(InventoryTools.query_products(db, threshold=threshold, limit=100000, low_stock_only=low_stock_only))
+        lines = [f"Found {total} products matching threshold {threshold} (showing first {len(prods)}):"]
         for p in prods:
             lines.append(f"- {p.name} (ID: {p.product_id}): Stock={p.stockQuantity}, Price=R${p.price:.2f}, Reorder={p.reorder_required}")
         return "\n".join(lines)
@@ -587,12 +592,20 @@ def tool_get_product_stock(product_id: str) -> str:
 
 @tool
 def tool_suggest_reorders(threshold: int = 50) -> str:
-    """Calculate Reorder Point (ROP), Safety Stock, and suggested order quantities for low-stock items."""
+    """Calculate Reorder Point (ROP), Safety Stock, and suggested order quantities
+    for low-stock items. The summary line reports the TOTAL item count and TOTAL
+    estimated reorder cost across ALL low-stock products — use those aggregates
+    (not the per-row sums) for "how many / total cost" questions."""
     from app.database.session import SessionLocal
     db = SessionLocal()
     try:
         recs = InventoryTools.get_reorder_recommendations(db, threshold=threshold, limit=10)
-        lines = [f"Reorder Recommendations ({len(recs)} items):"]
+        all_recs = InventoryTools.get_reorder_recommendations(db, threshold=threshold, limit=100000)
+        lines = [
+            f"Reorder summary: {len(all_recs)} low-stock products need restocking; "
+            f"total estimated reorder cost R${sum(r.estimated_cost or 0 for r in all_recs):,.2f}. "
+            f"Top {len(recs)} by urgency:"
+        ]
         for r in recs:
             lines.append(
                 f"- {r.name}: Stock={r.current_stock}, Daily Sales={r.daily_sales}/day, "
@@ -622,9 +635,25 @@ def tool_analyze_sales_trends(product_id: str = "", days: int = 30) -> str:
 
 
 @tool
-def tool_create_reorder_action(product_id: str, quantity: int) -> str:
-    """Trigger a Purchase Order creation for restocking a product."""
+def tool_create_reorder_action(product_id: str, quantity: int, confirm: bool = False) -> str:
+    """Create a Purchase Order to restock a product (SIDE-EFFECTING).
+
+    Two-step protocol — never call with confirm=True on the first request:
+      1. Preview the plan with `tool_get_product_stock` / `tool_suggest_reorders`,
+         present stock, suggested quantity and estimated cost, and ask the user
+         to reply with an explicit "confirm".
+      2. Only after the user's latest message is that confirmation, pass
+         confirm=True. The tool re-verifies the user's own words and refuses
+         otherwise (the model cannot confirm on the user's behalf).
+    """
+    from app.agents.framework import user_explicitly_confirmed
     from app.database.session import SessionLocal
+
+    if not confirm or not user_explicitly_confirmed():
+        return (
+            "CONFIRMATION_REQUIRED: no purchase order was created. Present this plan and ask the "
+            f"user to reply 'confirm' to execute: product_id={product_id}, quantity={quantity}."
+        )
     db = SessionLocal()
     try:
         act = InventoryTools.execute_reorder(db, product_id, quantity)
@@ -653,7 +682,7 @@ def tool_demand_analytics(metric: str) -> str:
     """
     from collections import defaultdict
 
-    from app.agents._shared import simulated_clock
+    from app.agents._shared import period_bucket, simulated_clock
     from app.database.session import SessionLocal
     from app.models.olist import CategoryTranslation, Order, OrderItem, Seller
 
@@ -706,15 +735,16 @@ def tool_demand_analytics(metric: str) -> str:
     db = SessionLocal()
     try:
         clock = simulated_clock(db)
+        month_bucket = period_bucket(db, Order.order_purchase_timestamp, "%Y-%m")
         rows = (
             db.query(
                 OrderItem.product_id,
-                func.strftime("%Y-%m", Order.order_purchase_timestamp),
+                month_bucket,
                 func.count(OrderItem.order_item_id),
             )
             .join(Order, Order.order_id == OrderItem.order_id)
             .filter(Order.order_purchase_timestamp <= clock)
-            .group_by(OrderItem.product_id, func.strftime("%Y-%m", Order.order_purchase_timestamp))
+            .group_by(OrderItem.product_id, month_bucket)
             .all()
         )
         if not rows:

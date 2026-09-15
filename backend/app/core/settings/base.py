@@ -98,8 +98,13 @@ class BaseAppSettings(BaseSettings):
     LLM_PROVIDER: Literal["auto", "deterministic", "groq", "openai", "anthropic", "bedrock"] = "auto"
     LLM_MODEL: str = ""  # blank = provider default
     GROQ_MODEL: str = "openai/gpt-oss-120b"
-    LLM_TIMEOUT_SECONDS: float = 20.0
+    LLM_TIMEOUT_SECONDS: float = 30.0
     LLM_MAX_RETRIES: int = 2
+    # Completion cap per LLM call — keeps each request inside the per-minute
+    # token budget of metered providers (Groq free tier is 8k TPM on many models).
+    LLM_COMPLETION_TOKEN_LIMIT: int = 1024
+    # gpt-oss models on Groq: "low" trims hidden reasoning tokens.
+    GROQ_REASONING_EFFORT: str = "low"
     LLM_REQUEST_TOKEN_BUDGET: int = 6000
     LLM_MONTHLY_BUDGET_USD: float = 200.0
     OPENAI_API_KEY: Optional[str] = None
