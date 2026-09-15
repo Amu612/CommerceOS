@@ -122,20 +122,29 @@ class InventoryWatchdogAgent(DomainAgent):
                 low_stock_only=False,
             )
 
-            low_stock_prods = [
-                product
-                for product in prods
-                if product.reorder_required
-            ]
+            # Full low-stock population — the same is_low test the metrics
+            # card uses — so "items require restocking attention" in the
+            # summary equals the Low Stock Items metric exactly. The old code
+            # derived the count from the 40-row top-demand view, which
+            # truncated the candidate list BEFORE the low-stock filter.
+            low_stock_prods = InventoryTools.query_products(
+                db,
+                threshold=thresh,
+                limit=100000,
+                low_stock_only=True,
+            )
 
             # -------------------------------------------------------------
             # 2. Reorder recommendations
             # -------------------------------------------------------------
-            recs = InventoryTools.get_reorder_recommendations(
+            # Ranked across EVERY low-stock item so the capital-requirement
+            # total covers them all; the response carries the top candidates.
+            recs_all = InventoryTools.get_reorder_recommendations(
                 db,
                 threshold=thresh,
-                limit=15,
+                limit=100000,
             )
+            recs = recs_all[:15]
 
             # -------------------------------------------------------------
             # 3. Sales trend analysis
@@ -157,7 +166,7 @@ class InventoryWatchdogAgent(DomainAgent):
                 db,
                 threshold=thresh,
                 limit=10,
-                recommendations=recs,
+                recommendations=recs_all,
             )
 
             # -------------------------------------------------------------
@@ -253,8 +262,8 @@ class InventoryWatchdogAgent(DomainAgent):
                 ),
                 (
                     "- **Capital Requirement**: Estimated reorder investment is "
-                    f"**R${sum(r.estimated_cost or 0 for r in recs):,.2f}** "
-                    f"across {len(recs)} purchase candidates."
+                    f"**R${sum(r.estimated_cost or 0 for r in recs_all):,.2f}** "
+                    f"across {len(recs_all)} purchase candidates."
                 ),
                 (
                     "- **Watchdog Status**: Monitoring on every inspection run "
@@ -270,7 +279,9 @@ class InventoryWatchdogAgent(DomainAgent):
                 snapshot_id=snap_id,
                 status="SUCCESS",
                 products=prods,
-                low_stock_products=low_stock_prods,
+                # Top 100 by demand for display — the full population is what
+                # the counts/sums above are computed from.
+                low_stock_products=low_stock_prods[:100],
                 recommendations=recs,
                 reorder_suggestions=recs,
                 sales_analysis=sales_trends,

@@ -82,16 +82,32 @@ def _demand_stats(db: Session, product_ids: Optional[List[str]] = None) -> Dict[
     )
     recent = {pid: int(n) for pid, n in recent_q.all()}
 
+    clk = clock if clock.tzinfo else clock.replace(tzinfo=timezone.utc)
+
     out: Dict[str, Dict[str, float]] = {}
     for pid, total, first_dt, last_dt in q.all():
-        days_active = max(1.0, ((last_dt - first_dt).total_seconds() / 86400.0) if first_dt and last_dt else 1.0)
+        if not first_dt:
+            continue
+        f_dt = first_dt if first_dt.tzinfo else first_dt.replace(tzinfo=timezone.utc)
+        l_dt = last_dt if (last_dt and last_dt.tzinfo) else (last_dt.replace(tzinfo=timezone.utc) if last_dt else f_dt)
+        # Calendar spans, not active-day spans: the recent rate divides by the
+        # days the recent window actually covers for THIS product, and the
+        # lifetime rate by the days since its first sale. Both rates now use
+        # the same clock-based methodology, so comparing them (trend) and
+        # blending them (stock model) is apples-to-apples. The previous mix —
+        # a fixed 180-day divisor for recent vs an active-day span for
+        # lifetime — understated the recent rate and marked nearly every
+        # product DECREASING.
+        span_days = max(1.0, (clk - f_dt).total_seconds() / 86400.0)
+        recent_days = min(float(_RECENT_WINDOW_DAYS), span_days)
         units_recent = recent.get(pid, 0)
+        days_active = max(1.0, (l_dt - f_dt).total_seconds() / 86400.0)
         out[pid] = {
             "units_total": int(total),
             "units_recent": units_recent,
             "units_recent_180d": units_recent,
-            "daily_demand": round(units_recent / float(_RECENT_WINDOW_DAYS), 4),
-            "lifetime_daily_demand": round(int(total) / days_active, 4),
+            "daily_demand": round(units_recent / recent_days, 4),
+            "lifetime_daily_demand": round(int(total) / span_days, 4),
             "days_active": round(days_active, 1),
         }
     # Keep only the newest clock (the clock advances as ingestion streams).
@@ -328,13 +344,18 @@ class InventoryTools:
             else:
                 trend = "STABLE"
             lt = _DEFAULT_LEAD_TIME if ((p.product_weight_g if p else 0) or 0) < 1000 else _DEFAULT_LEAD_TIME + 3
+            # Same reorder-quantity rule as get_reorder_recommendations
+            # (cover lead time + a 30-day cycle, at least up to the ROP) so
+            # this table and the Reorder Recommendations table agree.
+            pos = _modelled_stock(s)
+            reorder_qty = max(int(math.ceil(daily * (lt + 30))), pos["reorder_point"]) if daily > 0 else 1
             results.append(SalesAnalysis(
                 product_id=pid, sku=f"SKU-{pid[:8].upper()}", name=f"{cat_disp} · {pid[:8]}",
                 total_sales=s["units_total"],
                 average_daily_sales=round(daily, 3),
                 sales_velocity=round(life, 3),
                 trend=trend,
-                reorder_quantity=max(1, int(round(daily * lt * 1.5))),
+                reorder_quantity=max(1, reorder_qty),
             ))
         return results
 
@@ -368,8 +389,12 @@ class InventoryTools:
             safety_stock = pos.get("safety_stock") or max(1, int(math.ceil(lead_time_demand * 0.5)))
             rop = pos["reorder_point"] or int(math.ceil(lead_time_demand + safety_stock))
             suggested_qty = max(int(math.ceil(daily_sales * (lead_time + 30))), rop)  # cover lead time + a 30-day cycle
-            supplier_cost = round((prod.price or 0.0) * 0.62, 2)
-            est_cost = round(suggested_qty * supplier_cost, 2) if supplier_cost else None
+            # Cost basis is the observed selling price per unit (avg of real
+            # order_items rows) — Est. Cost = suggested reorder qty x unit
+            # price. The old hidden 0.62 "supplier discount" made the column
+            # disagree with the unit price shown alongside it.
+            unit_price = round(float(prod.price or 0.0), 2)
+            est_cost = round(suggested_qty * unit_price, 2) if unit_price > 0 else None
 
             curr_stock = prod.stockQuantity or 0
             reason = (
@@ -393,7 +418,7 @@ class InventoryTools:
                     recommended_quantity=suggested_qty,
                     reorder_quantity=suggested_qty,
                     estimated_cost=est_cost,
-                    supplier_unit_cost=supplier_cost,
+                    supplier_unit_cost=unit_price,
                     reason=reason,
                 )
             )
