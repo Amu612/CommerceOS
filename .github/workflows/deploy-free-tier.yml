@@ -1,0 +1,62 @@
+name: Deploy (free tier — single EC2)
+
+# For the free-tier deployment in docs/deploy-free-tier.md: one EC2 instance
+# running docker-compose.free-tier.yml, talking to free-tier RDS + (optional)
+# ElastiCache. No ECR, no ECS, no Fargate, no ALB, no Secrets Manager — those
+# all cost money and this path is built to run at $0 on a free-tier account.
+#
+# Unrelated to deploy.yml/infra.yml (the ECS/Fargate pipeline) — use this one
+# instead if you followed docs/deploy-free-tier.md. Both can coexist; this
+# one only needs EC2_HOST/EC2_USER/EC2_SSH_KEY, nothing AWS-IAM-related.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check EC2 target is configured
+        id: check
+        run: |
+          if [ -n "${{ secrets.EC2_HOST }}" ] && [ -n "${{ secrets.EC2_SSH_KEY }}" ]; then
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::EC2_HOST / EC2_SSH_KEY secrets are not set — see docs/deploy-free-tier.md. Skipping deploy."
+          fi
+
+      - name: Deploy over SSH
+        if: steps.check.outputs.configured == 'true'
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ${{ secrets.EC2_USER || 'ec2-user' }}
+          key: ${{ secrets.EC2_SSH_KEY }}
+          timeout: 60s
+          command_timeout: 20m
+          script: |
+            set -euo pipefail
+            cd ~/CommerceOS
+            git fetch origin main
+            git reset --hard origin/main
+
+            COMPOSE="docker compose -f docker-compose.free-tier.yml --env-file .env.free-tier"
+
+            $COMPOSE build
+            $COMPOSE run --rm migrate
+            $COMPOSE up -d
+
+            # Wait for the api to report healthy before declaring success.
+            for i in $(seq 1 30); do
+              if curl -fsS http://localhost:8000/health >/dev/null 2>&1; then
+                echo "Backend healthy."
+                break
+              fi
+              [ "$i" -eq 30 ] && { echo "Backend did not become healthy in time"; docker compose -f docker-compose.free-tier.yml logs --tail=100 backend; exit 1; }
+              sleep 5
+            done
+
+            docker image prune -f

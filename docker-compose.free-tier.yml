@@ -1,0 +1,88 @@
+# CommerceOS — single free-tier EC2 instance, managed RDS + ElastiCache.
+#
+# Unlike docker-compose.yml (which runs its own postgres/redis containers
+# for local dev), this file has NO database containers at all — DATABASE_URL
+# and REDIS_URL point at your free-tier RDS/ElastiCache endpoints instead.
+# See docs/deploy-free-tier.md for the full setup.
+#
+# Usage on the EC2 box:
+#   docker compose -f docker-compose.free-tier.yml --env-file .env.free-tier build
+#   docker compose -f docker-compose.free-tier.yml --env-file .env.free-tier run --rm migrate
+#   docker compose -f docker-compose.free-tier.yml --env-file .env.free-tier up -d
+
+name: commerceos
+
+services:
+  migrate:
+    build: { context: ./backend }
+    command: ["sh", "-c", "python -m scripts.sync_datasets; alembic upgrade head && python -m scripts.seed_nexus_data && python -m scripts.seed_users"]
+    environment:
+      ENVIRONMENT: production
+      DATABASE_URL: ${DATABASE_URL}
+      DATASET_DIR: ${DATASET_DIR:-}
+      SEED_ADMIN_PASSWORD: ${SEED_ADMIN_PASSWORD}
+    volumes:
+      - ./backend/data:/app/data
+    restart: "no"
+
+  backend:
+    build: { context: ./backend }
+    restart: unless-stopped
+    environment:
+      ENVIRONMENT: production
+      PORT: 8000
+      WORKERS: 2
+      DATABASE_URL: ${DATABASE_URL}
+      REDIS_URL: ${REDIS_URL:-redis://localhost:6379/0}
+      REDIS_ENABLED: ${REDIS_ENABLED:-false}
+      JWT_SECRET: ${JWT_SECRET}
+      SEED_ADMIN_PASSWORD: ${SEED_ADMIN_PASSWORD}
+      LLM_PROVIDER: ${LLM_PROVIDER:-deterministic}
+      LLM_MODEL: ${LLM_MODEL:-}
+      GROQ_API_KEY: ${GROQ_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      CORS_ORIGINS: ${PUBLIC_URL}
+      TRUSTED_HOSTS: "*"
+      AUTH_ENFORCED: ${AUTH_ENFORCED:-false}
+      EXPOSE_DOCS: "true"
+      DATASET_DIR: ${DATASET_DIR:-}
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./backend/data:/app/data
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+
+  worker:
+    build: { context: ./backend }
+    restart: unless-stopped
+    command: ["python", "-m", "app.worker.main"]
+    environment:
+      ENVIRONMENT: production
+      DATABASE_URL: ${DATABASE_URL}
+      REDIS_URL: ${REDIS_URL:-redis://localhost:6379/0}
+      REDIS_ENABLED: ${REDIS_ENABLED:-false}
+      JWT_SECRET: ${JWT_SECRET}
+      LLM_PROVIDER: ${LLM_PROVIDER:-deterministic}
+    volumes:
+      - ./backend/data:/app/data
+    depends_on:
+      backend:
+        condition: service_healthy
+
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        VITE_API_BASE_URL: ${PUBLIC_API_URL}
+        VITE_WS_BASE_URL: ${PUBLIC_WS_URL}
+    restart: unless-stopped
+    ports:
+      - "80:8080"
+    depends_on:
+      backend:
+        condition: service_healthy

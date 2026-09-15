@@ -34,7 +34,7 @@ services:
 
   migrate:
     build: { context: ./backend }
-    command: ["sh", "-c", "alembic upgrade head && python -m scripts.build_warehouse && python -m scripts.seed_users"]
+    command: ["sh", "-c", "python -m scripts.sync_datasets; alembic upgrade head && python -m scripts.seed_nexus_data && python -m scripts.seed_users"]
     environment:
       ENVIRONMENT: development
       DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-commerceos}

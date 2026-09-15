@@ -1,0 +1,5 @@
+# Copy to backend.hcl (gitignored) and fill in the values from
+# `infra/aws/bootstrap` outputs, then: terraform init -backend-config=backend.hcl
+bucket         = "commerceos-tfstate-<your-account-id>"
+region         = "us-east-1"
+dynamodb_table = "commerceos-tfstate-lock"

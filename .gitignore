@@ -20,13 +20,26 @@ frontend/.vite/
 
 # ── Secrets & env ────────────────────────────────────────
 .env
+.env.*
 *.env
+*.env.*
+.env.aws
+.env.free-tier
 !.env.example
 !*.env.example
+!.env.*.example
+!.env.aws.example
+!.env.free-tier.example
 *.pem
 *.key
+*.p12
+*.pfx
+*.crt
+*.cert
 credentials.json
 service-account*.json
+secrets.json
+client_secret*.json
 
 # ── Databases & data ─────────────────────────────────────
 *.db
@@ -48,6 +61,8 @@ logs/
 *.tfstate.*
 *.tfvars
 !*.tfvars.example
+backend.hcl
+!backend.hcl.example
 crash.log
 
 # ── Build / misc ─────────────────────────────────────────

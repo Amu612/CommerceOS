@@ -1,17 +1,30 @@
 name: Deploy
 
+# Ships images already built by `ci.yml` to ECS. Infra (VPC/RDS/Redis/ALB/ECS
+# services themselves) is provisioned separately by `infra.yml` /
+# `infra/aws/envs/<env>` — this workflow only ever rolls a new image forward
+# onto infra that already exists (see infra/aws/README.md "First deploy" for
+# the one-time bootstrap order).
+#
+# push to main          -> dev   (auto)
+# push tag v*            -> prod  (waits on the "prod" environment's required
+#                                   reviewer — configured in bootstrap/README.md)
+# workflow_dispatch      -> either, on demand
+
 on:
   push:
-    branches: [main]        # -> dev
-    tags: ["v*"]            # -> prod (with approval)
+    branches: [main]
+    tags: ["v*"]
   workflow_dispatch:
     inputs:
       environment:
         type: choice
+        description: Target environment
         options: [dev, prod]
+        default: dev
 
 permissions:
-  id-token: write   # OIDC to AWS
+  id-token: write # OIDC to AWS — no static keys
   contents: read
 
 env:
@@ -24,12 +37,24 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       tag: ${{ steps.meta.outputs.tag }}
+      environment: ${{ steps.meta.outputs.environment }}
       has_aws: ${{ steps.check-aws.outputs.configured }}
     steps:
       - uses: actions/checkout@v4
-      - id: meta
-        run: echo "tag=${GITHUB_SHA::12}" >> "$GITHUB_OUTPUT"
-      - name: Check AWS credentials
+
+      - name: Compute image tag + target environment
+        id: meta
+        run: |
+          echo "tag=sha-${GITHUB_SHA::12}" >> "$GITHUB_OUTPUT"
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "environment=${{ inputs.environment }}" >> "$GITHUB_OUTPUT"
+          elif [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            echo "environment=prod" >> "$GITHUB_OUTPUT"
+          else
+            echo "environment=dev" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Check AWS is configured
         id: check-aws
         env:
           AWS_ROLE: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
@@ -38,72 +63,154 @@ jobs:
             echo "configured=true" >> "$GITHUB_OUTPUT"
           else
             echo "configured=false" >> "$GITHUB_OUTPUT"
-            echo "AWS_DEPLOY_ROLE_ARN is not configured; skipping AWS operations."
+            echo "::warning::AWS_DEPLOY_ROLE_ARN is not set — see infra/aws/bootstrap/README.md. Images were built but nothing will deploy."
           fi
+
       - uses: aws-actions/configure-aws-credentials@v4
         if: steps.check-aws.outputs.configured == 'true'
-        continue-on-error: true
         with:
           role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
+
       - uses: aws-actions/amazon-ecr-login@v2
         if: steps.check-aws.outputs.configured == 'true'
         id: ecr
-      - name: Build & push API
+
+      - name: Read public URL (for the frontend build's API/WS base)
+        if: steps.check-aws.outputs.configured == 'true'
+        id: url
+        run: |
+          URL=$(aws ssm get-parameter --name "/commerceos/${{ steps.meta.outputs.environment }}/public_url" --query 'Parameter.Value' --output text 2>/dev/null || echo "")
+          echo "public_url=$URL" >> "$GITHUB_OUTPUT"
+          echo "ws_url=$(echo "$URL" | sed -e 's#^https#wss#' -e 's#^http#ws#')" >> "$GITHUB_OUTPUT"
+
+      - name: Build & push API image
         if: steps.check-aws.outputs.configured == 'true'
         uses: docker/build-push-action@v6
         with:
           context: ./backend
           push: true
           tags: ${{ steps.ecr.outputs.registry }}/${{ env.ECR_API }}:${{ steps.meta.outputs.tag }}
-      - name: Build & push frontend
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Build & push frontend image
         if: steps.check-aws.outputs.configured == 'true'
         uses: docker/build-push-action@v6
         with:
           context: ./frontend
           push: true
           build-args: |
-            VITE_API_BASE_URL=${{ vars.API_BASE_URL }}
-            VITE_WS_BASE_URL=${{ vars.WS_BASE_URL }}
+            VITE_API_BASE_URL=${{ steps.url.outputs.public_url }}
+            VITE_WS_BASE_URL=${{ steps.url.outputs.ws_url }}
           tags: ${{ steps.ecr.outputs.registry }}/${{ env.ECR_FRONTEND }}:${{ steps.meta.outputs.tag }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
 
   deploy:
     needs: build-push
     if: needs.build-push.outputs.has_aws == 'true'
     runs-on: ubuntu-latest
-    environment: ${{ (startsWith(github.ref, 'refs/tags/v') && 'prod') || 'dev' }}
+    environment: ${{ needs.build-push.outputs.environment }}
+    env:
+      ENV: ${{ needs.build-push.outputs.environment }}
+      TAG: ${{ needs.build-push.outputs.tag }}
     steps:
-      - uses: actions/checkout@v4
       - uses: aws-actions/configure-aws-credentials@v4
-        continue-on-error: true
         with:
           role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
-      - name: Run DB migrations (one-shot ECS task)
+
+      - name: Load environment config from SSM
+        id: cfg
         run: |
-          aws ecs run-task --cluster commerceos-${{ job.environment }} \
-            --task-definition commerceos-migrate-${{ job.environment }} \
-            --launch-type FARGATE --network-configuration "$(cat infra/aws/envs/${{ job.environment }}/netcfg.json)" \
-            --overrides '{"containerOverrides":[{"name":"migrate","environment":[{"name":"IMAGE_TAG","value":"${{ needs.build-push.outputs.tag }}"}]}]}'
-      - name: Update services
+          get() { aws ssm get-parameter --name "/commerceos/${ENV}/$1" --query 'Parameter.Value' --output text; }
+          echo "cluster=$(get ecs/cluster)" >> "$GITHUB_OUTPUT"
+          echo "svc_api=$(get ecs/service_api)" >> "$GITHUB_OUTPUT"
+          echo "svc_worker=$(get ecs/service_worker)" >> "$GITHUB_OUTPUT"
+          echo "svc_frontend=$(get ecs/service_frontend)" >> "$GITHUB_OUTPUT"
+          echo "api_family=$(get ecs/api_task_family)" >> "$GITHUB_OUTPUT"
+          echo "worker_family=$(get ecs/worker_task_family)" >> "$GITHUB_OUTPUT"
+          echo "frontend_family=$(get ecs/frontend_task_family)" >> "$GITHUB_OUTPUT"
+          echo "migrate_family=$(get ecs/migrate_task_family)" >> "$GITHUB_OUTPUT"
+          echo "subnets=$(get network/private_subnet_ids)" >> "$GITHUB_OUTPUT"
+          echo "sg=$(get network/tasks_security_group_id)" >> "$GITHUB_OUTPUT"
+          echo "public_url=$(get public_url)" >> "$GITHUB_OUTPUT"
+          echo "registry=$(aws ecr describe-registry --query registryId --output text).dkr.ecr.${AWS_REGION}.amazonaws.com" >> "$GITHUB_OUTPUT"
+
+      # Re-registers a task-def family from its current (Terraform-created or
+      # previously-deployed) revision with just the image(s) swapped to $TAG.
+      # `terraform apply` never fights this: the ecs module's services have
+      # `lifecycle.ignore_changes = [task_definition]`, so Terraform owns the
+      # *shape* of a task def (cpu/mem/env/secrets/roles) and this workflow
+      # owns which image tag is currently live — see infra/aws/README.md.
+      - name: Register new task-definition revisions
+        id: register
         run: |
-          for svc in api worker frontend; do
-            aws ecs update-service --cluster commerceos-${{ job.environment }} \
-              --service commerceos-$svc-${{ job.environment }} --force-new-deployment
-          done
-          aws ecs wait services-stable --cluster commerceos-${{ job.environment }} \
-            --services commerceos-api-${{ job.environment }} commerceos-worker-${{ job.environment }}
+          registry="${{ steps.cfg.outputs.registry }}"
+          bump() {
+            family="$1"; images="$2" # images = "container_name=repo" pairs, space-separated
+            current=$(aws ecs describe-task-definition --task-definition "$family" --query 'taskDefinition')
+            new=$(echo "$current" | jq 'del(.taskDefinitionArn,.revision,.status,.requiresAttributes,.compatibilities,.registeredAt,.registeredBy)')
+            for pair in $images; do
+              cname="${pair%%=*}"; repo="${pair#*=}"
+              new=$(echo "$new" | jq --arg n "$cname" --arg img "${registry}/${repo}:${TAG}" \
+                '(.containerDefinitions[] | select(.name == $n) | .image) = $img')
+            done
+            echo "$new" > "task-def-${family##*/}.json"
+            aws ecs register-task-definition --cli-input-json "file://task-def-${family##*/}.json" \
+              --query 'taskDefinition.taskDefinitionArn' --output text
+          }
+          {
+            echo "api=$(bump "${{ steps.cfg.outputs.api_family }}" "api=commerceos/api")"
+            echo "worker=$(bump "${{ steps.cfg.outputs.worker_family }}" "worker=commerceos/api")"
+            echo "frontend=$(bump "${{ steps.cfg.outputs.frontend_family }}" "frontend=commerceos/frontend")"
+            echo "migrate=$(bump "${{ steps.cfg.outputs.migrate_family }}" "migrate=commerceos/api")"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Run DB migration + dataset seed (one-shot task)
+        run: |
+          netcfg="{\"awsvpcConfiguration\":{\"subnets\":[$(echo '${{ steps.cfg.outputs.subnets }}' | sed -E 's/,/","/g;s/^/"/;s/$/"/')],\"securityGroups\":[\"${{ steps.cfg.outputs.sg }}\"],\"assignPublicIp\":\"DISABLED\"}}"
+          task_arn=$(aws ecs run-task \
+            --cluster "${{ steps.cfg.outputs.cluster }}" \
+            --task-definition "${{ steps.register.outputs.migrate }}" \
+            --launch-type FARGATE \
+            --network-configuration "$netcfg" \
+            --query 'tasks[0].taskArn' --output text)
+          echo "Waiting on migrate task $task_arn ..."
+          aws ecs wait tasks-stopped --cluster "${{ steps.cfg.outputs.cluster }}" --tasks "$task_arn"
+          exit_code=$(aws ecs describe-tasks --cluster "${{ steps.cfg.outputs.cluster }}" --tasks "$task_arn" \
+            --query 'tasks[0].containers[0].exitCode' --output text)
+          echo "Migrate task exit code: $exit_code"
+          [ "$exit_code" = "0" ]
+
+      - name: Roll api / worker / frontend forward
+        run: |
+          aws ecs update-service --cluster "${{ steps.cfg.outputs.cluster }}" --service "${{ steps.cfg.outputs.svc_api }}" \
+            --task-definition "${{ steps.register.outputs.api }}" >/dev/null
+          aws ecs update-service --cluster "${{ steps.cfg.outputs.cluster }}" --service "${{ steps.cfg.outputs.svc_worker }}" \
+            --task-definition "${{ steps.register.outputs.worker }}" >/dev/null
+          aws ecs update-service --cluster "${{ steps.cfg.outputs.cluster }}" --service "${{ steps.cfg.outputs.svc_frontend }}" \
+            --task-definition "${{ steps.register.outputs.frontend }}" >/dev/null
+          aws ecs wait services-stable --cluster "${{ steps.cfg.outputs.cluster }}" \
+            --services "${{ steps.cfg.outputs.svc_api }}" "${{ steps.cfg.outputs.svc_worker }}" "${{ steps.cfg.outputs.svc_frontend }}"
+
       - name: Smoke test
         run: |
-          curl -fsS "${{ vars.PUBLIC_URL }}/health" || exit 1
-          curl -fsS "${{ vars.PUBLIC_URL }}/api/v1/health/ready" || exit 1
-      - name: Rollback on failure
+          url="${{ steps.cfg.outputs.public_url }}"
+          curl -fsS --retry 5 --retry-delay 10 "${url}/health" || exit 1
+          curl -fsS --retry 3 --retry-delay 5 "${url}/api/v1/system/health" || exit 1
+          curl -fsS --retry 3 --retry-delay 5 "${url}/" || exit 1
+          echo "Smoke test passed: ${url}"
+
+      - name: Roll back on failure
         if: failure()
         run: |
-          for svc in api worker frontend; do
-            aws ecs update-service --cluster commerceos-${{ job.environment }} \
-              --service commerceos-$svc-${{ job.environment }} \
-              --task-definition "$(aws ecs describe-services --cluster commerceos-${{ job.environment }} \
-                --services commerceos-$svc-${{ job.environment }} \
-                --query 'services[0].deployments[1].taskDefinition' --output text)"
+          for svc in "${{ steps.cfg.outputs.svc_api }}" "${{ steps.cfg.outputs.svc_worker }}" "${{ steps.cfg.outputs.svc_frontend }}"; do
+            prev=$(aws ecs describe-services --cluster "${{ steps.cfg.outputs.cluster }}" --services "$svc" \
+              --query 'services[0].deployments[1].taskDefinition' --output text)
+            if [ -n "$prev" ] && [ "$prev" != "None" ]; then
+              echo "Rolling back $svc -> $prev"
+              aws ecs update-service --cluster "${{ steps.cfg.outputs.cluster }}" --service "$svc" --task-definition "$prev" >/dev/null
+            fi
           done

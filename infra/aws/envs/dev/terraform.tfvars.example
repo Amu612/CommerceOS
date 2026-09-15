@@ -1,0 +1,23 @@
+# Copy to terraform.tfvars (gitignored) and adjust.
+
+region = "us-east-1"
+
+# The very first `terraform apply` needs an image that already exists in ECR
+# under this tag — see "First deploy" in infra/aws/README.md.
+image_tag = "bootstrap"
+
+# Leave both null to reach the app at the ALB's own DNS name over plain HTTP.
+# domain_name         = "dev.commerceos.example.com"
+# acm_certificate_arn = "arn:aws:acm:us-east-1:123456789012:certificate/..."
+# hosted_zone_id      = "Z0123456789ABCDEFGHIJ"
+
+# alert_email = "you@example.com"
+
+# deterministic | groq | openai | anthropic | bedrock
+llm_provider = "deterministic"
+# llm_model    = "llama-3.3-70b-versatile"
+
+# Prefer GitHub secrets -> TF_VAR_groq_api_key / TF_VAR_openai_api_key in CI
+# over committing a key here, even to a gitignored file.
+# groq_api_key   = ""
+# openai_api_key = ""

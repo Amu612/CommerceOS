@@ -42,7 +42,7 @@ migration: ## Create a new migration: make migration m="add x"
 
 .PHONY: seed
 seed: ## Build the warehouse + seed users
-	cd $(BACKEND) && $(PY) -m scripts.build_warehouse && $(PY) -m scripts.seed_users
+	cd $(BACKEND) && $(PY) -m scripts.seed_nexus_data && $(PY) -m scripts.seed_users
 
 # ── Quality ──────────────────────────────────────────────
 .PHONY: fmt
@@ -85,10 +85,14 @@ build: ## Build container images
 	docker build -t commerceos/api:local $(BACKEND)
 	docker build -t commerceos/frontend:local $(FRONTEND)
 
+.PHONY: infra-bootstrap
+infra-bootstrap: ## One-time: state bucket + lock table + GitHub OIDC role (see infra/aws/bootstrap/README.md)
+	cd infra/aws/bootstrap && terraform init && terraform apply
+
 .PHONY: deploy-dev
-deploy-dev: ## Terraform apply dev
-	cd infra/aws/envs/dev && terraform init && terraform apply
+deploy-dev: ## Terraform apply dev (needs envs/dev/backend.hcl + terraform.tfvars — see infra/aws/README.md)
+	cd infra/aws/envs/dev && terraform init -backend-config=backend.hcl && terraform apply
 
 .PHONY: deploy-prod
-deploy-prod: ## Terraform apply prod (guarded)
-	cd infra/aws/envs/prod && terraform init && terraform plan
+deploy-prod: ## Terraform plan prod (guarded — apply manually or via the infra.yml workflow)
+	cd infra/aws/envs/prod && terraform init -backend-config=backend.hcl && terraform plan

@@ -2,31 +2,50 @@
 
 ## Deploy
 
-**Automated (normal path):**
+**Automated (normal path)** — `.github/workflows/deploy.yml`:
 
-- Push to `main` → GitHub Actions `deploy.yml` → `dev`.
-- Tag `v*` → `deploy.yml` → `prod` (requires the `prod` environment approval).
-- Flow: build+push images to ECR → run one-shot `migrate` ECS task
-  (`alembic upgrade head` + `build_warehouse` + `seed_users`) → `ecs update-service
---force-new-deployment` for `api`/`worker`/`frontend` → `ecs wait services-stable`
-  → smoke `GET /health` + `/api/v1/health/ready` → auto-rollback on failure.
+- Push to `main` → `dev`. Tag `v*` → `prod` (pauses for the `prod`
+  GitHub Environment's required reviewer). `workflow_dispatch` → either, on
+  demand.
+- Flow: build+push `api`/`frontend` images to ECR (tag `sha-<12-char-sha>`)
+  → read that env's config from SSM (`/commerceos/<env>/...`, written by
+  Terraform — see `infra/aws/modules/ecs`) → register a new task-definition
+  revision per family (`api`, `worker`, `frontend`, `migrate`) with just the
+  image swapped → run the one-shot `migrate` task
+  (`sync_datasets` + `alembic upgrade head` + `seed_nexus_data` + `seed_users`)
+  and wait for it to exit 0 → `ecs update-service --task-definition <new
+  revision>` for `api`/`worker`/`frontend` → `ecs wait services-stable` →
+  smoke test `GET /health`, `/api/v1/system/health`, `/` → auto-rollback to
+  the previous task-def revision on any failure.
+- Infra changes (`infra/aws/**`) go through the separate `infra.yml`
+  workflow (`terraform plan` on PR, manual `plan`/`apply` via
+  `workflow_dispatch`), not `deploy.yml` — see `infra/aws/README.md`
+  "Day-to-day: which pipeline does what".
 
 **Manual:**
 
 ```bash
-cd infra/aws/envs/<env>
-terraform apply -var image_tag=<git-sha>
-aws ecs run-task --cluster commerceos-<env> --task-definition commerceos-migrate-<env> ...
-for s in api worker frontend; do aws ecs update-service --cluster commerceos-<env> --service commerceos-$s-<env> --force-new-deployment; done
+env=dev  # or prod
+cluster=$(aws ssm get-parameter --name /commerceos/$env/ecs/cluster --query Parameter.Value --output text)
+svc_api=$(aws ssm get-parameter --name /commerceos/$env/ecs/service_api --query Parameter.Value --output text)
+# ...same for service_worker / service_frontend / migrate_task_family / network/*
+
+cd infra/aws/envs/$env && terraform apply   # evolves task-def shape only, never the live image (see README)
+# then either wait for deploy.yml, or hand-roll the register-task-definition +
+# run-task + update-service sequence it runs — see its "deploy" job for the exact commands.
 ```
 
 ## Rollback
 
+`deploy.yml` does this automatically on smoke-test failure. By hand:
+
 ```bash
 # Redeploy the previous task definition for a service
-PREV=$(aws ecs describe-services --cluster commerceos-<env> --services commerceos-api-<env> \
+cluster=$(aws ssm get-parameter --name /commerceos/<env>/ecs/cluster --query Parameter.Value --output text)
+svc=$(aws ssm get-parameter --name /commerceos/<env>/ecs/service_api --query Parameter.Value --output text)
+PREV=$(aws ecs describe-services --cluster "$cluster" --services "$svc" \
   --query 'services[0].deployments[1].taskDefinition' --output text)
-aws ecs update-service --cluster commerceos-<env> --service commerceos-api-<env> --task-definition "$PREV"
+aws ecs update-service --cluster "$cluster" --service "$svc" --task-definition "$PREV"
 ```
 
 - **Migrations:** forward-only. If a migration is bad, ship a new migration that
@@ -46,7 +65,9 @@ aws rds restore-db-instance-to-point-in-time \
 # repoint DATABASE_URL secret → new instance → redeploy
 ```
 
-**Rebuild the warehouse:** `aws ecs run-task ... commerceos-migrate-<env>` (idempotent).
+**Rebuild the warehouse:** re-run the `migrate` task family
+(`commerceos-<env>-migrate`, from `aws ssm get-parameter --name /commerceos/<env>/ecs/migrate_task_family`)
+via `aws ecs run-task` — idempotent, safe to run again.
 
 **Bootstrap the read-only role** (first apply / after a restore):
 

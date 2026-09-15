@@ -15,7 +15,7 @@
   <b>CommerceOS</b> replaces fragmented, manual e-commerce administration with six autonomous, specialized AI agents — Orders, Inventory, Customer Support, Pricing, Marketing, and Logistics. Operating over real transaction and supply-chain data, they continuously audit pipelines, detect anomalies, forecast demand, and propose (or, with human approval, execute) corrective actions.
 </p>
 
-[Key Features](#-key-features) • [Architecture](#-system-architecture) • [Getting Started](#-getting-started) • [Default Credentials](#-default-credentials) • [API Reference](#-api-reference) • [Tech Stack](#-tech-stack) • [Testing](#-testing--quality) • [Repository Structure](#-repository-structure)
+[Key Features](#-key-features) • [Architecture](#-system-architecture) • [Getting Started](#-getting-started) • [Default Credentials](#-default-credentials) • [API Reference](#-api-reference) • [Tech Stack](#-tech-stack) • [Testing](#-testing--quality) • [Deploying to AWS](#-deploying-to-aws) • [Repository Structure](#-repository-structure)
 
 ---
 
@@ -251,8 +251,8 @@ Interactive OpenAPI documentation is generated at **`/docs`** and **`/redoc`** (
 **Data & DevOps**
 - Bundled **Olist** and **DataCo** e-commerce datasets, streamed via a custom replay engine
 - Docker + Docker Compose (backend, worker, Postgres, Redis, Nginx-served frontend)
-- Terraform modules under `infra/aws/` (ECS Fargate, RDS, ElastiCache, S3, CloudFront — see `docs/adr/`)
-- GitHub Actions CI (`.github/workflows/ci.yml`) running backend tests against a live Postgres service container, plus a separate deploy workflow
+- Terraform under `infra/aws/` — VPC, ECS Fargate, RDS, ElastiCache, ALB, ECR, Secrets Manager, CloudWatch (see [Deploying to AWS](#-deploying-to-aws) and `docs/adr/`)
+- GitHub Actions: `ci.yml` (lint/test/build/scan), `deploy.yml` (ship to ECS), `infra.yml` (Terraform plan/apply)
 - `pre-commit` + `detect-secrets` baseline for secret scanning
 
 ---
@@ -268,6 +268,32 @@ make security     # pip-audit, npm audit, detect-secrets scan
 ```
 
 Backend test suite (`backend/tests/`) covers auth, RBAC boundaries, automation/approvals, and each domain agent (`test_orders_agent.py`, `test_inventory_agent.py`, `test_customer_agent.py`, `test_domain_agents.py`, `test_llm.py`). CI runs these against a real PostgreSQL service container on every push/PR to `main`.
+
+---
+
+## ☁️ Deploying to AWS
+
+Two deployment paths, pick based on your account:
+
+- **On an AWS Free Tier account?** Use [docs/deploy-free-tier.md](docs/deploy-free-tier.md) — one free-tier EC2 instance + free-tier RDS (+ optional ElastiCache), `docker-compose.free-tier.yml`, and [`deploy-free-tier.yml`](.github/workflows/deploy-free-tier.yml) (SSH-based). No ECS/Fargate/NAT/ALB/Secrets Manager — those aren't free-tier eligible. The only unavoidable cost is ~$3.60/mo for the instance's public IPv4 address (AWS-wide policy since Feb 2024).
+- **Production / past free tier?** The rest of this section — full stack on ECS Fargate.
+
+Full stack — VPC, ECS Fargate (api + worker + frontend), RDS PostgreSQL, ElastiCache Redis, ALB, ECR, Secrets Manager, CloudWatch — provisioned by Terraform (`infra/aws/`) and shipped by two GitHub Actions pipelines. No manual `docker push` or `kubectl apply` once it's wired up. Runs roughly $140+/mo (see [docs/cost-estimate.md](docs/cost-estimate.md)) — none of these services are free-tier eligible.
+
+| Pipeline | Trigger | Does |
+| :--- | :--- | :--- |
+| [`ci.yml`](.github/workflows/ci.yml) | every push/PR | Lint, type-check, backend tests (live Postgres), frontend build, Docker image build + Trivy scan |
+| [`deploy.yml`](.github/workflows/deploy.yml) | push to `main` (→ dev), tag `v*` (→ prod, approval-gated) | Build+push images to ECR → migrate DB → roll `api`/`worker`/`frontend` forward on ECS → smoke test → auto-rollback on failure |
+| [`infra.yml`](.github/workflows/infra.yml) | PR touching `infra/aws/**` (plan), manual dispatch (plan/apply) | Terraform plan/apply for `dev`/`prod`, prod gated by a required reviewer |
+
+**One-time setup** (per AWS account) — full walkthrough in [infra/aws/README.md](infra/aws/README.md):
+1. `infra/aws/bootstrap` → Terraform remote state (S3 + DynamoDB) + a GitHub OIDC role (no static AWS keys in CI).
+2. Push one bootstrap image to ECR so the first `terraform apply` has something to point the ECS task definitions at.
+3. Upload the Olist/DataCo CSVs to the `datasets` S3 bucket Terraform creates (they're gitignored — never in the repo or the image).
+4. `terraform apply` in `infra/aws/envs/dev` (and, when ready, `envs/prod`).
+5. Add the resulting role ARNs as GitHub secrets — after that, every push deploys itself.
+
+Terraform owns each ECS service's *shape* (CPU/memory, env vars, secrets, IAM); `deploy.yml` owns *which image tag is live* — they're wired so neither one fights the other (see "Day-to-day: which pipeline does what" in [infra/aws/README.md](infra/aws/README.md)). Operational runbook — deploy/rollback/incident triage — lives in [docs/runbook.md](docs/runbook.md); cost planning in [docs/cost-estimate.md](docs/cost-estimate.md); the architecture decisions behind all of this in [docs/adr/](docs/adr/) (0001 AWS, 0002 Postgres, 0007 frontend-on-ECS).
 
 ---
 
@@ -301,7 +327,14 @@ Backend test suite (`backend/tests/`) covers auth, RBAC boundaries, automation/a
 │   │   ├── auth/AuthContext.tsx, pages/Login.tsx          # auth flow
 │   │   └── lib/{api,ws,format,markdown,reportGenerator}.ts # API/WS clients & helpers
 │   └── package.json
-├── infra/aws/                 # Terraform modules (network, …) — see docs/adr/0001-cloud-aws.md
+├── infra/aws/
+│   ├── bootstrap/              # one-time: tfstate backend + GitHub OIDC role
+│   ├── modules/                # network, ecr, datasets, secrets, rds, redis, alb, ecs, observability
+│   └── envs/{dev,prod}/        # per-environment Terraform root modules
+├── .github/workflows/
+│   ├── ci.yml                  # lint, typecheck, tests, image build + Trivy scan
+│   ├── deploy.yml               # build+push -> migrate -> roll ECS forward -> smoke test
+│   └── infra.yml                 # Terraform plan (PR) / apply (manual, prod approval-gated)
 ├── docs/adr/                  # Architecture decision records
 ├── run_backend.py             # Uvicorn backend runner
 ├── start_backend.bat          # 1-click Windows backend launcher

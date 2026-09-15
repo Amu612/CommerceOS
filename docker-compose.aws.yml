@@ -1,0 +1,89 @@
+name: commerceos
+
+# Single-EC2, Free-Tier-first deployment. Talks to managed RDS PostgreSQL and
+# ElastiCache Redis (both Free Tier eligible) instead of running postgres/
+# redis containers — see docs/deploy-aws-free-tier.md for the full guide.
+# All connection strings and secrets come from the environment (`.env.aws`
+# on the host, passed with `--env-file`); nothing is hardcoded here.
+#
+#   docker compose -f docker-compose.aws.yml --env-file .env.aws up -d --build
+
+services:
+  migrate:
+    build: { context: ./backend }
+    command: ["sh", "-c", "python -m scripts.sync_datasets; alembic upgrade head && python -m scripts.seed_nexus_data && python -m scripts.seed_users"]
+    environment:
+      ENVIRONMENT: production
+      DATABASE_URL: ${DATABASE_URL}
+      REDIS_URL: ${REDIS_URL}
+      REDIS_ENABLED: "true"
+      DATASET_DIR: ${DATASET_DIR:-}
+      SEED_ADMIN_PASSWORD: ${SEED_ADMIN_PASSWORD}
+    volumes:
+      - ./backend/data:/app/data
+    restart: "no"
+
+  backend:
+    build: { context: ./backend }
+    restart: unless-stopped
+    environment:
+      ENVIRONMENT: production
+      PORT: 8000
+      WORKERS: ${BACKEND_WORKERS:-1} # keep at 1 on a t2/t3.micro (1 GB RAM) — see the guide's sizing note
+      DATABASE_URL: ${DATABASE_URL}
+      REDIS_URL: ${REDIS_URL}
+      REDIS_ENABLED: "true"
+      JWT_SECRET: ${JWT_SECRET}
+      SEED_ADMIN_PASSWORD: ${SEED_ADMIN_PASSWORD}
+      LLM_PROVIDER: ${LLM_PROVIDER:-deterministic}
+      GROQ_API_KEY: ${GROQ_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      CORS_ORIGINS: ${PUBLIC_URL}
+      TRUSTED_HOSTS: "*"
+      AUTH_ENFORCED: "false" # dev-mode convenience — see docs/gap-analysis.md; the SPA has no login screen yet
+      EXPOSE_DOCS: "true"
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./backend/data:/app/data
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+
+  worker:
+    build: { context: ./backend }
+    restart: unless-stopped
+    command: ["python", "-m", "app.worker.main"]
+    environment:
+      ENVIRONMENT: production
+      DATABASE_URL: ${DATABASE_URL}
+      REDIS_URL: ${REDIS_URL}
+      REDIS_ENABLED: "true"
+      JWT_SECRET: ${JWT_SECRET}
+      LLM_PROVIDER: ${LLM_PROVIDER:-deterministic}
+      GROQ_API_KEY: ${GROQ_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+    volumes:
+      - ./backend/data:/app/data
+    depends_on:
+      backend:
+        condition: service_healthy
+
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        VITE_API_BASE_URL: ${PUBLIC_URL}
+        VITE_WS_BASE_URL: ${PUBLIC_WS_URL}
+    restart: unless-stopped
+    ports:
+      - "80:8080"
+    depends_on:
+      backend:
+        condition: service_healthy

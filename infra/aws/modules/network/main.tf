@@ -141,7 +141,7 @@ resource "aws_cloudwatch_log_group" "flow" {
 resource "aws_iam_role" "flow" {
   name_prefix = "${var.name}-flow-"
   assume_role_policy = jsonencode({
-    Version = "2012-10-17"
+    Version   = "2012-10-17"
     Statement = [{ Effect = "Allow", Principal = { Service = "vpc-flow-logs.amazonaws.com" }, Action = "sts:AssumeRole" }]
   })
 }

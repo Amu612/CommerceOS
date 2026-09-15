@@ -1,0 +1,21 @@
+# Copy to terraform.tfvars (gitignored) and adjust.
+
+region = "us-east-1"
+
+image_tag = "bootstrap" # see "First deploy" in infra/aws/README.md
+
+# Strongly recommended for prod — without a cert the ALB serves plain HTTP.
+# domain_name         = "commerceos.example.com"
+# acm_certificate_arn = "arn:aws:acm:us-east-1:123456789012:certificate/..."
+# hosted_zone_id      = "Z0123456789ABCDEFGHIJ"
+
+alert_email = "you@example.com" # CloudWatch alarms are silent without this
+
+# deterministic | groq | openai | anthropic | bedrock
+llm_provider = "bedrock"
+
+# Prefer GitHub secrets -> TF_VAR_groq_api_key / TF_VAR_openai_api_key /
+# TF_VAR_anthropic_api_key in CI over committing a key here.
+# groq_api_key      = ""
+# openai_api_key    = ""
+# anthropic_api_key = ""
