@@ -566,15 +566,25 @@ export default function OrdersAgentDashboard({
     if (!effectiveIngestionUrl) return;
     setIngestionLoading(true);
     try {
+      const token =
+        localStorage.getItem("access_token") ||
+        localStorage.getItem("token") ||
+        sessionStorage.getItem("access_token") ||
+        sessionStorage.getItem("token");
+      const headers: Record<string, string> = {
+        "Content-Type": "application/json",
+      };
+      if (token) {
+        headers["Authorization"] = `Bearer ${token}`;
+      }
       const response = await fetch(`${effectiveIngestionUrl}/control`, {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
+        headers,
         body: JSON.stringify({
           action,
           speed,
           step,
+          clear_db: false,
         }),
       });
       if (response.ok) {
@@ -633,17 +643,26 @@ export default function OrdersAgentDashboard({
       return;
     }
 
-    const history = chat.slice(-6).map((m) => ({ role: m.role === "user" ? "user" : "assistant", text: m.text }));
+    const history = chat.slice(-4).map((m) => ({ role: m.role === "user" ? "user" : "assistant", text: m.text }));
     setChat((c) => [...c, { role: "user", text: q }]);
     setQuery("");
     setQueryLoading(true);
 
     try {
+      const token =
+        localStorage.getItem("access_token") ||
+        localStorage.getItem("token") ||
+        sessionStorage.getItem("access_token") ||
+        sessionStorage.getItem("token");
+      const headers: Record<string, string> = {
+        "Content-Type": "application/json",
+      };
+      if (token) {
+        headers["Authorization"] = `Bearer ${token}`;
+      }
       const response = await fetch(queryUrl, {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
+        headers,
         body: JSON.stringify({ message: q, history }),
       });
 
@@ -1687,6 +1706,17 @@ export default function OrdersAgentDashboard({
               <button className="dav-btn dav-btn-primary" onClick={runQuery} disabled={queryLoading || !query.trim()}>
                 {queryLoading ? "…" : "Send"}
               </button>
+              {chat.length > 0 && (
+                <button
+                  type="button"
+                  className="dav-btn dav-btn-secondary"
+                  onClick={() => setChat([])}
+                  disabled={queryLoading}
+                  title="Clear conversation history"
+                >
+                  Clear
+                </button>
+              )}
             </div>
           </div>
         </Section>

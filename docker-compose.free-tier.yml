@@ -83,7 +83,7 @@ services:
       REDIS_ENABLED: "true"
       JWT_SECRET: ${JWT_SECRET}
       SEED_ADMIN_PASSWORD: ${SEED_ADMIN_PASSWORD}
-      LLM_PROVIDER: ${LLM_PROVIDER:-deterministic}
+      LLM_PROVIDER: ${LLM_PROVIDER:-auto}
       LLM_MODEL: ${LLM_MODEL:-}
       GROQ_API_KEY: ${GROQ_API_KEY:-}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
@@ -124,7 +124,7 @@ services:
       REDIS_URL: redis://redis:6379/0
       REDIS_ENABLED: "true"
       JWT_SECRET: ${JWT_SECRET}
-      LLM_PROVIDER: ${LLM_PROVIDER:-deterministic}
+      LLM_PROVIDER: ${LLM_PROVIDER:-auto}
       LLM_MODEL: ${LLM_MODEL:-}
       GROQ_API_KEY: ${GROQ_API_KEY:-}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}

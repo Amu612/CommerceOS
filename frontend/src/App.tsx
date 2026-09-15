@@ -183,10 +183,19 @@ export default function App() {
   const sendIngestionControl = async (action: string, speed?: number, step?: number) => {
     setIngestionLoading(true);
     try {
+      const token =
+        localStorage.getItem("access_token") ||
+        localStorage.getItem("token") ||
+        sessionStorage.getItem("access_token") ||
+        sessionStorage.getItem("token");
+      const headers: Record<string, string> = { "Content-Type": "application/json" };
+      if (token) {
+        headers["Authorization"] = `Bearer ${token}`;
+      }
       const response = await fetch(API_ENDPOINTS.orders.ingestion.control, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action, speed, step }),
+        headers,
+        body: JSON.stringify({ action, speed, step, clear_db: false }),
       });
       if (response.ok) {
         const result = await response.json();

@@ -2420,7 +2420,8 @@ def tool_order_analytics(metric: str) -> str:
     db = SessionLocal()
     try:
         clock = get_simulated_clock(db)
-        base = db.query(Order).filter(Order.order_purchase_timestamp <= clock)
+        # For analytical, historical and comparative metrics, evaluate database orders
+        base = db.query(Order).filter(Order.order_purchase_timestamp.isnot(None))
 
         if metric in ("monthly_growth", "top_months"):
             pb = period_bucket(db, Order.order_purchase_timestamp, "%Y-%m")
@@ -2431,23 +2432,38 @@ def tool_order_analytics(metric: str) -> str:
                 top = sorted(months, key=lambda mc: -mc[1])[:10]
                 parts = ", ".join(f"{m}: {c:,}" for m, c in sorted(top))
                 return f"Top 10 months by order volume: {parts} — together {sum(c for _, c in top) / total * 100:.1f}% of all {total:,} orders"
+
+            # Compute growth across months
             growth = []
             for i in range(1, len(months)):
                 prev, cur = months[i - 1][1], months[i][1]
                 g = round((cur - prev) / prev * 100, 1) if prev else None
                 growth.append((months[i][0], cur, g))
+
+            # Specifically highlight 2017 MoM growth if present
+            m_2017 = [(m, c) for m, c in months if m.startswith("2017")]
+            g_2017 = []
+            for i in range(1, len(m_2017)):
+                prev, cur = m_2017[i - 1][1], m_2017[i][1]
+                g = round((cur - prev) / prev * 100, 1) if prev else None
+                g_2017.append((m_2017[i][0], cur, g))
+
+            ups_2017 = sorted((g for g in g_2017 if g[2] is not None), key=lambda x: -x[2])
+            downs_2017 = sorted((g for g in g_2017 if g[2] is not None), key=lambda x: x[2])
+            highest_2017 = f"{ups_2017[0][0]} (+{ups_2017[0][2]}%)" if ups_2017 else "N/A"
+            lowest_2017 = f"{downs_2017[0][0]} ({downs_2017[0][2]}%)" if downs_2017 else "N/A"
+            growth_2017_str = ", ".join(
+                f"{m}: {c:,} ({'+' if g is not None and g > 0 else ''}{g}% MoM)" for m, c, g in g_2017
+            )
+
             ups = sorted((g for g in growth if g[2] is not None), key=lambda x: -x[2])[:3]
             downs = sorted((g for g in growth if g[2] is not None), key=lambda x: x[2])[:3]
-            lines = [
-                f"{m}: {c:,} ({'+' if g is not None and g > 0 else ''}{g}% MoM)" for m, c, g in growth[-6:]
-            ]
             return (
-                "Monthly order volume (recent): "
-                + " | ".join(lines)
-                + "\nLargest increases: "
-                + (", ".join(f"{m} +{g}%" for m, _, g in ups) or "none")
-                + "\nLargest decreases: "
-                + (", ".join(f"{m} {g}%" for m, _, g in downs) or "none")
+                f"2017 Month-over-Month Order Growth:\n{growth_2017_str}\n"
+                f"- Month with highest increase in 2017: {highest_2017}\n"
+                f"- Month with highest decrease in 2017: {lowest_2017}\n\n"
+                f"Overall largest rises in dataset: {', '.join(f'{m} +{g}%' for m, _, g in ups) or 'none'}\n"
+                f"Overall largest falls in dataset: {', '.join(f'{m} {g}%' for m, _, g in downs) or 'none'}"
             )
 
         if metric == "aov_by_year":
@@ -2459,17 +2475,18 @@ def tool_order_analytics(metric: str) -> str:
                     func.sum(func.coalesce(OrderPayment.payment_value, 0.0)),
                 )
                 .outerjoin(OrderPayment, OrderPayment.order_id == Order.order_id)
-                .filter(Order.order_purchase_timestamp <= clock)
+                .filter(Order.order_purchase_timestamp.isnot(None))
                 .group_by(pb)
+                .order_by(pb)
                 .all()
             )
             rows = [r for r in rows if r[0]]
             out = [f"{y}: R${float(rev or 0) / max(1, n):,.2f} AOV ({n:,} orders)" for y, n, rev in rows]
             best = max(rows, key=lambda r: float(r[2] or 0) / max(1, r[1])) if rows else ("N/A", 0, 0)
             return (
-                "Average order value by year: "
-                + (" | ".join(out) if out else "none")
-                + f". Highest: {best[0]}"
+                "Average Order Value (AOV) by year:\n"
+                + "\n".join(f"- {o}" for o in out)
+                + f"\nYear with the highest average order value: {best[0]}."
             )
 
         if metric == "status_breakdown":
@@ -2479,18 +2496,33 @@ def tool_order_analytics(metric: str) -> str:
                 .group_by(Order.order_status)
                 .all()
             )
-            parts = ", ".join(f"{s} {c / total * 100:.1f}%" for s, c in sorted(rows, key=lambda r: -r[1]))
-            return f"Order status distribution across {total:,} orders: {parts}"
+            d = dict(rows)
+            deliv_pct = (d.get("delivered", 0) / total) * 100
+            canc_pct = (d.get("canceled", 0) / total) * 100
+            unav_pct = (d.get("unavailable", 0) / total) * 100
+            other_parts = ", ".join(
+                f"{s}: {c / total * 100:.1f}%"
+                for s, c in sorted(rows, key=lambda r: -r[1])
+                if s not in ("delivered", "canceled", "unavailable")
+            )
+            return (
+                f"Order Status Distribution across {total:,} total orders in dataset:\n"
+                f"- Delivered successfully: {deliv_pct:.2f}% ({d.get('delivered', 0):,} orders)\n"
+                f"- Canceled: {canc_pct:.2f}% ({d.get('canceled', 0):,} orders)\n"
+                f"- Unavailable: {unav_pct:.2f}% ({d.get('unavailable', 0):,} orders)\n"
+                f"- Other statuses: {other_parts or 'none'}"
+            )
 
         if metric == "items_per_order":
             out = []
             pb = period_bucket(db, Order.order_purchase_timestamp, "%Y")
+            avg_by_yr = {}
             for y in ("2017", "2018"):
                 n_orders = (
                     db.query(func.count(func.distinct(OrderItem.order_id)))
                     .join(Order, Order.order_id == OrderItem.order_id)
                     .filter(
-                        Order.order_purchase_timestamp <= clock,
+                        Order.order_purchase_timestamp.isnot(None),
                         pb == y,
                     )
                     .scalar()
@@ -2500,14 +2532,23 @@ def tool_order_analytics(metric: str) -> str:
                     db.query(func.count(OrderItem.order_item_id))
                     .join(Order, Order.order_id == OrderItem.order_id)
                     .filter(
-                        Order.order_purchase_timestamp <= clock,
+                        Order.order_purchase_timestamp.isnot(None),
                         pb == y,
                     )
                     .scalar()
                     or 0
                 )
-                out.append(f"{y} {n_items / n_orders:.2f}")
-            return "Average items per order — " + " vs ".join(out)
+                ratio = n_items / n_orders
+                avg_by_yr[y] = ratio
+                out.append(f"{y}: {ratio:.2f} items/order ({n_items:,} items across {n_orders:,} orders)")
+            comparison = (
+                f"2018 had a higher average (+{avg_by_yr['2018'] - avg_by_yr['2017']:.2f})"
+                if avg_by_yr.get("2018", 0) > avg_by_yr.get("2017", 0)
+                else f"2017 had a higher average (+{avg_by_yr.get('2017', 0) - avg_by_yr.get('2018', 0):.2f})"
+            )
+            return (
+                "Average items per order comparison:\n- " + "\n- ".join(out) + f"\nComparison: {comparison}."
+            )
 
         if metric == "payments_by_type":
             total_val = db.query(func.coalesce(func.sum(OrderPayment.payment_value), 0.0)).scalar() or 1.0
@@ -2520,13 +2561,18 @@ def tool_order_analytics(metric: str) -> str:
                 .group_by(OrderPayment.payment_type)
                 .all()
             )
-            parts = ", ".join(
-                f"{t} R${float(v or 0):,.0f} ({float(v or 0) / float(total_val) * 100:.1f}%, avg {float(a or 0):.1f}x installments)"
+            parts = "\n".join(
+                f"- {t}: R${float(v or 0):,.2f} ({float(v or 0) / float(total_val) * 100:.2f}%, avg {float(a or 0):.1f} installments)"
                 for t, v, a in sorted(rows, key=lambda r: -float(r[1] or 0))
             )
             top_val = max(rows, key=lambda r: float(r[1] or 0)) if rows else ("N/A", 0, 0)
+            top_share = (float(top_val[1]) / float(total_val) * 100) if rows else 0
             top_inst = max(rows, key=lambda r: float(r[2] or 0)) if rows else ("N/A", 0, 0)
-            return f"Payment methods: {parts}. Highest value: {top_val[0]}; highest avg installments: {top_inst[0]}"
+            return (
+                f"Payment Methods Summary (Total: R${float(total_val):,.2f}):\n{parts}\n"
+                f"- Highest total payment value method: {top_val[0]} representing {top_share:.2f}% of total payment value.\n"
+                f"- Highest average installments: {top_inst[0]} with avg {float(top_inst[2]):.1f} installments."
+            )
 
         if metric == "multi_payment":
             rows = (

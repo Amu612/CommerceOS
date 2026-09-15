@@ -431,16 +431,21 @@ class DomainAgent:
                 "fetch/preview the exact plan with the read-only tools, present it, and ask the "
                 "user to reply with an explicit 'confirm'. Only pass confirm=True after the user "
                 "has actually replied with that confirmation. If the tool returns "
-                "CONFIRMATION_REQUIRED, do NOT retry — tell the user what you need."
+                "CONFIRMATION_REQUIRED, do NOT retry — tell the user what you need.\n"
+                "9. When the user asks a new question or changes the topic, answer the new question "
+                "freshly from the data. NEVER repeat earlier answers, and never assume an entity from "
+                "a previous turn unless the user explicitly refers to it with a pronoun."
                 f"{live}"
             ),
         )
         messages: list[Any] = []
-        for turn in (history or [])[-8:]:
+        for turn in (history or [])[-4:]:
             role = turn.get("role") if isinstance(turn, dict) else getattr(turn, "role", "user")
             text = turn.get("text") if isinstance(turn, dict) else getattr(turn, "text", "")
             if not text:
                 continue
+            if role != "user" and len(text) > 350:
+                text = text[:350] + "..."
             messages.append(HumanMessage(content=text) if role == "user" else AIMessage(content=text))
         messages.append(HumanMessage(content=message))
         result = self._invoke_react_with_retry(agent, messages, model)
@@ -480,15 +485,17 @@ class DomainAgent:
     ) -> str:
         """
         No-LLM path: still runs the LangChain tools. If the question (or, failing
-        that, a recent turn in `history`) references an entity or order id,
-        answers that specific entity first using domain lookup tools or the
-        cross-table entity resolver. Otherwise picks the tool(s) whose
+        that, a recent turn in `history` with explicit pronoun follow-up) references
+        an entity or order id, answers that specific entity first using domain lookup tools
+        or the cross-table entity resolver. Otherwise picks the tool(s) whose
         name/description best matches the question.
         """
         low = (message or "").lower().strip()
-        lines = [f"**{self.display_name}** — {analysis.summary}", ""]
+        lines: list[str] = []
 
         if not low or any(k in low for k in ("hello", "hi ", "hey ", "help", "what can you", "capabilit")):
+            lines.append(f"**{self.display_name}** — {analysis.summary}")
+            lines.append("")
             lines.append(
                 "I can pull: " + ", ".join(t.name.replace("_", " ") for t in self.metric_tools) + "."
             )
@@ -498,17 +505,38 @@ class DomainAgent:
 
         rendered = False
 
-        # entity-specific: an ID in this message or a recent follow-up turn
+        # entity-specific: an ID in this message or an explicit pronoun follow-up from prior turns
         from app.agents._shared import extract_entity_id
         from app.agents.entity_resolver import entity_resolver
 
         cand_id, _ = extract_entity_id(message)
         if not cand_id and history:
-            for turn in reversed(history):
-                txt = turn.get("text") if isinstance(turn, dict) else getattr(turn, "text", "")
-                cand_id, _ = extract_entity_id(txt or "")
-                if cand_id:
-                    break
+            is_followup = any(
+                re.search(rf"\b{p}\b", low)
+                for p in (
+                    "it",
+                    "its",
+                    "that order",
+                    "this order",
+                    "that customer",
+                    "this customer",
+                    "that product",
+                    "this product",
+                    "the order",
+                    "the customer",
+                    "the product",
+                    "same order",
+                    "same customer",
+                )
+            )
+            if is_followup:
+                for turn in reversed(history):
+                    role = turn.get("role") if isinstance(turn, dict) else getattr(turn, "role", "user")
+                    if role == "user":
+                        txt = turn.get("text") if isinstance(turn, dict) else getattr(turn, "text", "")
+                        cand_id, _ = extract_entity_id(txt or "")
+                        if cand_id:
+                            break
 
         if cand_id:
             resolved = entity_resolver.resolve_entity(cand_id)
@@ -547,7 +575,7 @@ class DomainAgent:
                     scored.append((score, t))
             scored.sort(key=lambda s: -s[0])
 
-            for _, t in scored[:2]:
+            for _, t in scored[:3]:
                 out = None
                 # Try empty arguments first (for zero-arg metric tools)
                 with contextlib.suppress(Exception):
@@ -556,17 +584,86 @@ class DomainAgent:
                 # If tool expects metric argument (e.g. analytics tools), select best metric
                 if out is None and "metric" in (t.description or "").lower():
                     desc = (t.description or "").lower()
-                    candidates = re.findall(r'["\']([a-zA-Z0-9_]+)["\']', desc)
-                    best_m, best_score = None, -1
+                    metric_lines = re.findall(r'["\']([a-zA-Z0-9_]+)["\']\s*[:\-]\s*([^\n]+)', desc)
+                    candidates = (
+                        [m[0] for m in metric_lines]
+                        if metric_lines
+                        else re.findall(r'["\']([a-zA-Z0-9_]+)["\']', desc)
+                    )
+                    gloss_map = {m[0]: m[1] for m in metric_lines}
+
+                    synonyms: dict[str, list[str]] = {
+                        "monthly_growth": [
+                            "growth",
+                            "month-over-month",
+                            "mom",
+                            "increase",
+                            "decrease",
+                            "rises",
+                            "falls",
+                            "growth rate",
+                        ],
+                        "aov_by_year": [
+                            "average order value",
+                            "aov",
+                            "order value",
+                            "highest average",
+                            "average value",
+                        ],
+                        "status_breakdown": [
+                            "status",
+                            "canceled",
+                            "unavailable",
+                            "delivered",
+                            "percentage of all orders",
+                            "delivered successfully",
+                        ],
+                        "items_per_order": [
+                            "items per order",
+                            "items/order",
+                            "number of items",
+                            "average number of items",
+                            "items per",
+                        ],
+                        "payments_by_type": [
+                            "payment method",
+                            "payment value",
+                            "payment type",
+                            "installments",
+                            "percentage of total payment",
+                        ],
+                        "multi_payment": [
+                            "more than one payment",
+                            "multiple payment",
+                            "multi payment",
+                            "multi-payment",
+                        ],
+                        "quarterly_revenue": ["quarterly", "revenue", "peak quarter"],
+                        "delivery_time_year": [
+                            "delivery time",
+                            "delivery days",
+                            "purchase to delivery",
+                            "purchase→delivery",
+                        ],
+                        "top_months": ["top months", "highest-volume", "highest volume"],
+                    }
+
+                    best_m, best_score = None, 0
                     for cand in candidates:
                         cand_words = cand.replace("_", " ").split()
-                        c_score = sum(2 for w in cand_words if w in low)
+                        c_score = sum(3 for w in cand_words if len(w) > 2 and w in low)
                         if cand.replace("_", " ") in low:
-                            c_score += 5
+                            c_score += 10
+                        gloss = gloss_map.get(cand, "")
+                        gloss_words = [w for w in re.findall(r"[a-z0-9]+", gloss.lower()) if len(w) > 3]
+                        c_score += sum(2 for gw in gloss_words if gw in low)
+                        for syn in synonyms.get(cand, []):
+                            if syn in low:
+                                c_score += 8
                         if c_score > best_score:
                             best_score = c_score
                             best_m = cand
-                    if best_m:
+                    if best_m and best_score > 0:
                         with contextlib.suppress(Exception):
                             out = _as_obj(t.invoke({"metric": best_m}))
 
@@ -586,6 +683,8 @@ class DomainAgent:
                     break
 
         if not rendered:
+            lines.append(f"**{self.display_name}** — {analysis.summary}")
+            lines.append("")
             if any(k in low for k in ("why", "explain", "cause", "reason", "matter")):
                 for f in analysis.findings[:4]:
                     lines.append(f"- **[{f.severity}] {f.title}** — {f.what_happened} {f.why_it_matters}")
@@ -600,7 +699,7 @@ class DomainAgent:
                         lines.append(f"- {m.label}: {m.value}")
 
         lines += ["", "*This is a data-grounded deterministic answer.*"]
-        return "\n".join(lines)
+        return "\n".join(lines).strip()
 
 
 # ── helpers ────────────────────────────────────────────────────

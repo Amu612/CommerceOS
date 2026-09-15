@@ -168,12 +168,12 @@ export default function IngestionControlBar({
             type="button"
             className="btn-stream-action btn-reset"
             onClick={() => {
-              if (window.confirm("Reset data ingestion and clear order records from system?")) {
+              if (window.confirm("Reset data ingestion clock to beginning? (Database records will be preserved)")) {
                 onControl("reset");
               }
             }}
             disabled={loading}
-            title="Reset replay and clear active database"
+            title="Reset data ingestion clock to beginning"
           >
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
               <polyline points="1 4 1 10 7 10" />

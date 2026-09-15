@@ -51,7 +51,12 @@ def extract_order_id(message: str) -> str:
     if m:
         return m.group(1)
     m = _ORDER_ID_RE.search(message)
-    return m.group(1) if m else ""
+    if m:
+        val = m.group(1)
+        if len(val) == 4 and val.isdigit() and (1990 <= int(val) <= 2050):
+            return ""
+        return val
+    return ""
 
 
 def extract_entity_id(message: str) -> tuple[str, str]:
@@ -98,7 +103,10 @@ def extract_entity_id(message: str) -> tuple[str, str]:
         return m_ord.group(1), "order"
     m_bare = _ORDER_ID_RE.search(message)
     if m_bare:
-        return m_bare.group(1), "unknown"
+        val = m_bare.group(1)
+        if len(val) == 4 and val.isdigit() and (1990 <= int(val) <= 2050):
+            return "", ""
+        return val, "unknown"
     return "", ""
 
 
@@ -148,10 +156,9 @@ def simulated_clock(db: Session | None = None) -> datetime:
         from app.services.replay_engine import replay_engine
         from app.services.state_service import state_service
 
-        streamed = getattr(replay_engine, "events_processed", 0) or 0
-        if streamed > 0 and replay_engine.current_simulated_date:
+        if getattr(replay_engine, "current_simulated_date", None):
             return tz(replay_engine.current_simulated_date)
-        if getattr(state_service, "sim_current_date", None) and getattr(state_service, "total_orders", 0):
+        if getattr(state_service, "sim_current_date", None):
             return tz(state_service.sim_current_date)
     except Exception:
         pass

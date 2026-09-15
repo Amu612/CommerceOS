@@ -59,7 +59,7 @@ services:
       REDIS_ENABLED: "true"
       JWT_SECRET: ${JWT_SECRET:-dev-compose-secret-not-for-prod-0123456789}
       SEED_ADMIN_PASSWORD: ${SEED_ADMIN_PASSWORD:-CommerceOS2024!}
-      LLM_PROVIDER: ${LLM_PROVIDER:-deterministic}
+      LLM_PROVIDER: ${LLM_PROVIDER:-auto}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       CORS_ORIGINS: http://localhost:3000
     ports:
@@ -90,7 +90,7 @@ services:
       REDIS_URL: redis://redis:6379/0
       REDIS_ENABLED: "true"
       JWT_SECRET: ${JWT_SECRET:-dev-compose-secret-not-for-prod-0123456789}
-      LLM_PROVIDER: ${LLM_PROVIDER:-deterministic}
+      LLM_PROVIDER: ${LLM_PROVIDER:-auto}
     volumes:
       - ./backend/data:/app/data
     depends_on:

@@ -102,7 +102,7 @@ class IngestionControlRequest(BaseModel):
     action: str | None = "start"  # "start", "pause", "resume", "stop", "reset", "step", "complete"
     speed: int | None = None
     step: int | None = 50
-    clear_db: bool | None = True
+    clear_db: bool | None = False
 
 
 from app.services.replay_engine import replay_engine  # noqa: E402
@@ -152,7 +152,7 @@ async def control_ingestion(payload: IngestionControlRequest):
     elif action == "stop":
         msg = replay_engine.stop()
     elif action == "reset":
-        clear_db = payload.clear_db if payload.clear_db is not None else True
+        clear_db = payload.clear_db if payload.clear_db is not None else False
         msg = await asyncio.to_thread(replay_engine.reset, clear_db=clear_db)
     elif action == "step":
         count = payload.step or 50

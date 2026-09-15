@@ -1203,8 +1203,8 @@ class ReplayEngine:
         publish_event("ingestion", self.get_status())
         return "Ingestion stopped."
 
-    def reset(self, clear_db: bool = True) -> str:
-        """Resets the ingestion position, empties active order tables, and resets agent memory."""
+    def reset(self, clear_db: bool = False) -> str:
+        """Resets the ingestion position and resets agent memory. Only clears database tables if clear_db=True."""
         self.stop()
         self._current_index = 0
         self.events_processed = 0
