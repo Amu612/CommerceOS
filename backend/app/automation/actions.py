@@ -277,7 +277,10 @@ FINDING_ACTION_MAP: dict[str, str] = {
     "STOCK": "CREATE_PURCHASE_ORDER_REQUEST",
     "LOSS_MAKING_ORDERS": "SET_MARGIN_FLOOR",
     "SEGMENT_MARGIN": "SET_MARGIN_FLOOR",
-    "DISCOUNT_LEAKAGE": "FLAG_FOR_REVIEW",
+    # Acting on discount leakage means repricing — a customer-visible price
+    # change, which the policy engine (ADR 0006) BLOCKS from automation. The
+    # finding surfaces in the Approvals console as "Blocked (policy)".
+    "DISCOUNT_LEAKAGE": "PRICE_CHANGE",
     "FREIGHT_DRAG": "FLAG_FOR_REVIEW",
     "RETENTION": "LAUNCH_CAMPAIGN",
     "CHURN_RISK": "LAUNCH_CAMPAIGN",

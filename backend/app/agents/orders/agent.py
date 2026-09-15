@@ -197,17 +197,34 @@ class OrdersAgent:
                 f"Deep-investigated processing time distribution after detecting {anomalous_aging_count} anomalously aged orders"
             )
 
-        # Investigate cancellations if rate is elevated relative to historical median
-        canc_mean = canc_profile.get("mean") or 0.0
-        canc_std = canc_profile.get("std_dev") or 0.0
-        canc_z = (canc_rate - canc_mean) / canc_std if canc_std > 0 else 0.0
+        # Investigate cancellations if rate is elevated relative to historical baseline
+        # Recent-vs-baseline deviation (binomial SE — see CancellationRisk.method).
+        # The overall window rate is the baseline; the recent tail (last 14 days
+        # of the series) is what "is the risk changing?" is actually about.
+        daily_series_raw = cancellation_raw.get("daily_series") or []
+        recent_days = daily_series_raw[-14:] if daily_series_raw else []
+        recent_orders = sum(int(d.get("total", 0)) for d in recent_days)
+        recent_cancelled = sum(int(d.get("cancelled", 0)) for d in recent_days)
+        recent_rate = round(recent_cancelled / recent_orders * 100.0, 3) if recent_orders > 0 else None
+        baseline_rate = round(
+            (cancellation_raw.get("total_cancelled", 0) or 0)
+            / max(1, (cancellation_raw.get("total_orders", 0) or 0)) * 100.0,
+            3,
+        ) if cancellation_raw.get("status") == "OK" else None
+        canc_z = 0.0
+        if recent_rate is not None and baseline_rate is not None and recent_orders > 0:
+            p = min(1.0, max(0.0, recent_cancelled / recent_orders))
+            se_pct = (p * (1 - p) / recent_orders) ** 0.5 * 100.0
+            if se_pct > 0:
+                canc_z = (recent_rate - baseline_rate) / se_pct
         if abs(canc_z) > 1.5 and loop_count < MAX_INVESTIGATION_LOOPS:
             loop_count += 1
             forecast_canc = OrdersTools.forecast_cancellations(days=90, db=db)
             dimensions_investigated.append("Cancellation Rate Forecasting (90-day series)")
             tools_executed.append("forecast_cancellations")
             investigation_steps.append(
-                f"Forecasted cancellations (z={canc_z:.2f} vs 90-day baseline mean={canc_mean:.2f}%)"
+                f"Forecasted cancellations (recent 14d rate {recent_rate if recent_rate is not None else 'n/a'}% "
+                f"vs 90-day baseline {baseline_rate if baseline_rate is not None else 'n/a'}%, z={canc_z:.2f})"
             )
 
         # Investigate volume anomalies if history is sufficient
@@ -329,17 +346,17 @@ class OrdersAgent:
 
             if canc_risk_level and canc_risk_level in ["MEDIUM", "HIGH", "CRITICAL"]:
                 predicted_canc = (
-                    forecast_canc.get("predicted_cancellations", 0)
+                    int(forecast_canc.get("predicted_cancellations", 0))
                     if forecast_canc
-                    else int(round(pending_count * canc_rate / 100.0))
-                )
+                    else int(round(total_cancelled / max(1, len(daily_series_raw)) * 7.0))
+                ) if daily_series_raw else 0
                 findings.append(OrderFinding(
                     category="CANCELLATION",
                     severity=canc_risk_level,
                     what_happened=(
-                        f"Observed cancellation rate of {canc_rate:.2f}% deviates from historical "
-                        f"90-day baseline mean of {canc_mean:.2f}% (z={canc_z:.2f}). "
-                        f"{total_cancelled} total cancellations observed."
+                        f"Recent 14-day cancellation rate is {recent_rate if recent_rate is not None else canc_rate:.2f}% "
+                        f"vs the 90-day baseline of {baseline_rate if baseline_rate is not None else canc_rate:.2f}% "
+                        f"(z={canc_z:.2f}). {total_cancelled} total cancellations observed in the window."
                     ),
                     why_it_matters=(
                         f"A deviation of {canc_z:.2f} standard errors indicates a statistically significant "
@@ -350,8 +367,9 @@ class OrdersAgent:
                         "Cross-reference cancellations against seller and destination regions."
                     ),
                     evidence=(
-                        f"cancellation_rate={canc_rate:.2f}%, baseline_mean={canc_mean:.2f}%, "
-                        f"baseline_std={canc_std:.2f}%, z_score={canc_z:.2f}"
+                        f"recent_14d_rate={recent_rate if recent_rate is not None else 'n/a'}%, "
+                        f"baseline_90d_rate={baseline_rate if baseline_rate is not None else 'n/a'}%, "
+                        f"recent_orders={recent_orders}, z_score={canc_z:.2f}"
                         + (f", anomaly_score={canc_anomaly_score:.3f}." if canc_anomaly_score is not None else ".")
                     ),
                     probable_cause="Statistically significant divergence from baseline cancellation rate.",
@@ -500,35 +518,62 @@ class OrdersAgent:
             not_estimable_reason=None,
         )
 
+        # Risk level must follow the measured deviation (recent 14d vs the
+        # 90-day baseline, binomial z; anomaly detector as a secondary signal)
+        # — NOT the mere existence of cancellations, which made every dataset
+        # with any cancellation at all read "MEDIUM".
         canc_risk_label = "LOW"
         if canc_z >= 3.0 or (canc_anomaly_score is not None and canc_anomaly_score > 0.7):
             canc_risk_label = "CRITICAL"
         elif canc_z >= 2.0 or (canc_anomaly_score is not None and canc_anomaly_score > 0.5):
             canc_risk_label = "HIGH"
-        elif canc_z >= 1.0 or (canc_anomaly_score is not None and canc_anomaly_score > 0.3) or cancellation_rate > 0:
+        elif (
+            canc_z >= 1.0
+            or (canc_anomaly_score is not None and canc_anomaly_score > 0.3)
+            or (recent_rate is not None and baseline_rate is not None and recent_rate > baseline_rate and recent_orders >= 30)
+        ):
             canc_risk_label = "MEDIUM"
 
+        # Drivers are the observed facts behind the level — each with its real
+        # number, so the text can never contradict the level shown next to it.
         risk_drivers = []
-        if canc_z > 1.0:
-            risk_drivers.append(
-                f"Cancellation rate ({cancellation_rate:.2f}%) deviates {canc_z:.1f}σ from 90-day baseline."
-            )
+        if recent_rate is not None and baseline_rate is not None:
+            if recent_rate > baseline_rate:
+                risk_drivers.append(
+                    f"Recent 14-day cancellation rate is {recent_rate:.2f}% vs the 90-day baseline of "
+                    f"{baseline_rate:.2f}% ({canc_z:+.1f} sigma, binomial SE on {recent_orders:,} recent orders)."
+                )
+            else:
+                risk_drivers.append(
+                    f"Recent 14-day cancellation rate is {recent_rate:.2f}%, at or below the 90-day baseline of "
+                    f"{baseline_rate:.2f}% ({canc_z:+.1f} sigma)."
+                )
         if anomalous_aging_count > 0:
             risk_drivers.append(
-                f"{anomalous_aging_count} orders aging beyond empirical outlier fence contribute to cancellation pressure."
+                f"{anomalous_aging_count} of {pending_count:,} pending orders have aged beyond the empirical outlier "
+                "fence — aged pending orders historically convert to cancellations."
+            )
+        if pending_count > 0 and total_orders > 0:
+            risk_drivers.append(
+                f"{pending_count:,} orders are currently in-flight (pending) and exposed to cancellation "
+                f"({pending_count / total_orders * 100:.1f}% of the {total_orders:,} observed orders)."
             )
         predicted_canc_count = (
-            forecast_canc.get("predicted_cancellations", 0)
+            int(forecast_canc.get("predicted_cancellations", 0))
             if forecast_canc
-            else int(round(pending_count * cancellation_rate / 100.0))
-        )
+            # Empirical flow forecast: mean observed cancellations per day over
+            # the 90-day window times 7 days ahead. (pending times lifetime-rate was
+            # wrong: it charged the whole in-flight stock with the historical
+            # share and ignored the actual daily cancellation flow.)
+            else int(round(total_cancelled / max(1, len(daily_series_raw)) * 7.0))
+        ) if daily_series_raw else 0
         cancellation_risk = CancellationRisk(
             cancellation_rate_pct=cancellation_rate,
-            historical_baseline_rate_pct=round(canc_mean, 3) if canc_mean > 0 else (round(cancellation_rate, 3) if cancellation_rate > 0 else None),
+            historical_baseline_rate_pct=baseline_rate if baseline_rate is not None else (round(cancellation_rate, 3) if cancellation_rate > 0 else None),
             z_score=round(canc_z, 3),
             risk_level=canc_risk_label,
             predicted_cancellations=predicted_canc_count,
-            risk_drivers=risk_drivers if risk_drivers else ["Observed cancellation rate is aligned with baseline expectation."],
+            risk_drivers=risk_drivers if risk_drivers else ["No cancellation history observed yet in the current window."],
             anomaly_score=round(canc_anomaly_score, 3) if canc_anomaly_score is not None else 0.0,
             data_source=state.get("data_source", "BOTH"),
             data_status=cancellation_raw.get("data_status", DataCategory.CALCULATED.value),

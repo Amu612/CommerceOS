@@ -86,6 +86,66 @@ def get_order_route(
     return LogisticsData.order_route_lookup(db=db, order_id=target_order_id, seller_id=target_seller_id)
 
 
+@logistics_router.get("/route/samples")
+def route_samples(limit_per_kind: int = 1, db: Session = Depends(get_db)):
+    """Real order IDs that exist in THIS deployment's database, for the Route
+    Intelligence quick-pick buttons. The old buttons hardcoded IDs from the
+    full 100k-row Olist dataset, which never exist in a deployment still
+    streaming its first thousand orders — every click returned NOT_FOUND."""
+    from datetime import timedelta
+
+    from sqlalchemy import func
+
+    from app.agents._shared import simulated_clock
+    from app.models.olist import Order, OrderItem, Seller
+
+    clock = simulated_clock(db)
+    rows = (
+        db.query(
+            OrderItem.order_id,
+            func.count(func.distinct(OrderItem.seller_id)).label("sellers"),
+            func.count(func.distinct(Seller.seller_zip_code_prefix)).label("origins"),
+            func.count(OrderItem.order_item_id).label("items"),
+            func.max(Order.order_purchase_timestamp).label("ts"),
+        )
+        .join(Order, Order.order_id == OrderItem.order_id)
+        .join(Seller, Seller.seller_id == OrderItem.seller_id)
+        .filter(Order.order_purchase_timestamp <= clock, Order.order_purchase_timestamp >= clock - timedelta(days=365))
+        .group_by(OrderItem.order_id)
+        .order_by(func.max(Order.order_purchase_timestamp).desc())
+        .limit(400)
+        .all()
+    )
+
+    buckets: dict[str, dict | None] = {"single_seller": None, "multi_seller": None, "multi_origin": None}
+    for order_id, sellers, origins, items, _ts in rows:
+        entry = {"order_id": order_id, "sellers": int(sellers), "origins": int(origins), "items": int(items)}
+        if sellers == 1 and origins == 1 and buckets["single_seller"] is None:
+            buckets["single_seller"] = {**entry, "label": "Single Seller"}
+        elif sellers > 1 and buckets["multi_seller"] is None:
+            buckets["multi_seller"] = {**entry, "label": "Multi-Seller"}
+        elif origins > 1 and sellers == 1 and buckets["multi_origin"] is None:
+            buckets["multi_origin"] = {**entry, "label": "Multi-Origin"}
+        if all(v is not None for v in buckets.values()):
+            break
+
+    samples = [v for v in buckets.values() if v is not None]
+    # Fallback when the window is too thin to fill every bucket: the three
+    # most recent orders with items, whatever their shape.
+    if len(samples) < 3:
+        seen = {s["order_id"] for s in samples}
+        for order_id, sellers, origins, items, _ts in rows:
+            if order_id in seen:
+                continue
+            samples.append({
+                "order_id": order_id, "label": f"{int(items)} item(s)",
+                "sellers": int(sellers), "origins": int(origins), "items": int(items),
+            })
+            if len(samples) >= 3:
+                break
+    return {"items": samples}
+
+
 # Pricing-only: the Apify competitor-price feed. Additive — works the same
 # regardless of which order data source (historic/live) is active.
 @pricing_router.get("/competitor-feed")

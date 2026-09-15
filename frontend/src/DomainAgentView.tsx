@@ -71,6 +71,14 @@ type OrderRouteData = {
   };
 };
 
+type RouteSample = { order_id: string; label: string };
+
+const FALLBACK_ROUTE_SAMPLES: RouteSample[] = [
+  { order_id: "000229ec398224ef6ca0657da4fc703e", label: "Single Seller" },
+  { order_id: "00bcee890eba57a9767c7b5ca12d3a1b", label: "Multi-Seller" },
+  { order_id: "013a98b3a668bcef05b98898177f6923", label: "Multi-Origin" },
+];
+
 type MetricCard = { label: string; value: unknown; unit?: string; description?: string; data_status?: string };
 type Finding = {
   category: string;
@@ -192,6 +200,10 @@ export default function DomainAgentView({
   const [routeData, setRouteData] = useState<OrderRouteData | null>(null);
   const [routeLoading, setRouteLoading] = useState(false);
   const [routeError, setRouteError] = useState<string | null>(null);
+  // Quick-pick buttons must reference orders that actually exist in THIS
+  // deployment's database (it streams progressively), so the samples are
+  // fetched from the backend instead of hardcoding full-dataset IDs.
+  const [routeSamples, setRouteSamples] = useState<RouteSample[]>(FALLBACK_ROUTE_SAMPLES);
 
   const fetchRoute = useCallback(async (oid: string, sid?: string) => {
     if (!routeUrl || !oid.trim()) return;
@@ -212,6 +224,24 @@ export default function DomainAgentView({
     } finally {
       setRouteLoading(false);
     }
+  }, [routeUrl]);
+
+  useEffect(() => {
+    if (!routeUrl) return;
+    let cancelled = false;
+    fetch(`${routeUrl}/samples`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => {
+        if (cancelled || !d) return;
+        const items: RouteSample[] = (d.items || [])
+          .filter((x: { order_id?: string }) => x && typeof x.order_id === "string")
+          .map((x: { order_id: string; label?: string }) => ({ order_id: x.order_id, label: x.label || "Sample" }));
+        if (items.length > 0) setRouteSamples(items);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
   }, [routeUrl]);
 
   const [input, setInput] = useState("");
@@ -419,33 +449,18 @@ export default function DomainAgentView({
             </div>
             <div className="dav-route-quick-orders">
               <span className="dav-quick-label">Sample Orders:</span>
-              <button
-                className="dav-quick-btn"
-                onClick={() => {
-                  setOrderInput("000229ec398224ef6ca0657da4fc703e");
-                  fetchRoute("000229ec398224ef6ca0657da4fc703e");
-                }}
-              >
-                000229ec… (Single Seller)
-              </button>
-              <button
-                className="dav-quick-btn"
-                onClick={() => {
-                  setOrderInput("00bcee890eba57a9767c7b5ca12d3a1b");
-                  fetchRoute("00bcee890eba57a9767c7b5ca12d3a1b");
-                }}
-              >
-                00bcee89… (Multi-Seller)
-              </button>
-              <button
-                className="dav-quick-btn"
-                onClick={() => {
-                  setOrderInput("013a98b3a668bcef05b98898177f6923");
-                  fetchRoute("013a98b3a668bcef05b98898177f6923");
-                }}
-              >
-                013a98b3… (Multi-Origin)
-              </button>
+              {routeSamples.map((sample) => (
+                <button
+                  key={sample.order_id}
+                  className="dav-quick-btn"
+                  onClick={() => {
+                    setOrderInput(sample.order_id);
+                    fetchRoute(sample.order_id);
+                  }}
+                >
+                  {`${sample.order_id.slice(0, 8)}… (${sample.label})`}
+                </button>
+              ))}
             </div>
           </div>
 
@@ -455,7 +470,7 @@ export default function DomainAgentView({
               value={orderInput}
               onChange={(e) => setOrderInput(e.target.value)}
               onKeyDown={(e) => e.key === "Enter" && fetchRoute(orderInput)}
-              placeholder="Enter real Olist Order ID (e.g. 000229ec398224ef6ca0657da4fc703e)..."
+              placeholder="Enter a real Olist Order ID (or pick a sample above)..."
             />
             <button
               className="dav-btn dav-btn-primary"

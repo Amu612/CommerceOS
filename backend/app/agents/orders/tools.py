@@ -973,21 +973,31 @@ class OrdersTools:
             if result is None:
                 return None
 
-            pending_count = 0
-            try:
-                backlog = OrdersTools.get_order_backlog(db=db)
-                pending_count = backlog.get("pending_count", 0)
-            except Exception:
-                pass
-
             predicted_rate = max(0.0, result.prediction)
-            predicted_cancellations = int(round(pending_count * (predicted_rate / 100.0)))
+
+            # Convert the predicted per-day cancellation RATE into an expected
+            # 7-day cancellation COUNT using the observed daily order FLOW —
+            # not the pending backlog. Pending is a stock of orders already
+            # past (or at) their decision point; the correct exposure for a
+            # per-day rate is the number of orders entering per day.
+            window_days = max(1, history.get("window_days") or days)
+            avg_daily_orders = (history.get("total_orders", 0) or 0) / window_days
+            predicted_cancellations = int(round(avg_daily_orders * (predicted_rate / 100.0) * 7))
+
+            def _count_from_rate(rate: float | None) -> int | None:
+                if rate is None:
+                    return None
+                return int(round(avg_daily_orders * (max(0.0, rate) / 100.0) * 7))
 
             return {
                 "predicted_cancellation_rate_pct": round(predicted_rate, 3),
                 "lower_bound_rate": round(max(0.0, result.lower_bound), 3) if result.lower_bound is not None else None,
                 "upper_bound_rate": round(result.upper_bound, 3) if result.upper_bound is not None else None,
                 "predicted_cancellations": predicted_cancellations,
+                "lower_bound_cancellations": _count_from_rate(result.lower_bound),
+                "upper_bound_cancellations": _count_from_rate(result.upper_bound),
+                "forecast_horizon_days": 7,
+                "avg_daily_orders": round(avg_daily_orders, 2),
                 "confidence": round(result.confidence, 3),
                 "data_points": len(time_series),
                 "data_status": DataCategory.MODELLED.value,

@@ -12,6 +12,10 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg?style=for-the-badge)](https://opensource.org/licenses/MIT)
 
 <p align="center">
+  <a href="http://13.233.163.110/"><b>🔴 Live Demo — http://13.233.163.110/</b></a>
+</p>
+
+<p align="center">
   <b>CommerceOS</b> replaces fragmented, manual e-commerce administration with six autonomous, specialized AI agents — Orders, Inventory, Customer Support, Pricing, Marketing, and Logistics. Operating over real transaction and supply-chain data, they continuously audit pipelines, detect anomalies, forecast demand, and propose (or, with human approval, execute) corrective actions.
 </p>
 
