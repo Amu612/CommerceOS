@@ -42,7 +42,15 @@ def _prepare_db():
         if db.query(Order).count() == 0:
             from app.services.replay_engine import replay_engine
 
-            replay_engine.step(200)
+            # The merged replay stream is chronological: DataCo (2015-)
+            # precedes Olist (2016-), so a small step ingests only DataCo
+            # rows and the Olist-backed agent tests would run against an
+            # empty Olist dataset. Step until real Olist coverage exists.
+            for _ in range(30):
+                if db.query(Order).count() >= 300:
+                    break
+                db.expire_all()
+                replay_engine.step(250)
     finally:
         db.close()
 

@@ -42,6 +42,9 @@ exclude = ["alembic/", "tests/", "eval/"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# CI invokes bare `pytest` (no CWD on sys.path the way `python -m pytest`
+# adds it) — make the backend package importable either way.
+pythonpath = ["."]
 addopts = "-q --strict-markers"
 filterwarnings = ["ignore::DeprecationWarning"]
 # asyncio_mode = "auto"  # enable once pytest-asyncio is installed (requirements-dev)
