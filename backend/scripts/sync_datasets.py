@@ -29,7 +29,7 @@ _LOCAL_RAW_DIR = os.path.join(_BACKEND_DIR, "data", "raw")
 def _local_dir_has_csvs(path: str) -> bool:
     if not os.path.isdir(path):
         return False
-    return any(f.lower().endswith(".csv") for f in os.listdir(path))
+    return any(f.lower().endswith(".csv") or f.lower().endswith(".csv.gz") for f in os.listdir(path))
 
 
 def sync_from_s3(s3_uri: str, dest_dir: str) -> int:

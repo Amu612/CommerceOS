@@ -100,16 +100,8 @@ export default function OrchestratorView({ refreshKey }: { refreshKey?: number }
     }
   }, []);
 
-  // Nothing auto-runs on mount: the sweep stays empty until the user explicitly
-  // runs one (or a WS/refresh event bumps refreshKey after a real run).
-  const mountedRef = useRef(false);
+  // Read the latest persisted sweep on mount and on refreshKey changes.
   useEffect(() => {
-    if (!mountedRef.current) {
-      mountedRef.current = true;
-      setLoading(false);
-      if (refreshKey !== undefined && refreshKey > 0) loadLatest();
-      return;
-    }
     loadLatest();
   }, [loadLatest, refreshKey]);
 

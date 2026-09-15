@@ -82,11 +82,18 @@ def _get_nexus_data_dirs() -> list[str]:
 
 
 def find_dataset(filename: str) -> str | None:
-    """Finds a dataset CSV file across project data directories."""
+    """Finds a dataset CSV file (or .csv.gz) across project data directories."""
     for d in _get_nexus_data_dirs():
         p = os.path.join(d, filename)
         if os.path.exists(p):
             return p
+        if os.path.exists(p + ".gz"):
+            return p + ".gz"
+        if filename.endswith(".csv"):
+            gz_name = filename[:-4] + ".csv.gz"
+            p_gz = os.path.join(d, gz_name)
+            if os.path.exists(p_gz):
+                return p_gz
     return None
 
 

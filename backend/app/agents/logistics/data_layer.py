@@ -400,6 +400,8 @@ class LogisticsData:
             .filter((Order.order_id == clean_id) | (Order.order_id.ilike(f"{clean_id}%")))
             .first()
         )
+        if not order and len(clean_id) >= 12:
+            order = db.query(Order).filter(Order.order_id.ilike(f"{clean_id[:16]}%")).first()
         if not order:
             return {
                 "status": "NOT_FOUND",

@@ -1162,6 +1162,13 @@ class OrdersTools:
                 if filter_clock:
                     q = q.filter(Order.order_purchase_timestamp <= sim_clock)
                 o = q.first()
+                if not o and len(clean_id) >= 12:
+                    # Fallback on leading 16 (or 12) hex chars to tolerate copy-paste discrepancies
+                    prefix_16 = clean_id[:16]
+                    q_pref = db.query(Order).filter(Order.order_id.ilike(f"{prefix_16}%"))
+                    if filter_clock:
+                        q_pref = q_pref.filter(Order.order_purchase_timestamp <= sim_clock)
+                    o = q_pref.first()
                 if o:
                     cust = (
                         db.query(Customer).filter(Customer.customer_id == o.customer_id).first()
@@ -2416,15 +2423,14 @@ def tool_order_analytics(metric: str) -> str:
         base = db.query(Order).filter(Order.order_purchase_timestamp <= clock)
 
         if metric in ("monthly_growth", "top_months"):
+            pb = period_bucket(db, Order.order_purchase_timestamp, "%Y-%m")
             rows = (
-                base.with_entities(
-                    func.strftime("%Y-%m", Order.order_purchase_timestamp), func.count(Order.order_id)
-                )
-                .group_by(func.strftime("%Y-%m", Order.order_purchase_timestamp))
-                .order_by(func.strftime("%Y-%m", Order.order_purchase_timestamp))
+                base.with_entities(pb, func.count(Order.order_id))
+                .group_by(pb)
+                .order_by(pb)
                 .all()
             )
-            months = [(m, int(c)) for m, c in rows]
+            months = [(str(m), int(c)) for m, c in rows if m]
             if metric == "top_months":
                 total = sum(c for _, c in months) or 1
                 top = sorted(months, key=lambda mc: -mc[1])[:10]
@@ -2450,20 +2456,22 @@ def tool_order_analytics(metric: str) -> str:
             )
 
         if metric == "aov_by_year":
+            pb = period_bucket(db, Order.order_purchase_timestamp, "%Y")
             rows = (
                 db.query(
-                    func.strftime("%Y", Order.order_purchase_timestamp),
+                    pb,
                     func.count(func.distinct(Order.order_id)),
                     func.sum(func.coalesce(OrderPayment.payment_value, 0.0)),
                 )
                 .outerjoin(OrderPayment, OrderPayment.order_id == Order.order_id)
                 .filter(Order.order_purchase_timestamp <= clock)
-                .group_by(func.strftime("%Y", Order.order_purchase_timestamp))
+                .group_by(pb)
                 .all()
             )
+            rows = [r for r in rows if r[0]]
             out = [f"{y}: R${float(rev or 0) / max(1, n):,.2f} AOV ({n:,} orders)" for y, n, rev in rows]
-            best = max(rows, key=lambda r: float(r[2] or 0) / max(1, r[1]))
-            return "Average order value by year: " + " | ".join(out) + f". Highest: {best[0]}"
+            best = max(rows, key=lambda r: float(r[2] or 0) / max(1, r[1])) if rows else ("N/A", 0, 0)
+            return "Average order value by year: " + (" | ".join(out) if out else "none") + f". Highest: {best[0]}"
 
         if metric == "status_breakdown":
             total = base.count() or 1
@@ -2477,13 +2485,14 @@ def tool_order_analytics(metric: str) -> str:
 
         if metric == "items_per_order":
             out = []
+            pb = period_bucket(db, Order.order_purchase_timestamp, "%Y")
             for y in ("2017", "2018"):
                 n_orders = (
                     db.query(func.count(func.distinct(OrderItem.order_id)))
                     .join(Order, Order.order_id == OrderItem.order_id)
                     .filter(
                         Order.order_purchase_timestamp <= clock,
-                        func.strftime("%Y", Order.order_purchase_timestamp) == y,
+                        pb == y,
                     )
                     .scalar()
                     or 1
@@ -2493,7 +2502,7 @@ def tool_order_analytics(metric: str) -> str:
                     .join(Order, Order.order_id == OrderItem.order_id)
                     .filter(
                         Order.order_purchase_timestamp <= clock,
-                        func.strftime("%Y", Order.order_purchase_timestamp) == y,
+                        pb == y,
                     )
                     .scalar()
                     or 0
@@ -2516,8 +2525,8 @@ def tool_order_analytics(metric: str) -> str:
                 f"{t} R${float(v or 0):,.0f} ({float(v or 0) / float(total_val) * 100:.1f}%, avg {float(a or 0):.1f}x installments)"
                 for t, v, a in sorted(rows, key=lambda r: -float(r[1] or 0))
             )
-            top_val = max(rows, key=lambda r: float(r[1] or 0))
-            top_inst = max(rows, key=lambda r: float(r[2] or 0))
+            top_val = max(rows, key=lambda r: float(r[1] or 0)) if rows else ("N/A", 0, 0)
+            top_inst = max(rows, key=lambda r: float(r[2] or 0)) if rows else ("N/A", 0, 0)
             return f"Payment methods: {parts}. Highest value: {top_val[0]}; highest avg installments: {top_inst[0]}"
 
         if metric == "multi_payment":
@@ -2542,45 +2551,54 @@ def tool_order_analytics(metric: str) -> str:
             )
 
         if metric == "quarterly_revenue":
+            pb = period_bucket(db, Order.order_purchase_timestamp, "%Y-%m")
             rows = (
                 db.query(
-                    func.strftime("%Y-%m", Order.order_purchase_timestamp),
+                    pb,
                     func.coalesce(func.sum(OrderPayment.payment_value), 0.0),
                 )
                 .outerjoin(OrderPayment, OrderPayment.order_id == Order.order_id)
                 .filter(Order.order_purchase_timestamp <= clock)
-                .group_by(func.strftime("%Y-%m", Order.order_purchase_timestamp))
+                .group_by(pb)
                 .all()
             )
             quarterly: dict = {}
             for ym, v in rows:
                 if not ym:
                     continue
-                q = f"{ym[:4]}-Q{(int(ym[5:7]) - 1) // 3 + 1}"
+                ym_str = str(ym)
+                q = f"{ym_str[:4]}-Q{(int(ym_str[5:7]) - 1) // 3 + 1}"
                 quarterly[q] = quarterly.get(q, 0.0) + float(v or 0)
             peak_q = max(quarterly, key=quarterly.get) if quarterly else "n/a"
             parts = ", ".join(f"{q} R${v:,.0f}" for q, v in sorted(quarterly.items()))
             return f"Quarterly revenue: {parts}. Peak quarter: {peak_q} (R${quarterly.get(peak_q, 0):,.0f})"
 
         if metric == "delivery_time_year":
-            rows = (
+            deliv_rows = (
                 db.query(
-                    func.strftime("%Y", Order.order_purchase_timestamp),
-                    func.avg(
-                        func.julianday(Order.order_delivered_customer_date)
-                        - func.julianday(Order.order_purchase_timestamp)
-                    ),
+                    Order.order_purchase_timestamp,
+                    Order.order_delivered_customer_date,
                 )
                 .filter(
                     Order.order_purchase_timestamp <= clock,
                     Order.order_status == "delivered",
                     Order.order_delivered_customer_date.isnot(None),
+                    Order.order_purchase_timestamp.isnot(None),
                 )
-                .group_by(func.strftime("%Y", Order.order_purchase_timestamp))
                 .all()
             )
-            parts = ", ".join(f"{y} {float(a):.1f}d" for y, a in rows if a is not None)
-            return f"Average purchase→delivery days by year (delivered orders): {parts}"
+            year_days: dict[str, list[float]] = {}
+            for purch, deliv in deliv_rows:
+                if purch and deliv and deliv >= purch:
+                    y = str(purch.year)
+                    days = (deliv - purch).total_seconds() / 86400.0
+                    year_days.setdefault(y, []).append(days)
+            parts = ", ".join(
+                f"{y} {sum(days)/len(days):.1f}d"
+                for y in sorted(year_days)
+                if year_days[y]
+            )
+            return f"Average purchase→delivery days by year (delivered orders): {parts or 'none'}"
 
         return (
             "Unknown metric. Use one of: monthly_growth, aov_by_year, status_breakdown, items_per_order, "

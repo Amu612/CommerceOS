@@ -59,7 +59,7 @@ async def lifespan(app: FastAPI):
             try:
                 from scripts.seed_nexus_data import seed_data
 
-                seed_data(db=db)
+                seed_data(db=db, seed_orders=True)
                 logger.info("db_seed_complete")
             except Exception as exc:
                 logger.warning("db_seed_failed", error=str(exc))

@@ -545,13 +545,46 @@ class DomainAgent:
             scored.sort(key=lambda s: -s[0])
 
             for _, t in scored[:2]:
+                out = None
+                # Try empty arguments first (for zero-arg metric tools)
                 try:
                     out = _as_obj(t.invoke({}))
+                except Exception:
+                    pass
+
+                # If tool expects metric argument (e.g. analytics tools), select best metric
+                if out is None and "metric" in (t.description or "").lower():
+                    desc = (t.description or "").lower()
+                    candidates = re.findall(r'["\']([a-zA-Z0-9_]+)["\']', desc)
+                    best_m, best_score = None, -1
+                    for cand in candidates:
+                        cand_words = cand.replace("_", " ").split()
+                        c_score = sum(2 for w in cand_words if w in low)
+                        if cand.replace("_", " ") in low:
+                            c_score += 5
+                        if c_score > best_score:
+                            best_score = c_score
+                            best_m = cand
+                    if best_m:
+                        try:
+                            out = _as_obj(t.invoke({"metric": best_m}))
+                        except Exception:
+                            pass
+
+                # If tool expects query parameter
+                if out is None:
+                    for arg_name in ("query", "product_id_or_keyword", "keyword"):
+                        try:
+                            out = _as_obj(t.invoke({arg_name: low}))
+                            break
+                        except Exception:
+                            pass
+
+                if out is not None:
                     lines.append(f"**{_titleize(t.name)}**:")
                     lines.extend(_render_rows(out))
                     rendered = True
-                except Exception:
-                    continue
+                    break
 
         if not rendered:
             if any(k in low for k in ("why", "explain", "cause", "reason", "matter")):

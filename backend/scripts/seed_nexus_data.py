@@ -1,46 +1,53 @@
 """
-Nexus Dataset Ingestion Script.
-Reads real Olist and DataCo transaction records from the Nexus (CommerceOS) dataset directory
-and populates the Orders Agent SQLite database.
+Nexus Dataset Ingestion Script — High Performance, Low-Memory Streaming.
+Reads real Olist and DataCo transaction records (.csv or .csv.gz) and populates
+the database with minimal memory footprint (safe for 1GB RAM EC2 free-tier instances).
 """
 
+from __future__ import annotations
+
+import contextlib
+import csv
+import gzip
 import logging
 import os
 import sys
 from datetime import UTC, datetime
-
-import pandas as pd
-from sqlalchemy.orm import Session
+from typing import Any
 
 # Add backend directory to sys.path
 backend_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if backend_dir not in sys.path:
     sys.path.insert(0, backend_dir)
 
+from sqlalchemy.orm import Session
+
 from app.database.session import SessionLocal, init_db
 from app.models.dataco import DataCoOrder, DataCoOrderItem
-from app.models.olist import Customer, Order, OrderItem, Product
+from app.models.olist import (
+    CategoryTranslation,
+    Customer,
+    Geolocation,
+    Order,
+    OrderItem,
+    OrderPayment,
+    OrderReview,
+    Product,
+    Seller,
+)
 
 logger = logging.getLogger("seed_nexus_data")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 
 
-# Dataset directory: settings.DATASET_DIR / NEXUS_DATA_DIR / DATA_DIR env, else project-relative standard locations.
 def _get_nexus_data_dirs() -> list[str]:
-    """
-    Discovers dataset directories strictly from environment variables,
-    application settings, and standard project-relative data folders.
-    Self-contained: does not depend on any hardcoded external paths or references.
-    """
     dirs: list[str] = []
 
-    # 1. Environment variables
     for env_var in ("DATASET_DIR", "NEXUS_DATA_DIR", "DATA_DIR"):
         candidate = os.environ.get(env_var)
         if candidate and os.path.isdir(candidate):
             dirs.append(candidate)
 
-    # 2. Application settings fallback
     try:
         from app.core.settings import settings
 
@@ -49,7 +56,6 @@ def _get_nexus_data_dirs() -> list[str]:
     except Exception:
         pass
 
-    # 3. Standard project-relative locations
     backend_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     project_dir = os.path.dirname(backend_dir)
     parent_dir = os.path.dirname(project_dir)
@@ -69,7 +75,6 @@ def _get_nexus_data_dirs() -> list[str]:
             ]
         )
 
-    # Filter to existing directories and preserve order without duplicates
     seen = set()
     valid_dirs = []
     for d in dirs:
@@ -86,17 +91,90 @@ def find_dataset(filename: str) -> str:
         p = os.path.join(d, filename)
         if os.path.exists(p):
             return p
-    raise FileNotFoundError(f"Dataset {filename} not found in Nexus data paths: {_get_nexus_data_dirs()}")
+        if os.path.exists(p + ".gz"):
+            return p + ".gz"
+        if filename.endswith(".csv"):
+            gz_name = filename[:-4] + ".csv.gz"
+            p_gz = os.path.join(d, gz_name)
+            if os.path.exists(p_gz):
+                return p_gz
+    raise FileNotFoundError(f"Dataset {filename} (or .gz) not found in Nexus data paths: {_get_nexus_data_dirs()}")
 
 
-def clean_val(v):
-    if pd.isna(v):
+@contextlib.contextmanager
+def open_dataset_reader(filename: str, encoding: str = "utf-8"):
+    path = find_dataset(filename)
+    if path.endswith(".gz"):
+        f = gzip.open(path, mode="rt", encoding=encoding, errors="replace")
+    else:
+        f = open(path, mode="r", encoding=encoding, errors="replace")
+    try:
+        reader = csv.DictReader(f)
+        yield reader
+    finally:
+        f.close()
+
+
+def parse_dt(v: Any) -> datetime | None:
+    if not v:
         return None
-    return v
+    s = str(v).strip()
+    if not s or s.lower() in ("nan", "none", "null", "nat"):
+        return None
+    try:
+        if len(s) == 10:
+            return datetime.strptime(s, "%Y-%m-%d").replace(tzinfo=UTC)
+        elif len(s) >= 19:
+            return datetime.strptime(s[:19], "%Y-%m-%d %H:%M:%S").replace(tzinfo=UTC)
+    except Exception:
+        pass
+    try:
+        import pandas as pd
+
+        dt = pd.to_datetime(s, errors="coerce")
+        return dt.to_pydatetime().replace(tzinfo=UTC) if pd.notna(dt) else None
+    except Exception:
+        return None
+
+
+def clean_str(v: Any, default: str | None = None) -> str | None:
+    if v is None:
+        return default
+    s = str(v).strip()
+    if not s or s.lower() in ("nan", "none", "null"):
+        return default
+    return s
+
+
+def clean_float(v: Any, default: float = 0.0) -> float:
+    try:
+        if v is None:
+            return default
+        s = str(v).strip()
+        if not s or s.lower() in ("nan", "none", "null"):
+            return default
+        return float(s)
+    except Exception:
+        return default
+
+
+def clean_int(v: Any, default: int = 0) -> int:
+    try:
+        if v is None:
+            return default
+        s = str(v).strip()
+        if not s or s.lower() in ("nan", "none", "null"):
+            return default
+        return int(float(s))
+    except Exception:
+        return default
 
 
 def seed_data(
-    db: Session = None, olist_limit: int = 25000, dataco_limit: int = 8000, seed_orders: bool = False
+    db: Session | None = None,
+    olist_limit: int | None = None,
+    dataco_limit: int | None = 15000,
+    seed_orders: bool = True,
 ):
     should_close = False
     if db is None:
@@ -105,546 +183,406 @@ def seed_data(
         should_close = True
 
     try:
-        logger.info("Starting Nexus dataset ingestion into Orders Agent DB...")
+        logger.info("Starting streaming Nexus dataset ingestion into database...")
 
-        # 1. Ingest Olist Customers
-        cust_path = find_dataset("olist_customers_dataset.csv")
-        logger.info(f"Loading customers from {cust_path}...")
-        df_cust = pd.read_csv(cust_path, nrows=olist_limit)
+        # ── 1. Ingest Olist Customers ──
         existing_custs = {r[0] for r in db.query(Customer.customer_id).all()}
-        cust_records = []
-        for _, row in df_cust.iterrows():
-            cid = str(row["customer_id"])
-            if cid in existing_custs:
-                continue
-            existing_custs.add(cid)
-            cust_records.append(
-                {
-                    "customer_id": cid,
-                    "customer_unique_id": str(row["customer_unique_id"]),
-                    "customer_zip_code_prefix": int(row["customer_zip_code_prefix"]),
-                    "customer_city": str(row["customer_city"]),
-                    "customer_state": str(row["customer_state"]),
-                }
-            )
-        if cust_records:
-            db.bulk_insert_mappings(Customer, cust_records)
+        cust_batch = []
+        with open_dataset_reader("olist_customers_dataset.csv") as reader:
+            for row in reader:
+                if olist_limit and len(existing_custs) >= olist_limit:
+                    break
+                cid = clean_str(row.get("customer_id"))
+                if not cid or cid in existing_custs:
+                    continue
+                existing_custs.add(cid)
+                cust_batch.append(
+                    {
+                        "customer_id": cid,
+                        "customer_unique_id": clean_str(row.get("customer_unique_id"), cid),
+                        "customer_zip_code_prefix": clean_int(row.get("customer_zip_code_prefix")),
+                        "customer_city": clean_str(row.get("customer_city"), "unknown"),
+                        "customer_state": clean_str(row.get("customer_state"), "NA"),
+                    }
+                )
+                if len(cust_batch) >= 2000:
+                    db.bulk_insert_mappings(Customer, cust_batch)
+                    db.commit()
+                    cust_batch.clear()
+        if cust_batch:
+            db.bulk_insert_mappings(Customer, cust_batch)
             db.commit()
-            logger.info(f"Inserted {len(cust_records)} Olist customers.")
+            cust_batch.clear()
+        logger.info(f"Loaded Olist customers (total in DB: {len(existing_custs):,}).")
 
-        # 2. Ingest Olist Products
-        prod_path = find_dataset("olist_products_dataset.csv")
-        logger.info(f"Loading products from {prod_path}...")
-        df_prod = pd.read_csv(prod_path, nrows=olist_limit)
+        # ── 2. Ingest Olist Products ──
         existing_prods = {r[0] for r in db.query(Product.product_id).all()}
-        prod_records = []
-        for _, row in df_prod.iterrows():
-            pid = str(row["product_id"])
-            if pid in existing_prods:
-                continue
-            existing_prods.add(pid)
-            prod_records.append(
-                {
-                    "product_id": pid,
-                    "product_category_name": clean_val(row.get("product_category_name")),
-                    "product_name_lenght": (
-                        int(row["product_name_lenght"]) if pd.notna(row.get("product_name_lenght")) else None
-                    ),
-                    "product_description_lenght": (
-                        int(row["product_description_lenght"])
-                        if pd.notna(row.get("product_description_lenght"))
-                        else None
-                    ),
-                    "product_photos_qty": (
-                        int(row["product_photos_qty"]) if pd.notna(row.get("product_photos_qty")) else None
-                    ),
-                    "product_weight_g": (
-                        float(row["product_weight_g"]) if pd.notna(row.get("product_weight_g")) else None
-                    ),
-                    "product_length_cm": (
-                        float(row["product_length_cm"]) if pd.notna(row.get("product_length_cm")) else None
-                    ),
-                    "product_height_cm": (
-                        float(row["product_height_cm"]) if pd.notna(row.get("product_height_cm")) else None
-                    ),
-                    "product_width_cm": (
-                        float(row["product_width_cm"]) if pd.notna(row.get("product_width_cm")) else None
-                    ),
-                }
-            )
-        if prod_records:
-            db.bulk_insert_mappings(Product, prod_records)
+        prod_batch = []
+        with open_dataset_reader("olist_products_dataset.csv") as reader:
+            for row in reader:
+                pid = clean_str(row.get("product_id"))
+                if not pid or pid in existing_prods:
+                    continue
+                existing_prods.add(pid)
+                prod_batch.append(
+                    {
+                        "product_id": pid,
+                        "product_category_name": clean_str(row.get("product_category_name")),
+                        "product_name_lenght": clean_int(row.get("product_name_lenght"), None),
+                        "product_description_lenght": clean_int(row.get("product_description_lenght"), None),
+                        "product_photos_qty": clean_int(row.get("product_photos_qty"), None),
+                        "product_weight_g": clean_float(row.get("product_weight_g"), None),
+                        "product_length_cm": clean_float(row.get("product_length_cm"), None),
+                        "product_height_cm": clean_float(row.get("product_height_cm"), None),
+                        "product_width_cm": clean_float(row.get("product_width_cm"), None),
+                    }
+                )
+                if len(prod_batch) >= 2000:
+                    db.bulk_insert_mappings(Product, prod_batch)
+                    db.commit()
+                    prod_batch.clear()
+        if prod_batch:
+            db.bulk_insert_mappings(Product, prod_batch)
             db.commit()
-            logger.info(f"Inserted {len(prod_records)} Olist products.")
+            prod_batch.clear()
+        logger.info(f"Loaded Olist products (total in DB: {len(existing_prods):,}).")
 
-        # 3. Ingest Olist Sellers (FK target for order_items).
+        # ── 3. Ingest Olist Sellers ──
+        existing_sellers = {r[0] for r in db.query(Seller.seller_id).all()}
+        sell_batch = []
+        with open_dataset_reader("olist_sellers_dataset.csv") as reader:
+            for row in reader:
+                sid = clean_str(row.get("seller_id"))
+                if not sid or sid in existing_sellers:
+                    continue
+                existing_sellers.add(sid)
+                sell_batch.append(
+                    {
+                        "seller_id": sid,
+                        "seller_zip_code_prefix": clean_int(row.get("seller_zip_code_prefix")),
+                        "seller_city": clean_str(row.get("seller_city"), "unknown"),
+                        "seller_state": clean_str(row.get("seller_state"), "NA"),
+                    }
+                )
+                if len(sell_batch) >= 2000:
+                    db.bulk_insert_mappings(Seller, sell_batch)
+                    db.commit()
+                    sell_batch.clear()
+        if sell_batch:
+            db.bulk_insert_mappings(Seller, sell_batch)
+            db.commit()
+            sell_batch.clear()
+        logger.info(f"Loaded Olist sellers (total in DB: {len(existing_sellers):,}).")
+
+        # ── 4. Category Translations ──
         try:
-            from app.models.olist import Seller
-
-            sell_path = find_dataset("olist_sellers_dataset.csv")
-            df_sell = pd.read_csv(sell_path)
-            existing_sellers = {r[0] for r in db.query(Seller.seller_id).all()}
-            sell_records = [
-                {
-                    "seller_id": str(r["seller_id"]),
-                    "seller_zip_code_prefix": (
-                        int(r["seller_zip_code_prefix"]) if pd.notna(r.get("seller_zip_code_prefix")) else 0
-                    ),
-                    "seller_city": str(r.get("seller_city") or "unknown"),
-                    "seller_state": str(r.get("seller_state") or "NA"),
-                }
-                for _, r in df_sell.iterrows()
-                if str(r["seller_id"]) not in existing_sellers
-            ]
-            if sell_records:
-                db.bulk_insert_mappings(Seller, sell_records)
+            existing_ct = {r[0] for r in db.query(CategoryTranslation.product_category_name).all()}
+            ct_batch = []
+            with open_dataset_reader("product_category_name_translation.csv") as reader:
+                for row in reader:
+                    pt = clean_str(row.get("product_category_name"))
+                    en = clean_str(row.get("product_category_name_english"))
+                    if pt and pt not in existing_ct:
+                        existing_ct.add(pt)
+                        ct_batch.append(
+                            {
+                                "product_category_name": pt,
+                                "product_category_name_english": en or pt,
+                            }
+                        )
+            if ct_batch:
+                db.bulk_insert_mappings(CategoryTranslation, ct_batch)
                 db.commit()
-                logger.info(f"Inserted {len(sell_records)} Olist sellers.")
+            logger.info(f"Loaded category translations ({len(existing_ct)} categories).")
         except Exception as e:
-            logger.warning(f"Seller seed skipped: {e}")
+            logger.warning(f"Category translation seed note: {e}")
 
-        # If seed_orders is False, finish after dimension tables (Customers, Products, Sellers)
-        # Orders will stream dynamically into the database through the Ingestion Engine button controls
+        # ── 5. Ingest Geolocation Reference (Aggregated by unique ZIP prefix for 3D Route Intelligence) ──
+        try:
+            geo_count = db.query(Geolocation.id).count()
+            if geo_count == 0:
+                logger.info("Aggregating unique geolocation ZIP prefixes from olist_geolocation_dataset.csv...")
+                geo_map: dict[int, dict[str, Any]] = {}
+                with open_dataset_reader("olist_geolocation_dataset.csv") as reader:
+                    for row in reader:
+                        pfx = clean_int(row.get("geolocation_zip_code_prefix"))
+                        if pfx and pfx not in geo_map:
+                            geo_map[pfx] = {
+                                "geolocation_zip_code_prefix": pfx,
+                                "geolocation_lat": clean_float(row.get("geolocation_lat")),
+                                "geolocation_lng": clean_float(row.get("geolocation_lng")),
+                                "geolocation_city": clean_str(row.get("geolocation_city"), "unknown"),
+                                "geolocation_state": clean_str(row.get("geolocation_state"), "NA"),
+                            }
+                if geo_map:
+                    records = list(geo_map.values())
+                    for i in range(0, len(records), 2000):
+                        db.bulk_insert_mappings(Geolocation, records[i : i + 2000])
+                        db.commit()
+                    logger.info(f"Inserted {len(records):,} Geolocation reference coordinates.")
+            else:
+                logger.info(f"Geolocation table already has {geo_count:,} coordinates.")
+        except Exception as e:
+            logger.warning(f"Geolocation seed note: {e}")
+
         if not seed_orders:
-            logger.info(
-                "Static dimensions seeded (Customers, Products, Sellers). Skipping orders table: streaming runs via Ingestion Engine button controls."
-            )
+            logger.info("seed_orders is False — static dimensions seeded. Skipping orders.")
             return
 
-        # 4. Ingest Olist Orders (Only when seed_orders is True)
-        orders_path = find_dataset("olist_orders_dataset.csv")
-        logger.info(f"Loading orders from {orders_path}...")
-        df_orders = pd.read_csv(orders_path, nrows=olist_limit)
-        for col in [
-            "order_purchase_timestamp",
-            "order_approved_at",
-            "order_delivered_carrier_date",
-            "order_delivered_customer_date",
-            "order_estimated_delivery_date",
-        ]:
-            df_orders[col] = pd.to_datetime(df_orders[col], errors="coerce")
-
+        # ── 6. Ingest Olist Orders ──
         existing_orders = {r[0] for r in db.query(Order.order_id).all()}
-        valid_customers = {r[0] for r in db.query(Customer.customer_id).all()}
-
-        order_records = []
-        for _, row in df_orders.iterrows():
-            oid = str(row["order_id"])
-            cid = str(row["customer_id"])
-            if oid in existing_orders:
-                continue
-            if cid not in valid_customers:
-                # Add placeholder customer so foreign key satisfies
-                valid_customers.add(cid)
-                db.add(
-                    Customer(
-                        customer_id=cid,
-                        customer_unique_id=cid,
-                        customer_zip_code_prefix=1000,
-                        customer_city="Sao Paulo",
-                        customer_state="SP",
+        order_batch = []
+        with open_dataset_reader("olist_orders_dataset.csv") as reader:
+            for row in reader:
+                if olist_limit and len(existing_orders) >= olist_limit:
+                    break
+                oid = clean_str(row.get("order_id"))
+                if not oid or oid in existing_orders:
+                    continue
+                cid = clean_str(row.get("customer_id"))
+                if cid and cid not in existing_custs:
+                    existing_custs.add(cid)
+                    db.add(
+                        Customer(
+                            customer_id=cid,
+                            customer_unique_id=cid,
+                            customer_zip_code_prefix=1000,
+                            customer_city="Sao Paulo",
+                            customer_state="SP",
+                        )
                     )
+                    db.commit()
+
+                purch_dt = parse_dt(row.get("order_purchase_timestamp")) or datetime.now(UTC)
+                existing_orders.add(oid)
+                order_batch.append(
+                    {
+                        "order_id": oid,
+                        "customer_id": cid,
+                        "order_status": clean_str(row.get("order_status"), "delivered"),
+                        "order_purchase_timestamp": purch_dt,
+                        "order_approved_at": parse_dt(row.get("order_approved_at")),
+                        "order_delivered_carrier_date": parse_dt(row.get("order_delivered_carrier_date")),
+                        "order_delivered_customer_date": parse_dt(row.get("order_delivered_customer_date")),
+                        "order_estimated_delivery_date": parse_dt(row.get("order_estimated_delivery_date")) or purch_dt,
+                    }
                 )
-                db.commit()
-
-            existing_orders.add(oid)
-            order_records.append(
-                {
-                    "order_id": oid,
-                    "customer_id": cid,
-                    "order_status": str(row["order_status"]),
-                    "order_purchase_timestamp": (
-                        row["order_purchase_timestamp"].to_pydatetime()
-                        if pd.notna(row["order_purchase_timestamp"])
-                        else datetime.now(UTC)
-                    ),
-                    "order_approved_at": (
-                        row["order_approved_at"].to_pydatetime()
-                        if pd.notna(row["order_approved_at"])
-                        else None
-                    ),
-                    "order_delivered_carrier_date": (
-                        row["order_delivered_carrier_date"].to_pydatetime()
-                        if pd.notna(row["order_delivered_carrier_date"])
-                        else None
-                    ),
-                    "order_delivered_customer_date": (
-                        row["order_delivered_customer_date"].to_pydatetime()
-                        if pd.notna(row["order_delivered_customer_date"])
-                        else None
-                    ),
-                    "order_estimated_delivery_date": (
-                        row["order_estimated_delivery_date"].to_pydatetime()
-                        if pd.notna(row["order_estimated_delivery_date"])
-                        else datetime.now(UTC)
-                    ),
-                }
-            )
-
-        if order_records:
-            db.bulk_insert_mappings(Order, order_records)
+                if len(order_batch) >= 2000:
+                    db.bulk_insert_mappings(Order, order_batch)
+                    db.commit()
+                    order_batch.clear()
+        if order_batch:
+            db.bulk_insert_mappings(Order, order_batch)
             db.commit()
-            logger.info(f"Inserted {len(order_records)} Olist orders.")
+            order_batch.clear()
+        logger.info(f"Loaded Olist orders (total in DB: {len(existing_orders):,}).")
 
-        # 4. Ingest Olist Order Items
-        items_path = find_dataset("olist_order_items_dataset.csv")
-        logger.info(f"Loading order items from {items_path}...")
-        df_items = pd.read_csv(items_path, nrows=olist_limit * 4)
-        df_items["shipping_limit_date"] = pd.to_datetime(df_items["shipping_limit_date"], errors="coerce")
-
+        # ── 7. Ingest Olist Order Items ──
         existing_items = {(r[0], r[1]) for r in db.query(OrderItem.order_id, OrderItem.order_item_id).all()}
-        valid_orders = {r[0] for r in db.query(Order.order_id).all()}
+        item_batch = []
+        with open_dataset_reader("olist_order_items_dataset.csv") as reader:
+            for row in reader:
+                oid = clean_str(row.get("order_id"))
+                seq = clean_int(row.get("order_item_id"), 1)
+                if not oid or oid not in existing_orders or (oid, seq) in existing_items:
+                    continue
+                pid = clean_str(row.get("product_id"))
+                if pid and pid not in existing_prods:
+                    existing_prods.add(pid)
+                    db.add(Product(product_id=pid, product_category_name="general"))
+                    db.commit()
+                sid = clean_str(row.get("seller_id"))
+                if sid and sid not in existing_sellers:
+                    existing_sellers.add(sid)
+                    db.add(
+                        Seller(
+                            seller_id=sid,
+                            seller_zip_code_prefix=0,
+                            seller_city="unknown",
+                            seller_state="NA",
+                        )
+                    )
+                    db.commit()
 
-        item_records = []
-        for _, row in df_items.iterrows():
-            oid = str(row["order_id"])
-            item_seq = int(row["order_item_id"])
-            if (oid, item_seq) in existing_items or oid not in valid_orders:
-                continue
-            existing_items.add((oid, item_seq))
-            item_records.append(
-                {
-                    "order_id": oid,
-                    "order_item_id": item_seq,
-                    "product_id": str(row["product_id"]),
-                    "seller_id": str(row["seller_id"]),
-                    "shipping_limit_date": (
-                        row["shipping_limit_date"].to_pydatetime()
-                        if pd.notna(row["shipping_limit_date"])
-                        else datetime.now(UTC)
-                    ),
-                    "price": float(row["price"]) if pd.notna(row.get("price")) else 0.0,
-                    "freight_value": (
-                        float(row["freight_value"]) if pd.notna(row.get("freight_value")) else 0.0
-                    ),
-                }
-            )
-
-        if item_records:
-            # Ensure every referenced product + seller exists (Postgres enforces FKs).
-            from app.models.olist import Seller
-
-            existing_prods = {r[0] for r in db.query(Product.product_id).all()}
-            existing_sellers = {r[0] for r in db.query(Seller.seller_id).all()}
-            missing_prods = {r["product_id"] for r in item_records} - existing_prods
-            missing_sellers = {r["seller_id"] for r in item_records} - existing_sellers
-            if missing_prods:
-                db.bulk_insert_mappings(
-                    Product, [{"product_id": p, "product_category_name": "general"} for p in missing_prods]
+                existing_items.add((oid, seq))
+                item_batch.append(
+                    {
+                        "order_id": oid,
+                        "order_item_id": seq,
+                        "product_id": pid,
+                        "seller_id": sid,
+                        "shipping_limit_date": parse_dt(row.get("shipping_limit_date")) or datetime.now(UTC),
+                        "price": clean_float(row.get("price")),
+                        "freight_value": clean_float(row.get("freight_value")),
+                    }
                 )
-            if missing_sellers:
-                db.bulk_insert_mappings(
-                    Seller,
-                    [
-                        {
-                            "seller_id": s,
-                            "seller_zip_code_prefix": 0,
-                            "seller_city": "unknown",
-                            "seller_state": "NA",
-                        }
-                        for s in missing_sellers
-                    ],
-                )
+                if len(item_batch) >= 2000:
+                    db.bulk_insert_mappings(OrderItem, item_batch)
+                    db.commit()
+                    item_batch.clear()
+        if item_batch:
+            db.bulk_insert_mappings(OrderItem, item_batch)
             db.commit()
-            db.bulk_insert_mappings(OrderItem, item_records)
-            db.commit()
-            logger.info(
-                f"Inserted {len(item_records)} Olist order items (+{len(missing_prods)} products, +{len(missing_sellers)} sellers)."
-            )
+            item_batch.clear()
+        logger.info(f"Loaded Olist order items (total in DB: {len(existing_items):,}).")
 
-        # 4b. Category translation (Portuguese -> English) — powers product search / pricing.
+        # ── 8. Ingest Olist Order Payments ──
         try:
-            from app.models.olist import CategoryTranslation
-
-            ct_path = find_dataset("product_category_name_translation.csv")
-            df_ct = pd.read_csv(ct_path)
-            existing_ct = {r[0] for r in db.query(CategoryTranslation.product_category_name).all()}
-            ct_records = [
-                {
-                    "product_category_name": str(r["product_category_name"]),
-                    "product_category_name_english": str(r["product_category_name_english"]),
-                }
-                for _, r in df_ct.iterrows()
-                if str(r["product_category_name"]) not in existing_ct
-            ]
-            if ct_records:
-                db.bulk_insert_mappings(CategoryTranslation, ct_records)
-                db.commit()
-                logger.info(f"Inserted {len(ct_records)} category translations.")
-        except Exception as e:
-            logger.warning(f"Category translation seed skipped: {e}")
-
-        # 4c. Order payments — real billing data (removes hardcoded order-total fallbacks).
-        try:
-            from app.models.olist import OrderPayment
-
-            pay_path = find_dataset("olist_order_payments_dataset.csv")
-            df_pay = pd.read_csv(pay_path, nrows=olist_limit * 3)
-            valid_orders = {r[0] for r in db.query(Order.order_id).all()}
             existing_pay = {
                 (r[0], r[1]) for r in db.query(OrderPayment.order_id, OrderPayment.payment_sequential).all()
             }
-            pay_records = []
-            for _, row in df_pay.iterrows():
-                oid = str(row["order_id"])
-                seq = int(row["payment_sequential"])
-                if oid not in valid_orders or (oid, seq) in existing_pay:
-                    continue
-                existing_pay.add((oid, seq))
-                pay_records.append(
-                    {
-                        "order_id": oid,
-                        "payment_sequential": seq,
-                        "payment_type": str(row.get("payment_type") or "credit_card"),
-                        "payment_installments": (
-                            int(row["payment_installments"])
-                            if pd.notna(row.get("payment_installments"))
-                            else 1
-                        ),
-                        "payment_value": (
-                            float(row["payment_value"]) if pd.notna(row.get("payment_value")) else 0.0
-                        ),
-                    }
-                )
-            if pay_records:
-                db.bulk_insert_mappings(OrderPayment, pay_records)
+            pay_batch = []
+            with open_dataset_reader("olist_order_payments_dataset.csv") as reader:
+                for row in reader:
+                    oid = clean_str(row.get("order_id"))
+                    seq = clean_int(row.get("payment_sequential"), 1)
+                    if not oid or oid not in existing_orders or (oid, seq) in existing_pay:
+                        continue
+                    existing_pay.add((oid, seq))
+                    pay_batch.append(
+                        {
+                            "order_id": oid,
+                            "payment_sequential": seq,
+                            "payment_type": clean_str(row.get("payment_type"), "credit_card"),
+                            "payment_installments": clean_int(row.get("payment_installments"), 1),
+                            "payment_value": clean_float(row.get("payment_value")),
+                        }
+                    )
+                    if len(pay_batch) >= 2000:
+                        db.bulk_insert_mappings(OrderPayment, pay_batch)
+                        db.commit()
+                        pay_batch.clear()
+            if pay_batch:
+                db.bulk_insert_mappings(OrderPayment, pay_batch)
                 db.commit()
-                logger.info(f"Inserted {len(pay_records)} order payments.")
+                pay_batch.clear()
+            logger.info(f"Loaded Olist order payments (total in DB: {len(existing_pay):,}).")
         except Exception as e:
-            logger.warning(f"Order payment seed skipped: {e}")
+            logger.warning(f"Order payment seed note: {e}")
 
-        # 4d. Order reviews — real CSAT / sentiment data.
+        # ── 9. Ingest Olist Order Reviews ──
         try:
-            from app.models.olist import OrderReview
-
-            rev_path = find_dataset("olist_order_reviews_dataset.csv")
-            df_rev = pd.read_csv(rev_path, nrows=olist_limit * 4)
-            for col in ("review_creation_date", "review_answer_timestamp"):
-                df_rev[col] = pd.to_datetime(df_rev[col], errors="coerce")
-            valid_orders = {r[0] for r in db.query(Order.order_id).all()}
             existing_rev = {(r[0], r[1]) for r in db.query(OrderReview.review_id, OrderReview.order_id).all()}
-            rev_records = []
-            for _, row in df_rev.iterrows():
-                rid, oid = str(row["review_id"]), str(row["order_id"])
-                if oid not in valid_orders or (rid, oid) in existing_rev:
-                    continue
-                existing_rev.add((rid, oid))
-                rev_records.append(
-                    {
-                        "review_id": rid,
-                        "order_id": oid,
-                        "review_score": int(row["review_score"]) if pd.notna(row.get("review_score")) else 3,
-                        "review_comment_title": clean_val(row.get("review_comment_title")),
-                        "review_comment_message": clean_val(row.get("review_comment_message")),
-                        "review_creation_date": (
-                            row["review_creation_date"].to_pydatetime()
-                            if pd.notna(row["review_creation_date"])
-                            else datetime.now(UTC)
-                        ),
-                        "review_answer_timestamp": (
-                            row["review_answer_timestamp"].to_pydatetime()
-                            if pd.notna(row["review_answer_timestamp"])
-                            else None
-                        ),
-                    }
-                )
-            if rev_records:
-                db.bulk_insert_mappings(OrderReview, rev_records)
+            rev_batch = []
+            with open_dataset_reader("olist_order_reviews_dataset.csv") as reader:
+                for row in reader:
+                    rid = clean_str(row.get("review_id"))
+                    oid = clean_str(row.get("order_id"))
+                    if not rid or not oid or oid not in existing_orders or (rid, oid) in existing_rev:
+                        continue
+                    existing_rev.add((rid, oid))
+                    rev_batch.append(
+                        {
+                            "review_id": rid,
+                            "order_id": oid,
+                            "review_score": clean_int(row.get("review_score"), 3),
+                            "review_comment_title": clean_str(row.get("review_comment_title")),
+                            "review_comment_message": clean_str(row.get("review_comment_message")),
+                            "review_creation_date": parse_dt(row.get("review_creation_date")) or datetime.now(UTC),
+                            "review_answer_timestamp": parse_dt(row.get("review_answer_timestamp")),
+                        }
+                    )
+                    if len(rev_batch) >= 2000:
+                        db.bulk_insert_mappings(OrderReview, rev_batch)
+                        db.commit()
+                        rev_batch.clear()
+            if rev_batch:
+                db.bulk_insert_mappings(OrderReview, rev_batch)
                 db.commit()
-                logger.info(f"Inserted {len(rev_records)} order reviews.")
+                rev_batch.clear()
+            logger.info(f"Loaded Olist order reviews (total in DB: {len(existing_rev):,}).")
         except Exception as e:
-            logger.warning(f"Order review seed skipped: {e}")
+            logger.warning(f"Order review seed note: {e}")
 
-        # 5. Ingest DataCo Orders
+        # ── 10. Ingest DataCo Orders ──
         try:
-            dataco_path = find_dataset("DataCoSupplyChainDataset.csv")
-            logger.info(f"Loading DataCo supply chain orders from {dataco_path}...")
-            usecols = [
-                "Order Id",
-                "Order Item Id",
-                "Order Customer Id",
-                "Customer Segment",
-                "Customer City",
-                "Customer State",
-                "Customer Country",
-                "Market",
-                "Order Region",
-                "Order Country",
-                "Order City",
-                "order date (DateOrders)",
-                "shipping date (DateOrders)",
-                "Order Status",
-                "Shipping Mode",
-                "Delivery Status",
-                "Late_delivery_risk",
-                "Days for shipping (real)",
-                "Days for shipment (scheduled)",
-                "Type",
-                "Order Profit Per Order",
-                "Product Card Id",
-                "Product Name",
-                "Category Id",
-                "Category Name",
-                "Department Id",
-                "Department Name",
-                "Product Price",
-                "Order Item Quantity",
-                "Sales",
-                "Order Item Discount",
-                "Order Item Discount Rate",
-                "Order Item Total",
-                "Order Item Profit Ratio",
-            ]
-            df_dc = pd.read_csv(dataco_path, usecols=usecols, nrows=dataco_limit, encoding="latin1")
-            df_dc["order date (DateOrders)"] = pd.to_datetime(
-                df_dc["order date (DateOrders)"], errors="coerce"
-            )
-            df_dc["shipping date (DateOrders)"] = pd.to_datetime(
-                df_dc["shipping date (DateOrders)"], errors="coerce"
-            )
-
             existing_dc_orders = {r[0] for r in db.query(DataCoOrder.order_id).all()}
             existing_dc_items = {r[0] for r in db.query(DataCoOrderItem.order_item_id).all()}
             dc_order_map = {}
-            dc_item_records = []
+            dc_item_batch = []
 
-            for _, row in df_dc.iterrows():
-                oid = int(row["Order Id"])
-                if oid not in existing_dc_orders:
-                    if oid not in dc_order_map:
-                        order_dt = (
-                            row["order date (DateOrders)"].to_pydatetime()
-                            if pd.notna(row["order date (DateOrders)"])
-                            else datetime.now(UTC)
-                        )
-                        ship_dt = (
-                            row["shipping date (DateOrders)"].to_pydatetime()
-                            if pd.notna(row["shipping date (DateOrders)"])
-                            else None
-                        )
+            with open_dataset_reader("DataCoSupplyChainDataset.csv", encoding="latin1") as reader:
+                for row in reader:
+                    if dataco_limit and len(existing_dc_orders) + len(dc_order_map) >= dataco_limit:
+                        break
+                    oid_raw = row.get("Order Id")
+                    if not oid_raw:
+                        continue
+                    oid = clean_int(oid_raw)
+                    item_id = clean_int(row.get("Order Item Id"))
+                    if not oid or not item_id:
+                        continue
+
+                    if oid not in existing_dc_orders and oid not in dc_order_map:
+                        order_dt = parse_dt(row.get("order date (DateOrders)")) or datetime.now(UTC)
+                        ship_dt = parse_dt(row.get("shipping date (DateOrders)"))
                         dc_order_map[oid] = {
                             "order_id": oid,
-                            "customer_id": (
-                                int(row["Order Customer Id"]) if pd.notna(row.get("Order Customer Id")) else 0
-                            ),
-                            "customer_segment": clean_val(row.get("Customer Segment")),
-                            "customer_city": clean_val(row.get("Customer City")),
-                            "customer_state": clean_val(row.get("Customer State")),
-                            "customer_country": clean_val(row.get("Customer Country")),
-                            "market": clean_val(row.get("Market")),
-                            "order_region": clean_val(row.get("Order Region")),
-                            "order_country": clean_val(row.get("Order Country")),
-                            "order_city": clean_val(row.get("Order City")),
+                            "customer_id": clean_int(row.get("Order Customer Id")),
+                            "customer_segment": clean_str(row.get("Customer Segment")),
+                            "customer_city": clean_str(row.get("Customer City")),
+                            "customer_state": clean_str(row.get("Customer State")),
+                            "customer_country": clean_str(row.get("Customer Country")),
+                            "market": clean_str(row.get("Market")),
+                            "order_region": clean_str(row.get("Order Region")),
+                            "order_country": clean_str(row.get("Order Country")),
+                            "order_city": clean_str(row.get("Order City")),
                             "order_date": order_dt,
                             "shipping_date": ship_dt,
-                            "order_status": str(row.get("Order Status") or "COMPLETE").strip(),
-                            "shipping_mode": str(row.get("Shipping Mode") or "Standard Class").strip(),
-                            "delivery_status": str(row.get("Delivery Status") or "Standard").strip(),
-                            "late_delivery_risk": (
-                                int(row["Late_delivery_risk"])
-                                if pd.notna(row.get("Late_delivery_risk"))
-                                else 0
-                            ),
-                            "days_for_shipping_real": (
-                                float(row["Days for shipping (real)"])
-                                if pd.notna(row.get("Days for shipping (real)"))
-                                else None
-                            ),
-                            "days_for_shipment_scheduled": (
-                                float(row["Days for shipment (scheduled)"])
-                                if pd.notna(row.get("Days for shipment (scheduled)"))
-                                else None
-                            ),
-                            "payment_type": clean_val(row.get("Type")),
-                            "order_total": (
-                                float(row["Order Item Total"])
-                                if pd.notna(row.get("Order Item Total"))
-                                else 0.0
-                            ),
-                            "order_profit": (
-                                float(row["Order Profit Per Order"])
-                                if pd.notna(row.get("Order Profit Per Order"))
-                                else 0.0
-                            ),
+                            "order_status": clean_str(row.get("Order Status"), "COMPLETE"),
+                            "shipping_mode": clean_str(row.get("Shipping Mode"), "Standard Class"),
+                            "delivery_status": clean_str(row.get("Delivery Status"), "Standard"),
+                            "late_delivery_risk": clean_int(row.get("Late_delivery_risk"), 0),
+                            "days_for_shipping_real": clean_float(row.get("Days for shipping (real)"), None),
+                            "days_for_shipment_scheduled": clean_float(row.get("Days for shipment (scheduled)"), None),
+                            "payment_type": clean_str(row.get("Type")),
+                            "order_total": clean_float(row.get("Order Item Total")),
+                            "order_profit": clean_float(row.get("Order Profit Per Order")),
                             "source": "dataco",
                         }
-                    else:
-                        dc_order_map[oid]["order_total"] += (
-                            float(row["Order Item Total"]) if pd.notna(row.get("Order Item Total")) else 0.0
-                        )
-                        dc_order_map[oid]["order_profit"] += (
-                            float(row["Order Profit Per Order"])
-                            if pd.notna(row.get("Order Profit Per Order"))
-                            else 0.0
-                        )
+                    elif oid in dc_order_map:
+                        dc_order_map[oid]["order_total"] += clean_float(row.get("Order Item Total"))
+                        dc_order_map[oid]["order_profit"] += clean_float(row.get("Order Profit Per Order"))
 
-                item_id = int(row["Order Item Id"])
-                if item_id not in existing_dc_items:
-                    existing_dc_items.add(item_id)
-                    dc_item_records.append(
-                        {
-                            "order_item_id": item_id,
-                            "order_id": oid,
-                            "product_card_id": int(row["Product Card Id"]),
-                            "product_name": str(row.get("Product Name") or ""),
-                            "category_id": (
-                                int(row["Category Id"]) if pd.notna(row.get("Category Id")) else None
-                            ),
-                            "category_name": str(row.get("Category Name") or ""),
-                            "department_id": (
-                                int(row["Department Id"]) if pd.notna(row.get("Department Id")) else None
-                            ),
-                            "department_name": str(row.get("Department Name") or ""),
-                            "product_price": (
-                                float(row["Product Price"]) if pd.notna(row.get("Product Price")) else 0.0
-                            ),
-                            "order_item_quantity": (
-                                int(row["Order Item Quantity"])
-                                if pd.notna(row.get("Order Item Quantity"))
-                                else 1
-                            ),
-                            "sales": float(row["Sales"]) if pd.notna(row.get("Sales")) else 0.0,
-                            "order_item_discount": (
-                                float(row["Order Item Discount"])
-                                if pd.notna(row.get("Order Item Discount"))
-                                else 0.0
-                            ),
-                            "order_item_discount_rate": (
-                                float(row["Order Item Discount Rate"])
-                                if pd.notna(row.get("Order Item Discount Rate"))
-                                else 0.0
-                            ),
-                            "order_item_total": (
-                                float(row["Order Item Total"])
-                                if pd.notna(row.get("Order Item Total"))
-                                else 0.0
-                            ),
-                            "order_item_profit_ratio": (
-                                float(row["Order Item Profit Ratio"])
-                                if pd.notna(row.get("Order Item Profit Ratio"))
-                                else 0.0
-                            ),
-                            "order_profit_per_order": (
-                                float(row["Order Profit Per Order"])
-                                if pd.notna(row.get("Order Profit Per Order"))
-                                else 0.0
-                            ),
-                        }
-                    )
+                    if item_id not in existing_dc_items:
+                        existing_dc_items.add(item_id)
+                        dc_item_batch.append(
+                            {
+                                "order_item_id": item_id,
+                                "order_id": oid,
+                                "product_card_id": clean_int(row.get("Product Card Id")),
+                                "product_name": clean_str(row.get("Product Name"), ""),
+                                "category_id": clean_int(row.get("Category Id"), None),
+                                "category_name": clean_str(row.get("Category Name"), ""),
+                                "department_id": clean_int(row.get("Department Id"), None),
+                                "department_name": clean_str(row.get("Department Name"), ""),
+                                "product_price": clean_float(row.get("Product Price")),
+                                "order_item_quantity": clean_int(row.get("Order Item Quantity"), 1),
+                                "sales": clean_float(row.get("Sales")),
+                                "order_item_discount": clean_float(row.get("Order Item Discount")),
+                                "order_item_discount_rate": clean_float(row.get("Order Item Discount Rate")),
+                                "order_item_total": clean_float(row.get("Order Item Total")),
+                                "order_item_profit_ratio": clean_float(row.get("Order Item Profit Ratio")),
+                                "order_profit_per_order": clean_float(row.get("Order Profit Per Order")),
+                            }
+                        )
 
             if dc_order_map:
-                db.bulk_insert_mappings(DataCoOrder, list(dc_order_map.values()))
-                db.commit()
-                logger.info(f"Inserted {len(dc_order_map)} DataCo orders.")
+                records = list(dc_order_map.values())
+                for i in range(0, len(records), 2000):
+                    db.bulk_insert_mappings(DataCoOrder, records[i : i + 2000])
+                    db.commit()
+                logger.info(f"Loaded {len(records):,} DataCo orders.")
 
-            if dc_item_records:
-                db.bulk_insert_mappings(DataCoOrderItem, dc_item_records)
-                db.commit()
-                logger.info(f"Inserted {len(dc_item_records)} DataCo order items.")
+            if dc_item_batch:
+                for i in range(0, len(dc_item_batch), 2000):
+                    db.bulk_insert_mappings(DataCoOrderItem, dc_item_batch[i : i + 2000])
+                    db.commit()
+                logger.info(f"Loaded {len(dc_item_batch):,} DataCo order items.")
         except Exception as e:
-            logger.warning(f"DataCo ingestion skipped or failed: {e}")
+            logger.warning(f"DataCo ingestion note: {e}")
 
-        logger.info("Nexus dataset ingestion complete! Orders Agent database is ready.")
+        logger.info("Dataset ingestion successfully completed! All tables ready.")
 
     except Exception as e:
         logger.error(f"Ingestion error: {e}", exc_info=True)
@@ -656,10 +594,5 @@ def seed_data(
             db.close()
 
 
-valid_prods_cache = set()
-
 if __name__ == "__main__":
-    import sys
-
-    seed_orders_flag = "--orders" in sys.argv or "--all" in sys.argv
-    seed_data(seed_orders=seed_orders_flag)
+    seed_data(seed_orders=True)

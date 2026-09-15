@@ -47,8 +47,9 @@ client_secret*.json
 *.db-shm
 *.sqlite
 *.sqlite3
-backend/data/raw/
+backend/data/raw/*.csv
 backend/data/processed/
+!backend/data/raw/*.csv.gz
 !backend/data/.gitkeep
 
 # ── Logs ─────────────────────────────────────────────────
