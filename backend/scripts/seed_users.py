@@ -12,6 +12,7 @@ from __future__ import annotations
 import sys
 
 from app.core.logging import configure_logging, get_logger
+from app.core.security import hash_password
 from app.core.settings import settings
 from app.database.session import SessionLocal, init_db
 from app.models.security import User, UserRole
@@ -37,7 +38,12 @@ def seed_users() -> int:
     created = 0
     try:
         for username, email, role in _USERS:
-            if db.query(User).filter(User.username == username).first():
+            existing = db.query(User).filter(User.username == username).first()
+            if existing:
+                existing.hashed_password = hash_password(settings.SEED_ADMIN_PASSWORD)
+                existing.is_active = True
+                db.commit()
+                logger.info("user_password_synced", username=username, role=role.value)
                 continue
             create_user(db, username=username, email=email, password=settings.SEED_ADMIN_PASSWORD, role=role)
             created += 1

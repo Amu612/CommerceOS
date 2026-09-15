@@ -26,7 +26,12 @@ export default function Login() {
     try {
       await login(username.trim(), password);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Sign-in failed");
+      const msg = err instanceof Error ? err.message : "Sign-in failed";
+      if (msg.includes("Failed to fetch") || msg.includes("NetworkError") || msg.includes("Load failed")) {
+        setError("Network error: Unable to reach backend server. Please verify the backend container is running and reachable.");
+      } else {
+        setError(msg);
+      }
     } finally {
       setBusy(false);
     }
@@ -84,14 +89,19 @@ export default function Login() {
         </button>
 
         <div className="login-roles">
-          <p className="login-roles-label">Seeded roles — click to fill username</p>
+          <p className="login-roles-label">
+            Seeded roles &bull; Default password: <code style={{ color: "var(--accent-gold)", fontWeight: 600, userSelect: "all" }}>CommerceOS2026!</code>
+          </p>
           <div className="login-role-chips">
             {SEEDED_ROLES.map((role) => (
               <button
                 type="button"
                 key={role}
                 className={`login-role-chip${username === role ? " active" : ""}`}
-                onClick={() => setUsername(role)}
+                onClick={() => {
+                  setUsername(role);
+                  if (!password) setPassword("CommerceOS2026!");
+                }}
               >
                 {role}
               </button>

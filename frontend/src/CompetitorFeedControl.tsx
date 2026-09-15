@@ -29,7 +29,9 @@ export default function CompetitorFeedControl() {
     try {
       const r = await fetch(API_ENDPOINTS.pricingCompetitorFeed.sync, { method: "POST" });
       const body = await r.json();
-      setResult(body.status === "OK" ? `Synced ${body.synced} price(s).` : body.reason || "Sync failed.");
+      setResult(
+        body.status === "OK" ? `Synced ${body.synced} price(s).` : body.reason || "Sync failed.",
+      );
     } catch {
       setResult("Sync failed.");
     } finally {
@@ -42,7 +44,6 @@ export default function CompetitorFeedControl() {
   return (
     <div className="cfc">
       <span className={"cfc-dot" + (configured ? " on" : "")} />
-      <span className="cfc-label">Competitor price feed (Apify): {configured ? "connected" : "not configured"}</span>
       {configured && (
         <button className="cfc-btn" onClick={sync} disabled={syncing}>
           {syncing ? "Syncing…" : "Sync now"}

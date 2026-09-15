@@ -80,7 +80,10 @@ export function installFetchAuth() {
   window.fetch = async (input: RequestInfo | URL, init: RequestInit = {}) => {
     const url =
       typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
-    const isApi = url.startsWith(API_BASE_URL) || url.startsWith("/api/");
+    const isApi =
+      (Boolean(API_BASE_URL) && url.startsWith(API_BASE_URL)) ||
+      url.startsWith("/api/") ||
+      url.startsWith("/health");
     if (!isApi) return original(input, init);
 
     const token = getToken();
@@ -139,13 +142,29 @@ function safeJson(t: string): any {
 }
 
 export async function login(username: string, password: string): Promise<AuthUser> {
-  const res = await fetch(`${API_BASE_URL}/api/v1/auth/login`, {
+  const loginUrl = API_BASE_URL ? `${API_BASE_URL}/api/v1/auth/login` : `/api/v1/auth/login`;
+  const res = await fetch(loginUrl, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ username, password }),
   });
-  const body = await res.json().catch(() => null);
-  if (!res.ok) throw new ApiError(body?.detail || "Invalid username or password", res.status, body);
+  const text = await res.text();
+  let body: any = null;
+  try {
+    body = text ? JSON.parse(text) : null;
+  } catch {
+    throw new ApiError(
+      `Server returned invalid response (${res.status}). Ensure backend is healthy.`,
+      res.status,
+    );
+  }
+  if (!res.ok) {
+    const detail = body?.detail || body?.message || "Invalid username or password";
+    throw new ApiError(detail, res.status, body);
+  }
+  if (!body?.access_token || !body?.user) {
+    throw new ApiError("Malformed login response from server", 500, body);
+  }
   setSession(body.access_token, body.refresh_token, body.user);
   return body.user as AuthUser;
 }
