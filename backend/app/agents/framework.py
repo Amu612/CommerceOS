@@ -513,8 +513,7 @@ class DomainAgent:
                 # Name the id and say plainly it does not exist — the answer
                 # must still reference what the user asked about.
                 lines.append(
-                    resolved.get("summary", "")
-                    or f"ID '{cand_id}' was not found in any database table."
+                    resolved.get("summary", "") or f"ID '{cand_id}' was not found in any database table."
                 )
                 rendered = True
             if resolved.get("status") == "FOUND":
