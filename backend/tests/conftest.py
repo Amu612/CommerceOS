@@ -55,6 +55,22 @@ def _prepare_db():
         db.close()
 
 
+def require_olist_data():
+    """Skip guard for tests that premise on streamed Olist data.
+
+    CI checks out no datasets (backend/data/raw is gitignored), so its
+    replay engine falls back to the small synthetic stream; tests that need
+    the real demand data skip there instead of failing artificially."""
+    from app.models.olist import Order
+
+    db = SessionLocal()
+    try:
+        if db.query(Order).count() < 300:
+            pytest.skip("requires streamed Olist dataset (synthetic stream only has ~100 orders)")
+    finally:
+        db.close()
+
+
 @pytest.fixture(scope="session")
 def super_admin() -> User:
     return User(

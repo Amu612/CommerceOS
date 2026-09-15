@@ -39,6 +39,9 @@ def test_03_triage_and_pipeline():
 
 
 def test_04_order_grounded_answer():
+    from conftest import require_olist_data
+
+    require_olist_data()
     db = SessionLocal()
     try:
         oid = _sample_order_id(db)

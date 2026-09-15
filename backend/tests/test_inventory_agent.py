@@ -5,6 +5,9 @@ from app.database.session import SessionLocal
 
 
 def test_01_inventory_tools():
+    from conftest import require_olist_data
+
+    require_olist_data()
     db = SessionLocal()
     try:
         prods = InventoryTools.query_products(db, threshold=50, limit=10)
@@ -33,6 +36,9 @@ def test_01_inventory_tools():
 
 
 def test_02_inventory_agent_monitor():
+    from conftest import require_olist_data
+
+    require_olist_data()
     db = SessionLocal()
     try:
         res: InventoryAgentResponse = inventory_agent.run_monitor(db=db, threshold=50)

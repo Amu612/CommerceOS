@@ -998,11 +998,13 @@ class ReplayEngine:
 
         for i in range(1, count + 1):
             ts = base_time + timedelta(hours=i * 2)
-            oid = f"synth_ord_{i:05d}"
-            cid = f"synth_cust_{i:04d}"
-            uid = f"synth_user_{i:04d}"
-            pid = f"synth_prod_{(i % 20) + 1:03d}"
-            sid = f"synth_seller_{(i % 10) + 1:03d}"
+            # 32-hex ids shaped like real Olist keys: every id-extraction
+            # regex / entity resolver in the platform expects that shape.
+            oid = f"{i:032x}"
+            cid = f"{100000 + i:032x}"
+            uid = f"{200000 + i:032x}"
+            pid = f"{300000 + (i % 20) + 1:032x}"
+            sid = f"{400000 + (i % 10) + 1:032x}"
             price = round(20.0 + (i * 3.5 % 300), 2)
             freight = round(10.0 + (i * 1.2 % 35), 2)
             city, state = cities[i % len(cities)]

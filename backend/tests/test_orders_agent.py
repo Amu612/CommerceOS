@@ -209,6 +209,9 @@ def test_12_processing_metrics_dynamically_populated():
 
 def test_13_query_product_and_order_intelligence():
     """Verify natural language queries work for order lookup, product search, and pipeline analytics."""
+    from conftest import require_olist_data
+
+    require_olist_data()
     client = TestClient(app)
 
     # 1. Product lookup by product ID

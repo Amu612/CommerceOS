@@ -509,6 +509,14 @@ class DomainAgent:
 
         if cand_id:
             resolved = entity_resolver.resolve_entity(cand_id)
+            if resolved.get("status") != "FOUND":
+                # Name the id and say plainly it does not exist — the answer
+                # must still reference what the user asked about.
+                lines.append(
+                    resolved.get("summary", "")
+                    or f"ID '{cand_id}' was not found in any database table."
+                )
+                rendered = True
             if resolved.get("status") == "FOUND":
                 if resolved.get("entity_type") == "order" and self.lookup_tools:
                     for t in self.lookup_tools:
