@@ -727,59 +727,61 @@ export default function DomainAgentView({
         </div>
       ))}
 
-      {/* Chat */}
-      <div className="dav-section">
-        <h3 className="dav-section-title">Ask the {title.split(" ")[0]} Agent</h3>
-        <div className="dav-chat" ref={chatRef}>
-          {chat.length === 0 && (
-            <div className="dav-chat-empty">
-              <p>Ask a question about this domain.</p>
-              <div className="dav-suggestions">
-                {suggestions.map((s) => (
-                  <button key={s} className="dav-suggestion" onClick={() => setInput(s)}>
-                    {s}
-                  </button>
-                ))}
-              </div>
-            </div>
-          )}
-          {chat.map((m, i) => (
-            <div key={i} className={"dav-msg " + (m.role === "user" ? "dav-msg-user" : "dav-msg-agent")}>
-              <div className="dav-msg-avatar" aria-hidden="true">{m.role === "user" ? "U" : agentKey.slice(0, 1).toUpperCase()}</div>
-              <div className="dav-msg-col">
-                {m.role === "agent" && (
-                  <span className={"dav-msg-tag " + (m.llm ? "dav-tag-llm" : "dav-tag-det")}>
-                    {m.llm ? "AI Reasoned" : "Data Lookup"}
-                  </span>
-                )}
-                <div className="dav-msg-body">{renderMarkdown(m.text) ?? m.text}</div>
-              </div>
-            </div>
-          ))}
-          {asking && (
-            <div className="dav-msg dav-msg-agent">
-              <div className="dav-msg-avatar" aria-hidden="true">{agentKey.slice(0, 1).toUpperCase()}</div>
-              <div className="dav-msg-col">
-                <div className="dav-msg-body">
-                  <span className="dav-msg-thinking"><span /><span /><span /></span>
+      {/* Chat / LLM — commented out for pricing agent only */}
+      {agentKey !== "pricing" && (
+        <div className="dav-section">
+          <h3 className="dav-section-title">Ask the {title.split(" ")[0]} Agent</h3>
+          <div className="dav-chat" ref={chatRef}>
+            {chat.length === 0 && (
+              <div className="dav-chat-empty">
+                <p>Ask a question about this domain.</p>
+                <div className="dav-suggestions">
+                  {suggestions.map((s) => (
+                    <button key={s} className="dav-suggestion" onClick={() => setInput(s)}>
+                      {s}
+                    </button>
+                  ))}
                 </div>
               </div>
-            </div>
-          )}
+            )}
+            {chat.map((m, i) => (
+              <div key={i} className={"dav-msg " + (m.role === "user" ? "dav-msg-user" : "dav-msg-agent")}>
+                <div className="dav-msg-avatar" aria-hidden="true">{m.role === "user" ? "U" : agentKey.slice(0, 1).toUpperCase()}</div>
+                <div className="dav-msg-col">
+                  {m.role === "agent" && (
+                    <span className={"dav-msg-tag " + (m.llm ? "dav-tag-llm" : "dav-tag-det")}>
+                      {m.llm ? "AI Reasoned" : "Data Lookup"}
+                    </span>
+                  )}
+                  <div className="dav-msg-body">{renderMarkdown(m.text) ?? m.text}</div>
+                </div>
+              </div>
+            ))}
+            {asking && (
+              <div className="dav-msg dav-msg-agent">
+                <div className="dav-msg-avatar" aria-hidden="true">{agentKey.slice(0, 1).toUpperCase()}</div>
+                <div className="dav-msg-col">
+                  <div className="dav-msg-body">
+                    <span className="dav-msg-thinking"><span /><span /><span /></span>
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+          <div className="dav-input-row">
+            <input
+              className="dav-input"
+              value={input}
+              onChange={(e) => setInput(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && ask(input)}
+              placeholder={`Ask ${title}…`}
+            />
+            <button className="dav-btn dav-btn-primary" disabled={asking || !input.trim()} onClick={() => ask(input)}>
+              {asking ? "…" : "Send"}
+            </button>
+          </div>
         </div>
-        <div className="dav-input-row">
-          <input
-            className="dav-input"
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            onKeyDown={(e) => e.key === "Enter" && ask(input)}
-            placeholder={`Ask ${title}…`}
-          />
-          <button className="dav-btn dav-btn-primary" disabled={asking || !input.trim()} onClick={() => ask(input)}>
-            {asking ? "…" : "Send"}
-          </button>
-        </div>
-      </div>
+      )}
     </section>
   );
 }

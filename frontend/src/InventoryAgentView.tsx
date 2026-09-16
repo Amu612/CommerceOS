@@ -39,12 +39,17 @@ type InventoryProduct = {
   sku?: string;
   name?: string;
   category?: string;
+  current_stock?: number;
+  safety_stock?: number;
+  reorder_point?: number;
+  daily_sales?: number;
   stockQuantity?: number;
   stock_quantity?: number;
   price?: number;
   available_stock?: number;
   reorder_required?: boolean;
   reorder_flag?: boolean;
+  lead_time_days?: number;
   [key: string]: unknown;
 };
 
@@ -177,6 +182,7 @@ function extractArray<T>(response: AgentResponse, keys: string[]): T[] {
 
 function getStock(product: InventoryProduct): number | null {
   return (
+    toNumber(product.current_stock) ??
     toNumber(product.stockQuantity) ??
     toNumber(product.stock_quantity) ??
     toNumber(product.available_stock)
@@ -322,7 +328,7 @@ export default function InventoryAgentView({
 
   const products = useMemo(
     () =>
-      extractArray<InventoryProduct>(data ?? {}, ["low_stock_products", "products", "inventory"]),
+      extractArray<InventoryProduct>(data ?? {}, ["products", "low_stock_products", "inventory"]),
     [data],
   );
 
@@ -623,7 +629,9 @@ export default function InventoryAgentView({
                   <th>Product</th>
                   <th>SKU</th>
                   <th>Category</th>
-                  <th>Stock</th>
+                  <th>Current Stock</th>
+                  <th>Safety Stock</th>
+                  <th>ROP</th>
                   <th>Unit Price</th>
                   <th>Watchdog Status</th>
                 </tr>
@@ -633,6 +641,11 @@ export default function InventoryAgentView({
                 {products.map((product, index) => {
                   const productId = getProductId(product);
                   const stock = getStock(product);
+                  const rop = toNumber(product.reorder_point);
+                  const isLowStock =
+                    product.reorder_required ||
+                    product.reorder_flag ||
+                    (stock !== null && rop !== null && stock <= rop);
 
                   return (
                     <tr key={`${productId}-${index}`}>
@@ -667,8 +680,7 @@ export default function InventoryAgentView({
                         <span
                           style={{
                             fontWeight: 700,
-                            color:
-                              (stock ?? 0) < 50 ? "var(--status-warning)" : "var(--status-success)",
+                            color: isLowStock ? "var(--status-warning)" : "var(--status-success)",
                           }}
                         >
                           {formatNumber(stock)}
@@ -676,11 +688,19 @@ export default function InventoryAgentView({
                       </td>
 
                       <td style={{ color: "var(--text-secondary)" }}>
+                        {formatNumber(product.safety_stock)}
+                      </td>
+
+                      <td style={{ fontWeight: 700, color: "var(--accent-primary)" }}>
+                        {formatNumber(product.reorder_point)}
+                      </td>
+
+                      <td style={{ color: "var(--text-secondary)" }}>
                         {formatCurrency(product.price)}
                       </td>
 
                       <td>
-                        {product.reorder_required || product.reorder_flag ? (
+                        {isLowStock ? (
                           <span className="inv-badge-reorder">Reorder Triggered</span>
                         ) : (
                           <span style={{ fontSize: "11px", color: "var(--status-success)" }}>
@@ -738,19 +758,21 @@ export default function InventoryAgentView({
                     </td>
 
                     <td style={{ color: "var(--text-secondary)" }}>
-                      {formatNumber(item.lead_time_days ?? 7)}d
+                      {item.lead_time_days !== undefined && item.lead_time_days !== null
+                        ? `${formatNumber(item.lead_time_days)}d`
+                        : "—"}
                     </td>
 
                     <td style={{ color: "var(--text-secondary)" }}>
-                      {formatNumber(item.safety_stock ?? 15)}
+                      {formatNumber(item.safety_stock)}
                     </td>
 
                     <td style={{ fontWeight: 700, color: "var(--accent-primary)" }}>
-                      {formatNumber(item.reorder_point ?? 35)}
+                      {formatNumber(item.reorder_point)}
                     </td>
 
                     <td style={{ fontWeight: 700, color: "var(--status-success)" }}>
-                      {formatNumber(getRecommendationQuantity(item) ?? 50)} units
+                      {formatNumber(getRecommendationQuantity(item))} units
                     </td>
 
                     <td style={{ color: "var(--text-secondary)" }}>

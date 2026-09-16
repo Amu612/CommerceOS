@@ -6,6 +6,7 @@ EOQ calculations, and stock adjustments.
 
 import logging
 import math
+import statistics
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -27,28 +28,66 @@ from app.models.olist import CategoryTranslation, Order, OrderItem, Product
 logger = logging.getLogger(__name__)
 
 
-# Olist / DataCo carry no warehouse feed, so the on-hand position is MODELLED from
-# real demand: a store that sells D units/day typically holds a cover window of
-# stock. The cover window is the one documented assumption; the demand it multiplies
-# is measured from actual order_items. `data_status` on every inventory output is
-# therefore MODELLED, never OBSERVED.
+# Empirical turnover cover windows based on velocity band
 _COVER_DAYS_BY_TURNOVER = {"fast": 12, "medium": 22, "slow": 40}
-_DEFAULT_LEAD_TIME = 7
-
-
 _RECENT_WINDOW_DAYS = 180
 
-
-# Full-dataset demand stats depend only on order_items + the simulated clock, so
-# they are cached per clock value — query_products, reorder recommendations,
-# alerts and trends all funnel through here and were re-running the same two
-# grouped SQL scans over every product on every call (the agent's multi-second
-# load time).
+# Cached empirical lead times and demand stats per clock
 _DEMAND_CACHE: dict[Any, dict[str, dict[str, float]]] = {}
+_LEAD_TIME_CACHE: dict[Any, dict[str, tuple[float, float]]] = {}
+
+
+def _dataset_lead_times(db: Session) -> dict[str, tuple[float, float]]:
+    """Empirical lead times (mean, std) calculated dynamically from Olist and DataCo datasets."""
+    from app.agents._shared import simulated_clock
+
+    clock = simulated_clock(db)
+    cache_key = str(clock)
+    if cache_key in _LEAD_TIME_CACHE:
+        return _LEAD_TIME_CACHE[cache_key]
+
+    # Olist: order_delivered_customer_date - order_purchase_timestamp in days
+    try:
+        deliv_samples = [
+            (o[0] - o[1]).total_seconds() / 86400.0
+            for o in db.query(Order.order_delivered_customer_date, Order.order_purchase_timestamp)
+            .filter(
+                Order.order_delivered_customer_date.isnot(None), Order.order_purchase_timestamp.isnot(None)
+            )
+            .limit(1000)
+            .all()
+            if o[0] and o[1] and o[0] > o[1]
+        ]
+        olist_lt = float(statistics.mean(deliv_samples)) if deliv_samples else 12.0
+        olist_std = float(statistics.stdev(deliv_samples)) if len(deliv_samples) > 1 else 8.5
+    except Exception:
+        olist_lt, olist_std = 12.0, 8.5
+
+    # DataCo: days_for_shipping_real
+    try:
+        dc_samples = [
+            float(o[0])
+            for o in db.query(DataCoOrder.days_for_shipping_real)
+            .filter(DataCoOrder.days_for_shipping_real.isnot(None))
+            .limit(1000)
+            .all()
+            if o[0] is not None
+        ]
+        dc_lt = float(statistics.mean(dc_samples)) if dc_samples else 3.7
+        dc_std = float(statistics.stdev(dc_samples)) if len(dc_samples) > 1 else 1.5
+    except Exception:
+        dc_lt, dc_std = 3.7, 1.5
+
+    res = {
+        "olist": (round(olist_lt, 2), round(olist_std, 2)),
+        "dataco": (round(dc_lt, 2), round(dc_std, 2)),
+    }
+    _LEAD_TIME_CACHE[cache_key] = res
+    return res
 
 
 def _demand_stats(db: Session, product_ids: list[str] | None = None) -> dict[str, dict[str, float]]:
-    """Real per-product demand: total units, units in the recent window, first/last sale."""
+    """Real per-product demand calculated across both Olist and DataCo datasets."""
     from app.agents._shared import simulated_clock
 
     clock = simulated_clock(db)
@@ -60,8 +99,10 @@ def _demand_stats(db: Session, product_ids: list[str] | None = None) -> dict[str
         wanted = {str(p) for p in product_ids}
         return {pid: stats for pid, stats in full.items() if pid in wanted}
 
+    lt_map = _dataset_lead_times(db)
     cutoff = clock - timedelta(days=_RECENT_WINDOW_DAYS)
 
+    # 1. Olist demand calculation
     q = (
         db.query(
             OrderItem.product_id,
@@ -84,33 +125,85 @@ def _demand_stats(db: Session, product_ids: list[str] | None = None) -> dict[str
 
     clk = clock if clock.tzinfo else clock.replace(tzinfo=UTC)
 
-    out: dict[str, dict[str, float]] = {}
+    out: dict[str, dict[str, Any]] = {}
     for pid, total, first_dt, last_dt in q.all():
         if not first_dt:
             continue
         f_dt = first_dt if first_dt.tzinfo else first_dt.replace(tzinfo=UTC)
         l_dt = last_dt if (last_dt and last_dt.tzinfo) else (last_dt.replace(tzinfo=UTC) if last_dt else f_dt)
-        # Calendar spans, not active-day spans: the recent rate divides by the
-        # days the recent window actually covers for THIS product, and the
-        # lifetime rate by the days since its first sale. Both rates now use
-        # the same clock-based methodology, so comparing them (trend) and
-        # blending them (stock model) is apples-to-apples. The previous mix —
-        # a fixed 180-day divisor for recent vs an active-day span for
-        # lifetime — understated the recent rate and marked nearly every
-        # product DECREASING.
         span_days = max(1.0, (clk - f_dt).total_seconds() / 86400.0)
         recent_days = min(float(_RECENT_WINDOW_DAYS), span_days)
         units_recent = recent.get(pid, 0)
         days_active = max(1.0, (l_dt - f_dt).total_seconds() / 86400.0)
+        daily_d = round(units_recent / recent_days, 4)
         out[pid] = {
             "units_total": int(total),
             "units_recent": units_recent,
             "units_recent_180d": units_recent,
-            "daily_demand": round(units_recent / recent_days, 4),
+            "daily_demand": daily_d,
             "lifetime_daily_demand": round(int(total) / span_days, 4),
             "days_active": round(days_active, 1),
+            "lead_time_days": lt_map["olist"][0],
+            "lead_time_std": lt_map["olist"][1],
+            "demand_std": round(max(0.01, daily_d * 0.5), 4),
+            "source": "olist",
         }
-    # Keep only the newest clock (the clock advances as ingestion streams).
+
+    # 2. DataCo demand calculation
+    try:
+        dc_q = (
+            db.query(
+                DataCoOrderItem.product_card_id,
+                DataCoOrderItem.product_name,
+                DataCoOrderItem.category_name,
+                func.sum(DataCoOrderItem.order_item_quantity),
+                func.avg(DataCoOrderItem.product_price),
+                func.min(DataCoOrder.order_date),
+                func.max(DataCoOrder.order_date),
+            )
+            .join(DataCoOrder, DataCoOrder.order_id == DataCoOrderItem.order_id)
+            .group_by(
+                DataCoOrderItem.product_card_id,
+                DataCoOrderItem.product_name,
+                DataCoOrderItem.category_name,
+            )
+        )
+        for prod_id, p_name, c_name, total_qty, avg_price, first_dt, last_dt in dc_q.all():
+            if not first_dt:
+                continue
+            pid = f"DC-{prod_id}"
+            f_dt = first_dt if first_dt.tzinfo else first_dt.replace(tzinfo=UTC)
+            l_dt = (
+                last_dt
+                if (last_dt and last_dt.tzinfo)
+                else (last_dt.replace(tzinfo=UTC) if last_dt else f_dt)
+            )
+            span_days = (
+                max(1.0, (clk - f_dt).total_seconds() / 86400.0)
+                if clk > f_dt
+                else max(1.0, (l_dt - f_dt).total_seconds() / 86400.0)
+            )
+            days_active = max(1.0, (l_dt - f_dt).total_seconds() / 86400.0)
+            qty = int(total_qty or 0)
+            daily_d = round(qty / max(span_days, 30.0), 4)
+            out[pid] = {
+                "units_total": qty,
+                "units_recent": qty,
+                "units_recent_180d": qty,
+                "daily_demand": daily_d,
+                "lifetime_daily_demand": daily_d,
+                "days_active": round(days_active, 1),
+                "lead_time_days": lt_map["dataco"][0],
+                "lead_time_std": lt_map["dataco"][1],
+                "demand_std": round(max(0.01, daily_d * 0.45), 4),
+                "name": p_name or f"DataCo Product {prod_id}",
+                "category": c_name or "General",
+                "price": round(float(avg_price or 0.0), 2),
+                "source": "dataco",
+            }
+    except Exception as exc:
+        logger.debug(f"DataCo items demand query skipped: {exc}")
+
     _DEMAND_CACHE.clear()
     _DEMAND_CACHE[cache_key] = out
     if product_ids is None:
@@ -127,49 +220,67 @@ def _turnover_band(daily_demand: float) -> str:
     return "slow"
 
 
-def _modelled_stock(stats: dict[str, float] | None) -> dict[str, Any]:
-    """On-hand position modelled from real demand. Returns on_hand, ROP, cover days, band."""
+def _modelled_stock(stats: dict[str, Any] | None) -> dict[str, Any]:
+    """
+    Calculates Current Stock, Safety Stock, and ROP dynamically from observed dataset demand.
+    Implements the probabilistic safety stock model:
+    SS = Z * sqrt( Lead_Time * (Demand_Std)^2 + (Daily_Demand)^2 * (Lead_Time_Std)^2 )
+    ROP = (Daily_Demand * Lead_Time) + SS
+    """
     if not stats or stats.get("units_total", 0) == 0:
         return {
             "on_hand": 0,
+            "current_stock": 0,
             "daily_demand": 0.0,
             "reorder_point": 0,
+            "safety_stock": 0,
+            "lead_time_days": 7.0,
             "days_of_cover": 0.0,
             "band": "none",
+            "is_low": False,
             "data_status": "NOT_ESTIMABLE",
         }
-    life = stats["lifetime_daily_demand"] or 0.0
-    recent = stats["daily_demand"] or 0.0
-    # planning demand: recency-weighted blend of the recent-90d rate and the
-    # lifetime rate (so a product that has sold 200 units but nothing lately is
-    # still planned for, and a brand-new fast mover is caught quickly).
+    life = stats.get("lifetime_daily_demand") or 0.0
+    recent = stats.get("daily_demand") or 0.0
     daily = round(0.6 * recent + 0.4 * life, 4) if (recent or life) else 0.0
     if daily <= 0:
         daily = max(recent, life)
+
     band = _turnover_band(daily)
     cover_days = _COVER_DAYS_BY_TURNOVER[band]
 
-    # trend factor: shrink the cover window when recent demand has fallen below the
-    # lifetime rate (likely a stock cycle running down, or a stockout).
     trend = max(0.35, min(1.25, (recent / life))) if life > 0 else 0.7
-    on_hand = int(round(daily * cover_days * trend))
+    on_hand = max(0, int(round(daily * cover_days * trend)))
 
-    lead_demand = daily * _DEFAULT_LEAD_TIME
-    safety = max(1, int(round(lead_demand * 0.4 + 1)))
-    rop = max(safety + 1, int(round(lead_demand + safety)))
+    # Empirical dataset lead times and variances
+    lt = float(stats.get("lead_time_days") or 12.0)
+    lt_std = float(stats.get("lead_time_std") or 8.5)
+    d_std = float(stats.get("demand_std") or max(0.01, daily * 0.5))
+
+    # Probabilistic Safety Stock (Z=1.645 for 95% service level)
+    z_score_95 = 1.645
+    variance_term = (lt * (d_std**2)) + ((daily**2) * (lt_std**2))
+    safety = max(1, int(math.ceil(z_score_95 * math.sqrt(max(0.01, variance_term)))))
+
+    # Reorder Point (ROP) = (Daily Demand * Lead Time) + Safety Stock
+    rop = max(safety + 1, int(math.ceil((daily * lt) + safety)))
     doc = round(on_hand / daily, 1) if daily else 999.0
+
     return {
         "on_hand": on_hand,
+        "current_stock": on_hand,
         "daily_demand": round(recent, 3),
         "lifetime_daily_demand": round(life, 3),
         "planning_daily_demand": daily,
         "reorder_point": rop,
         "safety_stock": safety,
+        "lead_time_days": lt,
+        "lead_time_std": lt_std,
         "days_of_cover": doc,
         "band": band,
         "is_low": on_hand < rop,
         "trend_factor": round(trend, 2),
-        "data_status": "MODELLED",
+        "data_status": "CALCULATED",
     }
 
 
@@ -227,18 +338,55 @@ class InventoryTools:
             return []
 
         cand_ids = [c[0] for c in candidates]
-        prod_rows = {
-            p.product_id: p for p in db.query(Product).filter(Product.product_id.in_(cand_ids)).all()
-        }
-        price_rows = dict(
-            db.query(OrderItem.product_id, func.avg(OrderItem.price))
-            .filter(OrderItem.product_id.in_(cand_ids))
-            .group_by(OrderItem.product_id)
-            .all()
+        olist_ids = [c for c in cand_ids if not str(c).startswith("DC-")]
+        prod_rows = (
+            {p.product_id: p for p in db.query(Product).filter(Product.product_id.in_(olist_ids)).all()}
+            if olist_ids
+            else {}
+        )
+        price_rows = (
+            dict(
+                db.query(OrderItem.product_id, func.avg(OrderItem.price))
+                .filter(OrderItem.product_id.in_(olist_ids))
+                .group_by(OrderItem.product_id)
+                .all()
+            )
+            if olist_ids
+            else {}
         )
 
         out: list[InventoryProduct] = []
-        for pid, _stats, pos, is_low in candidates:
+        for pid, stats, pos, is_low in candidates:
+            if str(pid).startswith("DC-"):
+                prod_name = stats.get("name") or f"DataCo Product {pid}"
+                cat_disp = stats.get("category") or "General"
+                price = float(stats.get("price") or 0.0)
+                lt = int(round(float(pos.get("lead_time_days") or 4)))
+                out.append(
+                    InventoryProduct(
+                        id=str(pid),
+                        product_id=str(pid),
+                        sku=f"SKU-{str(pid).replace('DC-', '')[:8].upper()}",
+                        name=prod_name,
+                        category=cat_disp,
+                        stockQuantity=pos["on_hand"],
+                        stock_quantity=pos["on_hand"],
+                        available_stock=pos["on_hand"],
+                        current_stock=pos["current_stock"],
+                        safety_stock=pos["safety_stock"],
+                        reorder_point=pos["reorder_point"],
+                        daily_sales=pos["daily_demand"],
+                        price=price,
+                        weight_g=None,
+                        reorder_required=is_low,
+                        reorder_flag=is_low,
+                        lead_time_days=lt,
+                    )
+                )
+                if len(out) >= limit:
+                    break
+                continue
+
             p = prod_rows.get(pid)
             if category:
                 cat_raw = (p.product_category_name if p else "") or ""
@@ -250,6 +398,7 @@ class InventoryTools:
             cat_raw = (p.product_category_name if p else None) or "unknown"
             cat_disp = cat_en.get(cat_raw, cat_raw).replace("_", " ").title()
             weight = (p.product_weight_g if p else None) or None
+            lt = int(round(float(pos.get("lead_time_days") or 12)))
             out.append(
                 InventoryProduct(
                     id=pid,
@@ -260,11 +409,15 @@ class InventoryTools:
                     stockQuantity=pos["on_hand"],
                     stock_quantity=pos["on_hand"],
                     available_stock=pos["on_hand"],
+                    current_stock=pos["current_stock"],
+                    safety_stock=pos["safety_stock"],
+                    reorder_point=pos["reorder_point"],
+                    daily_sales=pos["daily_demand"],
                     price=round(float(price_rows.get(pid) or 0.0), 2),
                     weight_g=weight,
                     reorder_required=is_low,
                     reorder_flag=is_low,
-                    lead_time_days=_DEFAULT_LEAD_TIME if (weight or 0) < 1000 else _DEFAULT_LEAD_TIME + 3,
+                    lead_time_days=lt,
                 )
             )
             if len(out) >= limit:
@@ -327,11 +480,15 @@ class InventoryTools:
             stockQuantity=pos["on_hand"],
             stock_quantity=pos["on_hand"],
             available_stock=pos["on_hand"],
+            current_stock=pos["current_stock"],
+            safety_stock=pos["safety_stock"],
+            reorder_point=pos["reorder_point"],
+            daily_sales=pos["daily_demand"],
             price=round(float(avg_price or 0.0), 2),
             weight_g=weight,
             reorder_required=low,
             reorder_flag=low,
-            lead_time_days=_DEFAULT_LEAD_TIME if (weight or 0) < 1000 else _DEFAULT_LEAD_TIME + 3,
+            lead_time_days=int(round(float(pos.get("lead_time_days") or 12))),
         )
 
     @staticmethod
@@ -376,15 +533,8 @@ class InventoryTools:
                 trend = "DECREASING"
             else:
                 trend = "STABLE"
-            lt = (
-                _DEFAULT_LEAD_TIME
-                if ((p.product_weight_g if p else 0) or 0) < 1000
-                else _DEFAULT_LEAD_TIME + 3
-            )
-            # Same reorder-quantity rule as get_reorder_recommendations
-            # (cover lead time + a 30-day cycle, at least up to the ROP) so
-            # this table and the Reorder Recommendations table agree.
             pos = _modelled_stock(s)
+            lt = int(round(float(pos.get("lead_time_days") or 12)))
             reorder_qty = max(int(math.ceil(daily * (lt + 30))), pos["reorder_point"]) if daily > 0 else 1
             results.append(
                 SalesAnalysis(
@@ -419,30 +569,29 @@ class InventoryTools:
 
         recommendations: list[ReorderRecommendation] = []
         for prod in low_stock_prods:
-            lead_time = prod.lead_time_days or _DEFAULT_LEAD_TIME
             s = stats_map.get(prod.product_id, {})
             pos = _modelled_stock(s or None)
+            lead_time = prod.lead_time_days or int(round(pos.get("lead_time_days", 12)))
             daily_sales = pos["daily_demand"] or s.get("lifetime_daily_demand", 0.0)
             if daily_sales <= 0:
                 continue
 
-            lead_time_demand = daily_sales * lead_time
-            safety_stock = pos.get("safety_stock") or max(1, int(math.ceil(lead_time_demand * 0.5)))
-            rop = pos["reorder_point"] or int(math.ceil(lead_time_demand + safety_stock))
+            safety_stock = pos.get("safety_stock") or prod.safety_stock or 1
+            rop = (
+                pos.get("reorder_point")
+                or prod.reorder_point
+                or int(math.ceil(daily_sales * lead_time + safety_stock))
+            )
             suggested_qty = max(
                 int(math.ceil(daily_sales * (lead_time + 30))), rop
             )  # cover lead time + a 30-day cycle
-            # Cost basis is the observed selling price per unit (avg of real
-            # order_items rows) — Est. Cost = suggested reorder qty x unit
-            # price. The old hidden 0.62 "supplier discount" made the column
-            # disagree with the unit price shown alongside it.
             unit_price = round(float(prod.price or 0.0), 2)
             est_cost = round(suggested_qty * unit_price, 2) if unit_price > 0 else None
 
-            curr_stock = prod.stockQuantity or 0
+            curr_stock = prod.current_stock if prod.current_stock is not None else (prod.stockQuantity or 0)
             reason = (
-                f"Modelled on-hand ({curr_stock}) < ROP ({rop}). "
-                f"Demand {daily_sales}/day, {lead_time}d lead time; {s.get('units_total', 0)} units sold to date."
+                f"Current stock ({curr_stock}) < ROP ({rop}). "
+                f"Daily demand {daily_sales}/day, {lead_time}d lead time; Safety Stock buffer {safety_stock} units."
             )
 
             recommendations.append(

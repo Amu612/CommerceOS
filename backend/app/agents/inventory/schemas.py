@@ -18,6 +18,10 @@ class InventoryProduct(BaseModel):
     stockQuantity: int | None = None
     stock_quantity: int | None = None
     available_stock: int | None = None
+    current_stock: int | None = None
+    safety_stock: int | None = None
+    reorder_point: int | None = None
+    daily_sales: float | None = None
     price: float | None = 0.0
     weight_g: float | None = None
     reorder_required: bool | None = False
