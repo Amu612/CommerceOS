@@ -22,12 +22,7 @@ from sqlalchemy.orm import Session
 from app.agents.common_schemas import MetricCard
 from app.agents.framework import DomainAgent
 from app.agents.inventory.schemas import InventoryAction, InventoryAgentResponse, ToolCallRecord
-from app.agents.inventory.tools import (
-    ALL_INVENTORY_TOOLS,
-    DETECTOR_TOOLS,
-    METRIC_TOOLS,
-    InventoryTools,
-)
+from app.agents.inventory.tools import ALL_INVENTORY_TOOLS, DETECTOR_TOOLS, METRIC_TOOLS, InventoryTools
 from app.database.session import SessionLocal
 
 logger = logging.getLogger(__name__)

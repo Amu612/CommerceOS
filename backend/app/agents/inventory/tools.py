@@ -860,9 +860,15 @@ def tool_demand_analytics(metric: str) -> str:
             metric = "unusually_high_velocity"
         elif "seller" in q and ("demand" in q or "consistent" in q):
             metric = "seller_demand"
-        elif "top 10 products" in q or ("highest" in q and "units" in q and "product" in q) or "best seller" in q:
+        elif (
+            "top 10 products" in q
+            or ("highest" in q and "units" in q and "product" in q)
+            or "best seller" in q
+        ):
             metric = "top_products"
-        elif "categor" in q and ("volume" in q or "highest sales" in q or "strongest demand" in q or "strong demand" in q):
+        elif "categor" in q and (
+            "volume" in q or "highest sales" in q or "strongest demand" in q or "strong demand" in q
+        ):
             metric = "top_categories"
         elif "restock" in q or "priority" in q or "require restocking" in q:
             metric = "restock_priority"
@@ -1106,9 +1112,7 @@ def tool_demand_analytics(metric: str) -> str:
                 f"{i+1}. {disp(p)} (ID: {p[:8]}...): {t:,} units sold ({t / total_units * 100:.2f}% of total units)"
                 for i, (p, t) in enumerate(top)
             )
-            return (
-                f"Top 10 products with the highest number of units sold (Dataset total: {total_units:,} units):\n\n- {parts}"
-            )
+            return f"Top 10 products with the highest number of units sold (Dataset total: {total_units:,} units):\n\n- {parts}"
         if metric in ("top_categories", "strongest_demand_categories"):
             per_cat: dict = defaultdict(int)
             for pid, t in totals.items():
@@ -1119,9 +1123,7 @@ def tool_demand_analytics(metric: str) -> str:
                 f"{i+1}. {c}: {t:,} units sold ({t / total_units * 100:.2f}% share)"
                 for i, (c, t) in enumerate(top)
             )
-            return (
-                f"Product categories with the highest sales volume / strongest demand (Dataset total: {total_units:,} units):\n\n- {parts}"
-            )
+            return f"Product categories with the highest sales volume / strongest demand (Dataset total: {total_units:,} units):\n\n- {parts}"
         if metric == "unusually_high_velocity":
             vel = {pid: t / max(1, len(monthly[pid])) for pid, t in totals.items()}
             avg_vel = sum(vel.values()) / max(1, len(vel))
@@ -1158,9 +1160,7 @@ def tool_demand_analytics(metric: str) -> str:
                 f"{i+1}. Seller #{s[:8]}: {int(c):,} units sold across {int(m)} active months ({int(c) / total_units * 100:.2f}% contribution, ~{int(c)/max(1, int(m)):.1f} units/mo)"
                 for i, (s, c, m) in enumerate(top)
             )
-            return (
-                f"Sellers with consistently high demand and highest products sold:\n\n- {parts}"
-            )
+            return f"Sellers with consistently high demand and highest products sold:\n\n- {parts}"
         if metric in ("rapid_growth_restock", "hard_restock_growth"):
             total_units = sum(totals.values()) or 1
             scored = []
@@ -1209,9 +1209,7 @@ def tool_demand_analytics(metric: str) -> str:
                 .limit(10)
                 .all()
             )
-            total_dc_units = (
-                db.query(func.sum(DataCoOrderItem.order_item_quantity)).scalar() or 1
-            )
+            total_dc_units = db.query(func.sum(DataCoOrderItem.order_item_quantity)).scalar() or 1
             parts = "\n- ".join(
                 f"{i+1}. {name} (Card ID: {cid}, Category: {cat}): {int(qty):,} units sold ({int(qty) / total_dc_units * 100:.2f}%)"
                 for i, (cid, name, cat, qty) in enumerate(top)
@@ -1230,14 +1228,14 @@ def tool_demand_analytics(metric: str) -> str:
                 .limit(10)
                 .all()
             )
-            total_dc_units = (
-                db.query(func.sum(DataCoOrderItem.order_item_quantity)).scalar() or 1
-            )
+            total_dc_units = db.query(func.sum(DataCoOrderItem.order_item_quantity)).scalar() or 1
             parts = "\n- ".join(
                 f"{i+1}. {cat}: {int(qty):,} units sold ({int(qty) / total_dc_units * 100:.2f}%), Total Sales: ${float(sales or 0):,.2f}"
                 for i, (cat, qty, sales) in enumerate(top)
             )
-            return f"Top 10 product categories with the highest sales volume in the DataCo dataset:\n\n- {parts}"
+            return (
+                f"Top 10 product categories with the highest sales volume in the DataCo dataset:\n\n- {parts}"
+            )
         if metric in ("dataco_monthly_velocity", "dataco_velocity"):
             dc_mb = period_bucket(db, DataCoOrder.order_date, "%Y-%m")
             dc_rows = (
@@ -1248,9 +1246,7 @@ def tool_demand_analytics(metric: str) -> str:
                     func.sum(DataCoOrderItem.order_item_quantity),
                 )
                 .join(DataCoOrder, DataCoOrder.order_id == DataCoOrderItem.order_id)
-                .group_by(
-                    DataCoOrderItem.product_card_id, DataCoOrderItem.product_name, dc_mb
-                )
+                .group_by(DataCoOrderItem.product_card_id, DataCoOrderItem.product_name, dc_mb)
                 .all()
             )
             dc_monthly: dict = defaultdict(lambda: defaultdict(int))
@@ -1260,9 +1256,7 @@ def tool_demand_analytics(metric: str) -> str:
                 dc_monthly[cid][ym] += int(q)
                 dc_totals[cid] = dc_totals.get(cid, 0) + int(q)
                 dc_names[cid] = name or f"Product #{cid}"
-            dc_vel = {
-                cid: dc_totals[cid] / max(1, len(dc_monthly[cid])) for cid in dc_totals
-            }
+            dc_vel = {cid: dc_totals[cid] / max(1, len(dc_monthly[cid])) for cid in dc_totals}
             top = sorted(dc_vel.items(), key=lambda kv: -kv[1])[:10]
             parts = "\n- ".join(
                 f"{i+1}. {dc_names[cid]} (Card ID: {cid}): {v:.2f} units/month ({dc_totals[cid]:,} units across {len(dc_monthly[cid])} active months)"
@@ -1279,9 +1273,7 @@ def tool_demand_analytics(metric: str) -> str:
                     func.sum(DataCoOrderItem.order_item_quantity),
                 )
                 .join(DataCoOrder, DataCoOrder.order_id == DataCoOrderItem.order_id)
-                .group_by(
-                    DataCoOrderItem.product_card_id, DataCoOrderItem.product_name, dc_mb
-                )
+                .group_by(DataCoOrderItem.product_card_id, DataCoOrderItem.product_name, dc_mb)
                 .all()
             )
             dc_monthly = defaultdict(lambda: defaultdict(int))
