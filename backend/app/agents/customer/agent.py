@@ -45,13 +45,21 @@ class CustomerSupportAgent:
                 CUSTOMER_TOOLS,
                 prompt=(
                     "You are a senior e-commerce customer support representative. You have tools that "
-                    "read live orders, customers, sellers, reviews, shipments, billing, catalog, and returns.\n"
+                    "read live orders, customers, sellers, reviews, shipments, billing, catalog, returns, "
+                    "and customer experience analytics across Olist and DataCo datasets.\n"
                     "When a user provides an ID:\n"
                     "- If it is an Order ID, call lookup_order or track_shipment.\n"
                     "- If it is a Customer ID (customer_id or customer_unique_id), call lookup_customer to see their profile and purchase history.\n"
                     "- If it is a Seller ID, call lookup_seller.\n"
                     "- If it is a Review ID, call lookup_review.\n"
                     "- If the ID type is ambiguous or unknown, call resolve_unknown_id to identify its entity type and fetch linked records.\n"
+                    "For analytical questions about review scores, late deliveries, CSAT, delivery experience, "
+                    "seller quality, or aggregate customer experience data, ALWAYS call customer_experience_analytics "
+                    "with the appropriate metric key (score_distribution, late_low_score_pct, state_low_scores, "
+                    "late_1_2_pct, seller_poor_reviews, review_response_time, delay_review_hotspots, issue_rank, "
+                    "delivered_vs_late, dataco_delivery_risk). Never invent statistics.\n"
+                    "For questions without an order ID (e.g. 'what is the status of my order?'), explain that "
+                    "you need the Order ID to look it up.\n"
                     "Be warm, concise, and specific. Never invent order numbers, amounts, dates, or "
                     "policies — only state what the tools return. If the customer wants a refund, check "
                     "eligibility first and only create an RMA if eligible."
@@ -100,6 +108,147 @@ class CustomerSupportAgent:
         except Exception as e:
             logger.warning(f"[customer] react agent failed, falling back: {e}")
             return None
+
+    def _deterministic(self, message: str, history: list | None = None) -> CustomerAgentResponse | None:
+        """
+        No-LLM path for the customer agent. Handles:
+        - Analytics questions (review scores, CSAT, delivery experience)
+        - Order ID lookups from message or history
+        - Conversational queries about status, delay, payments, returns
+        Returns None if the question cannot be answered deterministically.
+        """
+        from app.agents._shared import extract_entity_id
+        from app.agents.customer.langchain_tools import customer_experience_analytics
+
+        low = message.lower().strip()
+
+        # 1. Analytics questions → customer_experience_analytics
+        _ANALYTICS_MAP = {
+            "score_distribution": [
+                "review score",
+                "percentage of orders",
+                "score distribution",
+                "score 1",
+                "score 5",
+                "each review score",
+                "score from 1 to 5",
+            ],
+            "late_low_score_pct": ["late-delivered", "late delivered", "rated 1 or 2", "late delivery"],
+            "state_low_scores": ["state", "lowest score", "lowest scores", "review score by state"],
+            "late_1_2_pct": ["experienced a late delivery", "late delivery and", "late and rated"],
+            "seller_poor_reviews": ["seller", "poor review", "worst seller", "proportion of poor"],
+            "review_response_time": [
+                "time between review",
+                "review creation and review answer",
+                "average time",
+                "response time",
+                "answer time",
+            ],
+            "delay_review_hotspots": [
+                "delay",
+                "hotspot",
+                "delivery delays and poor reviews",
+                "delivery delay",
+                "delays and poor reviews occur together",
+            ],
+            "issue_rank": ["csat", "cx issue", "customer experience issue", "late delivery poor review"],
+            "delivered_vs_late": ["on-time vs late", "on time vs late", "late vs on time", "delivered late"],
+        }
+        for m_name, kws in _ANALYTICS_MAP.items():
+            if any(kw in low for kw in kws):
+                try:
+                    ans = customer_experience_analytics.invoke({"metric": m_name})
+                    return CustomerAgentResponse(
+                        response=ans,
+                        final_response=ans,
+                        category="analytics",
+                        status="SUCCESS",
+                        agents_involved=["deterministic"],
+                        llm_backed=False,
+                    )
+                except Exception:
+                    pass
+
+        # 2. Order/customer/seller lookup by ID in message or recent history
+        cand_id, _ = extract_entity_id(message)
+        if not cand_id and history:
+            for turn in reversed(history):
+                txt = turn.get("text", "") if isinstance(turn, dict) else ""
+                cand_id, _ = extract_entity_id(txt or "")
+                if cand_id:
+                    break
+
+        if cand_id:
+            from app.agents.entity_resolver import entity_resolver
+
+            resolved = entity_resolver.resolve_entity(cand_id)
+            if resolved.get("status") == "FOUND":
+                summary = resolved.get("summary", "")
+                return CustomerAgentResponse(
+                    response=summary,
+                    final_response=summary,
+                    category="order_lookup",
+                    status="SUCCESS",
+                    agents_involved=["deterministic"],
+                    llm_backed=False,
+                )
+            return CustomerAgentResponse(
+                response=f"I couldn't find any record for ID '{cand_id}'. Please double-check the order, customer, or product ID and try again.",
+                final_response=f"ID '{cand_id}' was not found.",
+                category="order_lookup",
+                status="NOT_FOUND",
+                agents_involved=["deterministic"],
+                llm_backed=False,
+            )
+
+        # 3. Conversational questions without explicit IDs
+        _CONV = {
+            "status": ["what is the status", "order status", "where is my order", "track my order"],
+            "delay": ["why is my order late", "delayed", "why hasn't", "taking so long"],
+            "payment": ["payment", "charged", "billing", "invoice", "how much did i pay"],
+            "return": ["return", "refund", "exchange", "send it back"],
+            "cancel": ["cancel", "cancellation"],
+        }
+        for topic, kws in _CONV.items():
+            if any(kw in low for kw in kws):
+                if topic == "status":
+                    ans = (
+                        "To check your order status, please provide your **Order ID** "
+                        "(a long alphanumeric string from your confirmation email) "
+                        "and I'll look it up right away."
+                    )
+                elif topic == "delay":
+                    ans = (
+                        "I'm sorry your order is taking longer than expected. "
+                        "Please share your **Order ID** so I can check the delivery status and estimated date."
+                    )
+                elif topic == "payment":
+                    ans = (
+                        "For billing and payment details, please provide your **Order ID** "
+                        "and I'll pull up the exact charges."
+                    )
+                elif topic == "return":
+                    ans = (
+                        "I can help with returns! Please share your **Order ID** so I can check "
+                        "your return eligibility (orders are eligible within 30 days of delivery)."
+                    )
+                elif topic == "cancel":
+                    ans = (
+                        "To check cancellation status or request a cancellation, please provide "
+                        "your **Order ID** and I'll look into it."
+                    )
+                else:
+                    ans = "Please provide your Order ID so I can assist you."
+                return CustomerAgentResponse(
+                    response=ans,
+                    final_response=ans,
+                    category="general",
+                    status="SUCCESS",
+                    agents_involved=["deterministic"],
+                    llm_backed=False,
+                )
+
+        return None
 
     def query(
         self, message: str, db: Session | None = None, history: list | None = None
@@ -152,6 +301,14 @@ class CustomerSupportAgent:
         react = self._react(text, history=history)
         if react is not None:
             return react
+
+        # ── Deterministic fallback when LLM is unavailable ──────────────────
+        # When the LLM/Groq is rate-limited or unavailable, skip customer_graph
+        # (which would also try to call the LLM and hang for 60s retrying).
+        # Instead, try to answer directly from tools.
+        deterministic = self._deterministic(text, history=history)
+        if deterministic is not None:
+            return deterministic
 
         try:
             result = customer_graph.invoke(

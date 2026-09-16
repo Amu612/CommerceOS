@@ -21,6 +21,7 @@ from app.agents.inventory.schemas import (
     ReorderRecommendation,
     SalesAnalysis,
 )
+from app.models.dataco import DataCoOrder, DataCoOrderItem
 from app.models.olist import CategoryTranslation, Order, OrderItem, Product
 
 logger = logging.getLogger(__name__)
@@ -750,8 +751,7 @@ def tool_create_reorder_action(product_id: str, quantity: int, confirm: bool = F
 # ── Doc-grade demand analytics (velocity, concentration, restock priority) ──
 @tool
 def tool_demand_analytics(metric: str) -> str:
-    """Historical demand analytics derived from real order-item data (Olist has
-    NO real-time stock quantity — all restocking output is demand-based).
+    """Historical demand and sales velocity analytics derived from real database tables (Olist & DataCo).
 
     metric must be one of:
     - "volume_concentration"   : avg units sold per product; products selling more than 2x the average
@@ -764,6 +764,15 @@ def tool_demand_analytics(metric: str) -> str:
     - "seller_contribution"    : sellers with the highest total units sold and their % contribution
     - "velocity_growth"        : products whose sales velocity grew >= 50% between 2017 and 2018
     - "restock_priority"       : top 10 demand-based restocking priorities with the demand metric behind each
+    - "top_products"           : top 10 products by quantity sold
+    - "top_categories"         : product categories with the highest sales volume / strongest demand
+    - "unusually_high_velocity": products with unusually high sales velocity
+    - "seller_demand"          : sellers with products with consistently high demand
+    - "rapid_growth_restock"   : products with rapidly increasing velocity ranked by restock priority (Hard test)
+    - "dataco_top_products"    : top products by quantity sold in DataCo
+    - "dataco_top_categories"  : top categories by sales volume in DataCo
+    - "dataco_monthly_velocity": monthly sales velocity in DataCo
+    - "dataco_restock_priority": restocking priority in DataCo
     """
     from collections import defaultdict
 
@@ -774,7 +783,6 @@ def tool_demand_analytics(metric: str) -> str:
     # Triage LLMs sometimes paraphrase the metric; normalize and alias.
     aliases = {
         "top20": "top20_share",
-        "top_products": "top20_share",
         "top20products": "top20_share",
         "share": "top20_share",
         "concentration": "volume_concentration",
@@ -791,6 +799,22 @@ def tool_demand_analytics(metric: str) -> str:
         "seasonality": "seasonal_concentration",
         "units_per_order": "units_per_order_cat",
         "sellers": "seller_contribution",
+        "best_sellers": "top_products",
+        "top_selling_products": "top_products",
+        "top_sold": "top_products",
+        "quantity_sold": "top_products",
+        "top_categories_volume": "top_categories",
+        "category_volume": "top_categories",
+        "strong_demand": "top_categories",
+        "high_velocity": "unusually_high_velocity",
+        "consistent_demand": "seller_demand",
+        "hard_restock": "rapid_growth_restock",
+        "rapid_growth": "rapid_growth_restock",
+        "rapid_velocity": "rapid_growth_restock",
+        "dataco_products": "dataco_top_products",
+        "dataco_categories": "dataco_top_categories",
+        "dataco_velocity": "dataco_monthly_velocity",
+        "dataco_restock": "dataco_restock_priority",
     }
     norm = str(metric or "").strip().lower().replace(" ", "_").replace("-", "_")
     valid = {
@@ -804,6 +828,15 @@ def tool_demand_analytics(metric: str) -> str:
         "seller_contribution",
         "velocity_growth",
         "restock_priority",
+        "top_products",
+        "top_categories",
+        "unusually_high_velocity",
+        "seller_demand",
+        "rapid_growth_restock",
+        "dataco_top_products",
+        "dataco_top_categories",
+        "dataco_monthly_velocity",
+        "dataco_restock_priority",
     }
     if norm in valid:
         metric = norm
@@ -812,7 +845,26 @@ def tool_demand_analytics(metric: str) -> str:
     else:
         # Last resort: keyword scan of whatever text the triage passed through.
         q = norm
-        if "restock" in q or "priority" in q:
+        if "dataco" in q:
+            if "categor" in q:
+                metric = "dataco_top_categories"
+            elif "velocity" in q:
+                metric = "dataco_monthly_velocity"
+            elif "restock" in q:
+                metric = "dataco_restock_priority"
+            else:
+                metric = "dataco_top_products"
+        elif "rapid" in q or ("growth" in q and "restock" in q):
+            metric = "rapid_growth_restock"
+        elif "unusual" in q and "velocity" in q:
+            metric = "unusually_high_velocity"
+        elif "seller" in q and ("demand" in q or "consistent" in q):
+            metric = "seller_demand"
+        elif "top 10 products" in q or ("highest" in q and "units" in q and "product" in q) or "best seller" in q:
+            metric = "top_products"
+        elif "categor" in q and ("volume" in q or "highest sales" in q or "strongest demand" in q or "strong demand" in q):
+            metric = "top_categories"
+        elif "restock" in q or "priority" in q or "require restocking" in q:
             metric = "restock_priority"
         elif "volatil" in q or "coefficient" in q or " cv " in f" {q} ":
             metric = "volatility"
@@ -1047,15 +1099,273 @@ def tool_demand_analytics(metric: str) -> str:
                 "Top 10 products receiving highest restocking priority based on historical sales velocity:\n\n- "
                 + parts
             )
+        if metric in ("top_products", "best_sellers"):
+            total_units = sum(totals.values()) or 1
+            top = sorted(totals.items(), key=lambda kv: -kv[1])[:10]
+            parts = "\n- ".join(
+                f"{i+1}. {disp(p)} (ID: {p[:8]}...): {t:,} units sold ({t / total_units * 100:.2f}% of total units)"
+                for i, (p, t) in enumerate(top)
+            )
+            return (
+                f"Top 10 products with the highest number of units sold (Dataset total: {total_units:,} units):\n\n- {parts}"
+            )
+        if metric in ("top_categories", "strongest_demand_categories"):
+            per_cat: dict = defaultdict(int)
+            for pid, t in totals.items():
+                per_cat[disp(pid)] += t
+            total_units = sum(totals.values()) or 1
+            top = sorted(per_cat.items(), key=lambda kv: -kv[1])[:10]
+            parts = "\n- ".join(
+                f"{i+1}. {c}: {t:,} units sold ({t / total_units * 100:.2f}% share)"
+                for i, (c, t) in enumerate(top)
+            )
+            return (
+                f"Product categories with the highest sales volume / strongest demand (Dataset total: {total_units:,} units):\n\n- {parts}"
+            )
+        if metric == "unusually_high_velocity":
+            vel = {pid: t / max(1, len(monthly[pid])) for pid, t in totals.items()}
+            avg_vel = sum(vel.values()) / max(1, len(vel))
+            high_vel = [
+                (pid, v, totals[pid], len(monthly[pid]))
+                for pid, v in vel.items()
+                if v > 2.5 * avg_vel and totals[pid] >= 10
+            ]
+            high_vel.sort(key=lambda r: -r[1])
+            parts = "\n- ".join(
+                f"{i+1}. {disp(p)} (ID: {p[:8]}...): velocity {v:.2f} units/month (vs dataset avg {avg_vel:.2f} units/mo, {tot:,} total units across {m} active months)"
+                for i, (p, v, tot, m) in enumerate(high_vel[:10])
+            )
+            return (
+                f"Products with unusually high sales velocity (> 2.5x dataset average of {avg_vel:.2f} units/month):\n\n- "
+                + (parts or "None found.")
+            )
+        if metric in ("seller_demand", "consistent_demand_sellers"):
+            seller_items = (
+                db.query(
+                    Seller.seller_id,
+                    func.count(OrderItem.order_item_id),
+                    func.count(func.distinct(month_bucket)),
+                )
+                .join(OrderItem, OrderItem.seller_id == Seller.seller_id)
+                .join(Order, Order.order_id == OrderItem.order_id)
+                .filter(Order.order_purchase_timestamp.isnot(None))
+                .group_by(Seller.seller_id)
+                .all()
+            )
+            total_units = sum(int(c) for _, c, _ in seller_items) or 1
+            top = sorted(seller_items, key=lambda r: -int(r[1]))[:10]
+            parts = "\n- ".join(
+                f"{i+1}. Seller #{s[:8]}: {int(c):,} units sold across {int(m)} active months ({int(c) / total_units * 100:.2f}% contribution, ~{int(c)/max(1, int(m)):.1f} units/mo)"
+                for i, (s, c, m) in enumerate(top)
+            )
+            return (
+                f"Sellers with consistently high demand and highest products sold:\n\n- {parts}"
+            )
+        if metric in ("rapid_growth_restock", "hard_restock_growth"):
+            total_units = sum(totals.values()) or 1
+            scored = []
+            for pid, m in monthly.items():
+                n17 = max(1, len([1 for ym in m if ym.startswith("2017")]))
+                n18 = max(1, len([1 for ym in m if ym.startswith("2018")]))
+                v17 = sum(c for ym, c in m.items() if ym.startswith("2017")) / n17
+                v18 = sum(c for ym, c in m.items() if ym.startswith("2018")) / n18
+                if v17 > 0 and v18 >= v17 * 1.5:
+                    pct_growth = (v18 - v17) / v17 * 100
+                    tot = totals[pid]
+                    avg_monthly = tot / max(1, len(m))
+                    contrib_pct = tot / total_units * 100
+                    recent = sum(c for ym, c in m.items() if ym in sorted(m)[-3:])
+                    rec_vel = recent / max(1, min(3, len(m)))
+                    prio_score = rec_vel * 0.7 + avg_monthly * 0.3
+                    scored.append((pid, prio_score, pct_growth, avg_monthly, contrib_pct, tot))
+            scored.sort(key=lambda r: -r[1])
+            parts = "\n- ".join(
+                f"{i+1}. {disp(p)} (ID: {p[:8]}...):\n"
+                f"   - Restocking Priority Score: {score:.2f} (Rank #{i+1})\n"
+                f"   - Velocity Growth: +{growth:.1f}% (2017 → 2018)\n"
+                f"   - Average Monthly Units Sold: {avg_m:.1f} units/month\n"
+                f"   - Contribution to Total Units Sold: {contrib:.2f}% ({tot:,} total units)"
+                for i, (p, score, growth, avg_m, contrib, tot) in enumerate(scored[:10])
+            )
+            return (
+                f"Products with rapidly increasing sales velocity (>= 50% growth), ranked by restocking priority:\n\n- {parts}\n\n"
+                f"Ranking methodology: Restock Priority Score = 0.7 * recent 3-month velocity + 0.3 * overall monthly velocity."
+            )
+        if metric in ("dataco_top_products", "dataco_products"):
+            top = (
+                db.query(
+                    DataCoOrderItem.product_card_id,
+                    DataCoOrderItem.product_name,
+                    DataCoOrderItem.category_name,
+                    func.sum(DataCoOrderItem.order_item_quantity),
+                )
+                .join(DataCoOrder, DataCoOrder.order_id == DataCoOrderItem.order_id)
+                .group_by(
+                    DataCoOrderItem.product_card_id,
+                    DataCoOrderItem.product_name,
+                    DataCoOrderItem.category_name,
+                )
+                .order_by(func.sum(DataCoOrderItem.order_item_quantity).desc())
+                .limit(10)
+                .all()
+            )
+            total_dc_units = (
+                db.query(func.sum(DataCoOrderItem.order_item_quantity)).scalar() or 1
+            )
+            parts = "\n- ".join(
+                f"{i+1}. {name} (Card ID: {cid}, Category: {cat}): {int(qty):,} units sold ({int(qty) / total_dc_units * 100:.2f}%)"
+                for i, (cid, name, cat, qty) in enumerate(top)
+            )
+            return f"Top 10 products with the highest number of units sold in the DataCo dataset (Total: {int(total_dc_units):,} units):\n\n- {parts}"
+        if metric in ("dataco_top_categories", "dataco_categories"):
+            top = (
+                db.query(
+                    DataCoOrderItem.category_name,
+                    func.sum(DataCoOrderItem.order_item_quantity),
+                    func.sum(DataCoOrderItem.sales),
+                )
+                .join(DataCoOrder, DataCoOrder.order_id == DataCoOrderItem.order_id)
+                .group_by(DataCoOrderItem.category_name)
+                .order_by(func.sum(DataCoOrderItem.order_item_quantity).desc())
+                .limit(10)
+                .all()
+            )
+            total_dc_units = (
+                db.query(func.sum(DataCoOrderItem.order_item_quantity)).scalar() or 1
+            )
+            parts = "\n- ".join(
+                f"{i+1}. {cat}: {int(qty):,} units sold ({int(qty) / total_dc_units * 100:.2f}%), Total Sales: ${float(sales or 0):,.2f}"
+                for i, (cat, qty, sales) in enumerate(top)
+            )
+            return f"Top 10 product categories with the highest sales volume in the DataCo dataset:\n\n- {parts}"
+        if metric in ("dataco_monthly_velocity", "dataco_velocity"):
+            dc_mb = period_bucket(db, DataCoOrder.order_date, "%Y-%m")
+            dc_rows = (
+                db.query(
+                    DataCoOrderItem.product_card_id,
+                    DataCoOrderItem.product_name,
+                    dc_mb,
+                    func.sum(DataCoOrderItem.order_item_quantity),
+                )
+                .join(DataCoOrder, DataCoOrder.order_id == DataCoOrderItem.order_id)
+                .group_by(
+                    DataCoOrderItem.product_card_id, DataCoOrderItem.product_name, dc_mb
+                )
+                .all()
+            )
+            dc_monthly: dict = defaultdict(lambda: defaultdict(int))
+            dc_totals: dict = {}
+            dc_names: dict = {}
+            for cid, name, ym, q in dc_rows:
+                dc_monthly[cid][ym] += int(q)
+                dc_totals[cid] = dc_totals.get(cid, 0) + int(q)
+                dc_names[cid] = name or f"Product #{cid}"
+            dc_vel = {
+                cid: dc_totals[cid] / max(1, len(dc_monthly[cid])) for cid in dc_totals
+            }
+            top = sorted(dc_vel.items(), key=lambda kv: -kv[1])[:10]
+            parts = "\n- ".join(
+                f"{i+1}. {dc_names[cid]} (Card ID: {cid}): {v:.2f} units/month ({dc_totals[cid]:,} units across {len(dc_monthly[cid])} active months)"
+                for i, (cid, v) in enumerate(top)
+            )
+            return f"Top 10 products with the highest average monthly sales velocity in DataCo:\n\n- {parts}"
+        if metric in ("dataco_restock_priority", "dataco_restock"):
+            dc_mb = period_bucket(db, DataCoOrder.order_date, "%Y-%m")
+            dc_rows = (
+                db.query(
+                    DataCoOrderItem.product_card_id,
+                    DataCoOrderItem.product_name,
+                    dc_mb,
+                    func.sum(DataCoOrderItem.order_item_quantity),
+                )
+                .join(DataCoOrder, DataCoOrder.order_id == DataCoOrderItem.order_id)
+                .group_by(
+                    DataCoOrderItem.product_card_id, DataCoOrderItem.product_name, dc_mb
+                )
+                .all()
+            )
+            dc_monthly = defaultdict(lambda: defaultdict(int))
+            dc_totals = {}
+            dc_names = {}
+            for cid, name, ym, q in dc_rows:
+                dc_monthly[cid][ym] += int(q)
+                dc_totals[cid] = dc_totals.get(cid, 0) + int(q)
+                dc_names[cid] = name or f"Product #{cid}"
+            scored = []
+            for cid, t in dc_totals.items():
+                m = dc_monthly[cid]
+                recent = sum(c for ym, c in m.items() if ym in sorted(m)[-3:])
+                rec_vel = recent / max(1, min(3, len(m)))
+                vel = t / max(1, len(m))
+                score = rec_vel * 0.7 + vel * 0.3
+                scored.append((cid, dc_names[cid], score, rec_vel, vel, t))
+            scored.sort(key=lambda r: -r[2])
+            parts = "\n- ".join(
+                f"{i+1}. {name} (Card ID: {cid}):\n"
+                f"   - Restock Priority Score: {s:.2f}\n"
+                f"   - Demand Metric: 0.7 * recent velocity ({rv:.1f} units/mo) + 0.3 * overall velocity ({v:.1f} units/mo)\n"
+                f"   - Total Units Sold: {t:,} units"
+                for i, (cid, name, s, rv, v, t) in enumerate(scored[:10])
+            )
+            return f"Top 10 DataCo products receiving highest restocking priority based on historical sales velocity:\n\n- {parts}"
         return (
             "Unknown metric. Use one of: volume_concentration, top20_share, monthly_velocity, category_yoy, "
-            "volatility, seasonal_concentration, units_per_order_cat, seller_contribution, velocity_growth, restock_priority"
+            "volatility, seasonal_concentration, units_per_order_cat, seller_contribution, velocity_growth, restock_priority, "
+            "top_products, top_categories, unusually_high_velocity, seller_demand, rapid_growth_restock, "
+            "dataco_top_products, dataco_top_categories, dataco_monthly_velocity, dataco_restock_priority"
         )
     except Exception as exc:
         return f"❌ Analytics failed: {exc}"
     finally:
         db.close()
 
+
+@tool
+def tool_inventory_metrics() -> dict:
+    """Calculates catalog summary, modeled stock, low stock count, and estimated inventory value across database orders."""
+    from app.database.session import SessionLocal
+
+    db = SessionLocal()
+    try:
+        metrics = InventoryTools.get_inventory_metrics(db)
+        return {
+            "total_products": metrics.total_products,
+            "low_stock_items": metrics.low_stock_items,
+            "out_of_stock_items": metrics.out_of_stock_items,
+            "inventory_value": metrics.inventory_value,
+            "status": "OK",
+        }
+    finally:
+        db.close()
+
+
+@tool
+def detect_stockout_risk() -> dict:
+    """Detects low-stock products where observed sales velocity risks stockout."""
+    from app.database.session import SessionLocal
+
+    db = SessionLocal()
+    try:
+        recs = InventoryTools.get_reorder_recommendations(db, limit=5)
+        if not recs:
+            return {"finding": None}
+        top = recs[0]
+        return {
+            "finding": {
+                "category": "STOCKOUT_RISK",
+                "severity": "HIGH",
+                "title": f"Restock attention needed for '{top.name}'",
+                "what_happened": f"Current modelled stock is {top.current_stock} units vs Reorder Point {top.reorder_point} units (daily sales {top.daily_sales}/day).",
+                "why_it_matters": "Running out of popular inventory leads to lost sales and poor fulfillment.",
+                "recommended_action": f"Initiate purchase order for {top.suggested_quantity} units.",
+            }
+        }
+    finally:
+        db.close()
+
+
+METRIC_TOOLS = [tool_inventory_metrics]
+DETECTOR_TOOLS = [detect_stockout_risk]
 
 ALL_INVENTORY_TOOLS = [
     tool_query_inventory,
@@ -1064,4 +1374,5 @@ ALL_INVENTORY_TOOLS = [
     tool_analyze_sales_trends,
     tool_create_reorder_action,
     tool_demand_analytics,
+    tool_inventory_metrics,
 ]

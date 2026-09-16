@@ -356,10 +356,43 @@ def customer_experience_analytics(metric: str) -> str:
             gaps.sort(key=lambda x: -x[1])
             parts = "; ".join(f"{i+1}. {name} — {detail}" for i, (name, _, detail) in enumerate(gaps[:4]))
             return "CX issues ranked by impact on review scores: " + (parts or "no significant issues found")
+        if metric == "dataco_delivery_risk":
+            from sqlalchemy import func as _f
+
+            from app.models.dataco import DataCoOrder as _DCO
+
+            risk_rows = (
+                db.query(
+                    _DCO.delivery_status,
+                    _DCO.shipping_mode,
+                    _f.count(_DCO.order_id),
+                    _f.avg(_DCO.late_delivery_risk),
+                    _f.avg(_DCO.days_for_shipping_real),
+                    _f.avg(_DCO.days_for_shipment_scheduled),
+                )
+                .group_by(_DCO.delivery_status, _DCO.shipping_mode)
+                .order_by(_f.count(_DCO.order_id).desc())
+                .limit(12)
+                .all()
+            )
+            if not risk_rows:
+                return "No DataCo delivery risk data available."
+            total_dc = db.query(_f.count(_DCO.order_id)).scalar() or 1
+            late_risk_total = db.query(_f.sum(_DCO.late_delivery_risk)).scalar() or 0
+            parts = "\n".join(
+                f"  {status or 'Unknown'} / {mode or 'Unknown'}: {cnt:,} orders, "
+                f"avg late risk {risk*100:.1f}%, "
+                f"actual shipping {act:.1f}d vs scheduled {sched:.1f}d"
+                for status, mode, cnt, risk, act, sched in risk_rows
+            )
+            return (
+                f"DataCo delivery risk summary ({total_dc:,} total orders, "
+                f"{late_risk_total/total_dc*100:.1f}% flagged as late risk):\n{parts}"
+            )
         return (
             "Unknown metric. Use one of: score_distribution, delivered_vs_late, late_low_score_pct, "
             "category_low_review, state_low_scores, late_vs_ontime, late_1_2_pct, seller_poor_reviews, "
-            "review_response_time, delay_review_hotspots, issue_rank"
+            "review_response_time, delay_review_hotspots, issue_rank, dataco_delivery_risk"
         )
     except Exception as exc:
         return f"❌ Analytics failed: {exc}"

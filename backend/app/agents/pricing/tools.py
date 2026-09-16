@@ -400,9 +400,149 @@ def pricing_analytics(metric: str) -> str:
                 f"Top 5 revenue categories: {parts}. A +5% price increase at constant volume would add "
                 f"~R${extra:,.2f} in theoretical revenue."
             )
+        if metric == "overall_avg_price":
+            all_prices = [p for ps in prod_price.values() for p in ps]
+            if not all_prices:
+                return "No price data available."
+            avg = sum(all_prices) / len(all_prices)
+            med = __import__("statistics").median(all_prices)
+            return (
+                f"Overall average product price (Olist): R${avg:,.2f}. "
+                f"Median: R${med:,.2f}. Total line items: {len(all_prices):,}."
+            )
+        if metric == "top_expensive_products":
+            # Top 10 products by average price
+            prod_avgs = [(pid, sum(ps) / len(ps)) for pid, ps in prod_price.items() if ps]
+            prod_avgs.sort(key=lambda x: -x[1])
+            parts = "\n".join(
+                f"  {i+1}. Product ID {pid}: avg R${avg:,.2f}" for i, (pid, avg) in enumerate(prod_avgs[:10])
+            )
+            return f"Top 10 most expensive products by average selling price:\n{parts}"
+        if metric == "aov_by_category":
+            # Average order value per category = total revenue / number of unique orders per category
+            from collections import defaultdict as _dd
+
+            from app.models.olist import Order as _O, OrderItem as _OI, Product as _P
+
+            cat_orders: dict = _dd(set)
+            cat_rev2: dict = _dd(float)
+            rows3 = (
+                db.query(_P.product_category_name, _OI.order_id, _OI.price)
+                .join(_OI, _P.product_id == _OI.product_id)
+                .join(_O, _O.order_id == _OI.order_id)
+                .filter(_O.order_purchase_timestamp <= clock)
+                .all()
+            )
+            for cat, oid, price in rows3:
+                cat_orders[cat].add(oid)
+                cat_rev2[cat] += float(price or 0)
+            cat_aov = [(c, cat_rev2[c] / len(cat_orders[c])) for c in cat_orders if cat_orders[c]]
+            cat_aov.sort(key=lambda x: -x[1])
+            parts = "\n".join(
+                f"  {i+1}. {disp(c)}: AOV R${aov:,.2f}" for i, (c, aov) in enumerate(cat_aov[:10])
+            )
+            return f"Average order value (AOV) by category (top 10):\n{parts}"
+        if metric == "price_increase_headroom":
+            # Strong agentic test: which categories have room to raise prices?
+            # High volume + below-median price = headroom to increase
+            import statistics as st
+
+            all_avg_prices = [sum(v) / len(v) for v in cat_prices.values() if v]
+            if not all_avg_prices:
+                return "Not enough data."
+            global_med_price = st.median(all_avg_prices)
+            global_total_rev = sum(cat_revenue.values()) or 1.0
+            results = []
+            for cat, prices in cat_prices.items():
+                avg_p = sum(prices) / len(prices)
+                rev = cat_revenue.get(cat, 0)
+                rev_share = rev / global_total_rev * 100
+                freight_ratio = sum(cat_freight.get(cat, [])) / max(1, len(cat_freight.get(cat, [1]))) * 100
+                # headroom: below global median AND meaningful revenue share
+                headroom = global_med_price - avg_p
+                if headroom > 0 and rev_share >= 0.5:
+                    results.append((cat, avg_p, headroom, rev_share, freight_ratio))
+            results.sort(key=lambda x: -x[3])  # sort by revenue share
+            if not results:
+                return (
+                    "All major categories are priced at or above the median. Limited price increase headroom."
+                )
+            parts = "\n".join(
+                f"  {i+1}. {disp(c)}: avg R${ap:,.2f} (R${h:,.2f} below median), "
+                f"rev share {rs:.1f}%, freight burden {fr:.1f}%"
+                for i, (c, ap, h, rs, fr) in enumerate(results[:8])
+            )
+            return (
+                f"Price increase headroom analysis (categories priced below global median R${global_med_price:,.2f}):\n{parts}\n\n"
+                "Recommendation: Raise prices incrementally on high-revenue-share categories that sit below the median "
+                "while monitoring volume. Categories with low freight burden are better candidates."
+            )
+        if metric == "pricing_opportunity":
+            # 🔥 Hard test: top 5 pricing opportunities
+            import statistics as st
+
+            all_avg_prices = [sum(v) / len(v) for v in cat_prices.values() if v]
+            if not all_avg_prices:
+                return "Not enough data."
+            global_med_price = st.median(all_avg_prices)
+            global_total_rev = sum(cat_revenue.values()) or 1.0
+            opps = []
+            for cat, prices in cat_prices.items():
+                if len(prices) < 5:
+                    continue
+                avg_p = sum(prices) / len(prices)
+                rev = cat_revenue.get(cat, 0)
+                rev_share = rev / global_total_rev * 100
+                freight_ratio = sum(cat_freight.get(cat, [])) / max(1, len(cat_freight.get(cat, [1]))) * 100
+                # Score: revenue share * (1 + headroom ratio) / (1 + freight drag)
+                headroom_ratio = max(0, (global_med_price - avg_p) / global_med_price)
+                freight_penalty = max(1, freight_ratio / 100)
+                opportunity_score = rev_share * (1 + headroom_ratio) / freight_penalty
+                opps.append((cat, avg_p, rev_share, freight_ratio, headroom_ratio * 100, opportunity_score))
+            opps.sort(key=lambda x: -x[5])
+            if not opps:
+                return "Not enough category data to identify pricing opportunities."
+            parts = "\n".join(
+                f"  {i+1}. {disp(c)}: avg price R${ap:,.2f}, rev share {rs:.1f}%, "
+                f"freight burden {fr:.1f}%, price headroom {hr:.1f}%, score {sc:.2f}"
+                for i, (c, ap, rs, fr, hr, sc) in enumerate(opps[:5])
+            )
+            return (
+                f"Top 5 pricing opportunity categories (scored by revenue share x headroom / freight drag):\n{parts}\n\n"
+                "These categories offer the best opportunity to raise prices: high revenue contribution, "
+                "room below the market median, and manageable freight costs."
+            )
+        if metric == "dataco_pricing":
+            from app.models.dataco import DataCoOrder as _DCO, DataCoOrderItem as _DCI
+
+            dc_rows = (
+                db.query(
+                    _DCI.category_name,
+                    func.avg(_DCI.product_price),
+                    func.sum(_DCI.sales),
+                    func.avg(_DCI.order_item_discount_rate),
+                    func.avg(_DCI.order_item_profit_ratio),
+                    func.count(_DCI.order_item_id),
+                )
+                .join(_DCO, _DCO.order_id == _DCI.order_id)
+                .group_by(_DCI.category_name)
+                .order_by(func.sum(_DCI.sales).desc())
+                .limit(15)
+                .all()
+            )
+            if not dc_rows:
+                return "No DataCo pricing data available."
+            parts = "\n".join(
+                f"  {i+1}. {cat or 'Unknown'}: avg price ${ap:,.2f}, total revenue ${rev:,.0f}, "
+                f"avg discount {dr*100:.1f}%, avg profit ratio {pr*100:.1f}%, items {cnt:,}"
+                for i, (cat, ap, rev, dr, pr, cnt) in enumerate(dc_rows)
+            )
+            return f"DataCo pricing by category (top 15 by revenue):\n{parts}"
         return (
             "Unknown metric. Use one of: category_price_stats, price_skew, freight_burden, popular_vs_rest, "
-            "price_freight_corr, freight_heavy, category_value_rank, seller_price_variation, increase_scenario"
+            "price_freight_corr, freight_heavy, category_value_rank, seller_price_variation, increase_scenario, "
+            "overall_avg_price, top_expensive_products, aov_by_category, price_increase_headroom, "
+            "pricing_opportunity, dataco_pricing"
         )
     except Exception as exc:
         return f"❌ Analytics failed: {exc}"

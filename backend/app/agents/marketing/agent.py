@@ -7,7 +7,7 @@ from typing import Any, ClassVar
 from app.agents._shared import money
 from app.agents.common_schemas import MetricCard, Recommendation
 from app.agents.framework import DomainAgent
-from app.agents.marketing.tools import CAMPAIGN_PLAYS, DETECTOR_TOOLS, METRIC_TOOLS
+from app.agents.marketing.tools import CAMPAIGN_PLAYS, DETECTOR_TOOLS, LOOKUP_TOOLS, METRIC_TOOLS
 
 
 class MarketingAgent(DomainAgent):
@@ -15,10 +15,12 @@ class MarketingAgent(DomainAgent):
     display_name = "Marketing Intelligence"
     persona = (
         "You are the Marketing Intelligence Agent for an e-commerce operation. You analyse customer "
-        "segments (RFM), retention, category demand, and campaign opportunities."
+        "segments (RFM), retention, category demand, campaign opportunities, and revenue analytics "
+        "across both Olist and DataCo datasets."
     )
     metric_tools: ClassVar[list] = METRIC_TOOLS
     detector_tools: ClassVar[list] = DETECTOR_TOOLS
+    lookup_tools: ClassVar[list] = LOOKUP_TOOLS
     recommendation_playbook: ClassVar[list] = [
         Recommendation(
             title="Focus budget on bringing back past buyers",

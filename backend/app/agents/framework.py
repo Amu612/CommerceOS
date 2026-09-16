@@ -713,6 +713,181 @@ class DomainAgent:
                             "demand metric behind each recommendation",
                             "historical sales velocity",
                         ],
+                        # Inventory metrics (InventoryWatchdogAgent / tool_inventory_metrics)
+                        "top_products": [
+                            "top products",
+                            "best selling products",
+                            "highest units sold",
+                            "most sold products",
+                            "highest number of units sold",
+                        ],
+                        "top_categories": [
+                            "top categories",
+                            "highest sales volume",
+                            "best categories",
+                            "which product categories have the highest sales",
+                        ],
+                        "unusually_high_velocity": [
+                            "unusually high sales velocity",
+                            "high velocity",
+                            "unusual demand",
+                            "products with unusually high",
+                        ],
+                        "seller_demand": [
+                            "sellers have the highest number of products",
+                            "seller demand",
+                            "which sellers",
+                            "sellers with consistently high demand",
+                        ],
+                        "rapid_growth_restock": [
+                            "rapid growth",
+                            "restock",
+                            "prioritize for restocking",
+                            "require restocking",
+                            "restocking based on",
+                            "likely to require restocking",
+                        ],
+                        # Pricing metrics (pricing_analytics)
+                        "category_price_stats": [
+                            "average price for each",
+                            "avg price per category",
+                            "price stats",
+                            "average median minimum maximum",
+                            "price for each major",
+                        ],
+                        "price_skew": [
+                            "largest difference between average and median",
+                            "price skew",
+                            "avg vs median price",
+                            "skewed pricing",
+                        ],
+                        "freight_burden": [
+                            "freight as a percentage",
+                            "freight burden",
+                            "freight-to-price",
+                            "five categories with the highest average freight",
+                        ],
+                        "pricing_opportunity": [
+                            "pricing opportunity",
+                            "pricing opportunities",
+                            "best opportunity to raise prices",
+                            "top pricing",
+                            "where can we raise prices",
+                        ],
+                        "overall_avg_price": [
+                            "overall average price",
+                            "overall avg price",
+                            "average price across",
+                            "what is the average product price",
+                        ],
+                        "price_increase_headroom": [
+                            "price increase headroom",
+                            "headroom to raise",
+                            "room to raise prices",
+                            "pricing elasticity",
+                            "raise price",
+                        ],
+                        "dataco_pricing": [
+                            "dataco pricing",
+                            "dataco price",
+                            "dataco category revenue",
+                        ],
+                        # Marketing metrics (marketing_analytics)
+                        "top_revenue_categories": [
+                            "which product categories generate the most revenue",
+                            "most revenue categories",
+                            "highest revenue category",
+                            "categories generate the most revenue",
+                        ],
+                        "top_order_categories": [
+                            "highest number of orders",
+                            "most orders",
+                            "category orders",
+                            "categories with the highest number",
+                        ],
+                        "best_seller_products": [
+                            "best seller products",
+                            "best selling products",
+                            "top selling products",
+                            "products are the best sellers",
+                        ],
+                        "campaign_recommendation_5": [
+                            "recommend 5 product categories",
+                            "5 product categories",
+                            "marketing campaign",
+                            "recommend categories",
+                            "campaign recommendation",
+                            "which 5 categories",
+                            "5 categories for",
+                        ],
+                        "opportunity_rank": [
+                            "strongest marketing opportunities",
+                            "marketing opportunity",
+                            "opportunity rank",
+                            "best opportunities",
+                        ],
+                        "fastest_growing_categories": [
+                            "fastest growing",
+                            "growing fastest",
+                            "fastest growth",
+                        ],
+                        "valuable_customer_segments": [
+                            "most valuable customer segments",
+                            "customer segments based on",
+                            "rfm",
+                            "valuable segments",
+                        ],
+                        "dataco_marketing": [
+                            "dataco marketing",
+                            "dataco market",
+                            "dataco segment",
+                        ],
+                        # Customer / CSAT metrics (customer_experience_analytics)
+                        "score_distribution": [
+                            "review score distribution",
+                            "percentage of orders receiving each review",
+                            "score from 1 to 5",
+                            "review score 1-5",
+                        ],
+                        "late_low_score_pct": [
+                            "late-delivered orders that received",
+                            "late delivered and rated",
+                            "late delivery and rated 1 or 2",
+                            "percentage of late",
+                        ],
+                        "state_low_scores": [
+                            "average review score by customer state",
+                            "five states with lowest",
+                            "states with lowest scores",
+                            "lowest average review",
+                        ],
+                        "late_1_2_pct": [
+                            "experienced a late delivery and subsequently",
+                            "late delivery poor review",
+                            "late and rated 1 or 2",
+                            "experienced a late delivery",
+                        ],
+                        "seller_poor_reviews": [
+                            "sellers have the highest proportion of poor reviews",
+                            "seller poor review",
+                            "sellers with at least 20 reviews",
+                        ],
+                        "review_response_time": [
+                            "time between review creation and review answer",
+                            "review response time",
+                            "average time between review",
+                        ],
+                        "delay_review_hotspots": [
+                            "delivery delays and poor reviews occur together",
+                            "delay review",
+                            "hotspot",
+                            "delays and poor reviews",
+                        ],
+                        "dataco_delivery_risk": [
+                            "dataco delivery",
+                            "dataco late",
+                            "dataco risk",
+                        ],
                     }
 
                     best_m, best_score = None, 0

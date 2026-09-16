@@ -15,15 +15,20 @@ hard-coded triage -> tool -> response pipeline.
 
 import logging
 import uuid
-from typing import ClassVar
+from typing import Any, ClassVar
 
 from sqlalchemy.orm import Session
 
+from app.agents.common_schemas import MetricCard
 from app.agents.framework import DomainAgent
 from app.agents.inventory.schemas import InventoryAction, InventoryAgentResponse, ToolCallRecord
-from app.agents.inventory.tools import ALL_INVENTORY_TOOLS, InventoryTools
+from app.agents.inventory.tools import (
+    ALL_INVENTORY_TOOLS,
+    DETECTOR_TOOLS,
+    METRIC_TOOLS,
+    InventoryTools,
+)
 from app.database.session import SessionLocal
-from app.services.llm import get_chat_model
 
 logger = logging.getLogger(__name__)
 
@@ -36,7 +41,7 @@ class InventoryWatchdogAgent(DomainAgent):
 
     The interactive query path uses the shared DomainAgent ReAct implementation,
     allowing the configured LLM to dynamically select inventory tools based on
-    the user's question.
+    the user's question, falling back to deterministic data tools when LLM is unavailable.
     """
 
     agent_name = "inventory"
@@ -45,28 +50,45 @@ class InventoryWatchdogAgent(DomainAgent):
     persona = (
         "You are the Inventory Intelligence Agent for an e-commerce operation. "
         "Analyze inventory, stock, demand, sales velocity, reorder points, "
-        "replenishment, and demand analytics. Inventory quantities are MODELLED "
+        "replenishment, and demand analytics across both Olist and DataCo datasets. "
+        "Inventory quantities are MODELLED "
         "from observed sales demand because Olist/DataCo do not provide a real "
         "warehouse on-hand feed. Never present modelled stock as directly "
         "observed. Use the available inventory data tools whenever a question "
         "requires business data. Never invent inventory numbers."
     )
 
-    # Inventory tools are exposed to the shared ReAct agent.
-    #
-    # DomainAgent._react_chat() combines:
-    #   metric_tools
-    #   lookup_tools
-    #   universal entity lookup
-    #   calculator
-    #
-    # Putting the inventory tools in lookup_tools makes all of them available
-    # to the LLM for dynamic selection.
-    metric_tools: ClassVar[list] = []
-    detector_tools: ClassVar[list] = []
+    metric_tools: ClassVar[list] = METRIC_TOOLS
+    detector_tools: ClassVar[list] = DETECTOR_TOOLS
     lookup_tools: ClassVar[list] = ALL_INVENTORY_TOOLS
     recommendation_playbook: ClassVar[list] = []
     supports_live_source = False
+
+    def _render_metric(self, tool_name: str, data: Any) -> tuple[list[MetricCard], Any | None, int]:
+        cards: list[MetricCard] = []
+        chart: Any | None = None
+        n = 0
+        if tool_name == "tool_inventory_metrics" and isinstance(data, dict):
+            n = data.get("total_products", 0)
+            cards = [
+                MetricCard(label="Tracked Products", value=f"{n:,}", description="Catalog products in scope"),
+                MetricCard(
+                    label="Low Stock Items",
+                    value=f"{data.get('low_stock_items', 0):,}",
+                    description="Modelled stock below ROP",
+                ),
+                MetricCard(
+                    label="Out of Stock",
+                    value=f"{data.get('out_of_stock_items', 0):,}",
+                    description="Zero modelled inventory",
+                ),
+                MetricCard(
+                    label="Modelled Inventory Value",
+                    value=f"${data.get('inventory_value', 0):,.2f}",
+                    description="Derived from sales velocity",
+                ),
+            ]
+        return cards, chart, n
 
     def __init__(self, default_threshold: int = 50):
         super().__init__()
@@ -315,77 +337,20 @@ class InventoryWatchdogAgent(DomainAgent):
             latest = self._last_response or self.run_monitor(db=db)
             return latest
 
-        # -------------------------------------------------------------
-        # Get the configured LLM
-        # -------------------------------------------------------------
-        model = get_chat_model()
-
-        # -------------------------------------------------------------
-        # Safe deterministic fallback
-        # -------------------------------------------------------------
-        #
-        # If OpenAI/another configured provider is unavailable, do not crash
-        # the API. Return the latest database-backed monitoring information.
-        #
-        if model is None:
-            logger.warning("Inventory LLM unavailable; " "falling back to deterministic monitoring.")
-
-            latest = self._last_response or self.run_monitor(db=db)
-
-            return InventoryAgentResponse(
-                output=(
-                    "The Inventory Intelligence LLM is currently unavailable. "
-                    "The latest database-backed inventory monitoring results "
-                    "are shown below."
-                ),
-                execution_id=latest.execution_id,
-                snapshot_id=latest.snapshot_id,
-                status="SUCCESS",
-                products=latest.products,
-                low_stock_products=latest.low_stock_products,
-                recommendations=latest.recommendations,
-                reorder_suggestions=latest.reorder_suggestions,
-                sales_analysis=latest.sales_analysis,
-                alerts=latest.alerts,
-                actions=latest.actions,
-                metrics=latest.metrics,
-                tool_calls=latest.tool_calls,
-            )
+        close_db = False
+        if db is None:
+            db = SessionLocal()
+            close_db = True
 
         try:
-            # ---------------------------------------------------------
-            # Dynamic ReAct execution
-            # ---------------------------------------------------------
-            #
-            # DomainAgent._react_chat() creates the LangGraph ReAct agent
-            # and exposes:
-            #
-            #   - ALL_INVENTORY_TOOLS
-            #   - universal entity lookup
-            #   - calculator
-            #
-            # The LLM decides which tool(s) are required.
-            #
-            response_text = self._react_chat(
-                model=model,
-                message=message.strip(),
-                history=history,
-                analysis=None,
-            )
+            chat_resp = self.chat(message=message.strip(), db=db, history=history)
+            response_text = chat_resp.answer
 
             if not response_text:
                 response_text = (
-                    "The Inventory Intelligence Agent could not produce " "a response for that request."
+                    "The Inventory Intelligence Agent could not produce a response for that request."
                 )
 
-            # ---------------------------------------------------------
-            # Preserve the existing API response contract
-            # ---------------------------------------------------------
-            #
-            # The frontend currently expects the complete InventoryAgent-
-            # Response structure. Keep that structure while replacing the
-            # interactive answer with the dynamic LLM result.
-            #
             latest = self._last_response or self.run_monitor(db=db)
 
             return InventoryAgentResponse(
@@ -405,22 +370,12 @@ class InventoryWatchdogAgent(DomainAgent):
             )
 
         except Exception:
-            # ---------------------------------------------------------
-            # ReAct failure fallback
-            # ---------------------------------------------------------
-            #
-            # Keep the API available even if the LLM or a tool fails.
-            # The exception is logged with the full traceback for debugging.
-            #
-            logger.exception("Inventory ReAct query failed; " "falling back to deterministic monitoring.")
-
+            logger.exception("Inventory query failed; falling back to deterministic monitoring.")
             latest = self._last_response or self.run_monitor(db=db)
-
             return InventoryAgentResponse(
                 output=(
-                    "The Inventory Intelligence Agent encountered an error "
-                    "while processing the LLM request. The latest "
-                    "database-backed inventory results are shown below."
+                    "The Inventory Intelligence Agent encountered an error while processing the request. "
+                    "The latest database-backed inventory results are shown below."
                 ),
                 execution_id=latest.execution_id,
                 snapshot_id=latest.snapshot_id,
@@ -435,6 +390,9 @@ class InventoryWatchdogAgent(DomainAgent):
                 metrics=latest.metrics,
                 tool_calls=latest.tool_calls,
             )
+        finally:
+            if close_db:
+                db.close()
 
 
 inventory_agent = InventoryWatchdogAgent()
