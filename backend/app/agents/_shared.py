@@ -28,8 +28,8 @@ def period_bucket(db: Session, column, fmt: str):
     return func.strftime(fmt, column)
 
 
-# 32-char Olist UUID, a "#1234" style id, or a bare 2-10 digit DataCo id
-_ORDER_ID_RE = re.compile(r"#?\b([0-9a-fA-F]{32}|\d{2,10})\b")
+# 32-char hex UUID, explicit #<digits>, or 5-10 digit bare id
+_ORDER_ID_RE = re.compile(r"\b([0-9a-fA-F]{32})\b|#(\d{2,10})\b|\b(\d{5,10})\b")
 
 
 def extract_order_id(message: str) -> str:
@@ -52,10 +52,10 @@ def extract_order_id(message: str) -> str:
         return m.group(1)
     m = _ORDER_ID_RE.search(message)
     if m:
-        val = m.group(1)
-        if len(val) == 4 and val.isdigit() and (1990 <= int(val) <= 2050):
+        val = m.group(1) or m.group(2) or m.group(3)
+        if val and len(val) == 4 and val.isdigit() and (1990 <= int(val) <= 2050):
             return ""
-        return val
+        return val or ""
     return ""
 
 
@@ -103,10 +103,10 @@ def extract_entity_id(message: str) -> tuple[str, str]:
         return m_ord.group(1), "order"
     m_bare = _ORDER_ID_RE.search(message)
     if m_bare:
-        val = m_bare.group(1)
-        if len(val) == 4 and val.isdigit() and (1990 <= int(val) <= 2050):
+        val = m_bare.group(1) or m_bare.group(2) or m_bare.group(3)
+        if val and len(val) == 4 and val.isdigit() and (1990 <= int(val) <= 2050):
             return "", ""
-        return val, "unknown"
+        return (val, "unknown") if val else ("", "")
     return "", ""
 
 

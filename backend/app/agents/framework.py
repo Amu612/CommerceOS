@@ -646,6 +646,73 @@ class DomainAgent:
                             "purchase→delivery",
                         ],
                         "top_months": ["top months", "highest-volume", "highest volume"],
+                        # Demand / Supply Chain / Product flow metrics
+                        "volume_concentration": [
+                            "average quantity sold per product",
+                            "more than twice",
+                            "twice the dataset average",
+                            "sales volume is more than twice",
+                            "volume concentration",
+                        ],
+                        "top20_share": [
+                            "20 products",
+                            "largest percentage of all units sold",
+                            "combined share",
+                            "units sold",
+                            "top 20",
+                        ],
+                        "monthly_velocity": [
+                            "monthly sales velocity",
+                            "sales velocity for each product",
+                            "highest average monthly velocity",
+                            "monthly velocity",
+                        ],
+                        "category_yoy": [
+                            "product categories experienced the largest increase",
+                            "largest increase in units sold",
+                            "increase in units sold between 2017 and 2018",
+                            "percentage increase",
+                            "2017 and 2018",
+                        ],
+                        "volatility": [
+                            "coefficient of variation",
+                            "cv of monthly sales",
+                            "top-selling products",
+                            "highly volatile demand",
+                            "volatile demand",
+                            "volatility",
+                        ],
+                        "seasonal_concentration": [
+                            "high unit demand but had sales concentrated in only a few months",
+                            "concentrated in only a few months",
+                            "concentrated in few months",
+                            "sales concentrated",
+                            "few months",
+                        ],
+                        "units_per_order_cat": [
+                            "average number of units sold per order",
+                            "units sold per order for each product category",
+                            "units per order by category",
+                            "units sold per order",
+                        ],
+                        "seller_contribution": [
+                            "sellers sold the highest total quantity",
+                            "seller's percentage contribution to total units sold",
+                            "sellers sold the highest",
+                            "seller contribution",
+                        ],
+                        "velocity_growth": [
+                            "sales velocity increased by at least 50%",
+                            "velocity increased by at least 50%",
+                            "comparable periods",
+                            "increased by at least 50%",
+                        ],
+                        "restock_priority": [
+                            "highest restocking priority",
+                            "restocking priority",
+                            "demand metric behind each recommendation",
+                            "historical sales velocity",
+                        ],
                     }
 
                     best_m, best_score = None, 0
@@ -710,10 +777,19 @@ def _rate_limit_wait(exc: Exception) -> float | None:
     name = type(exc).__name__
     if name not in ("RateLimitError", "APIStatusError") and "rate_limit" not in text and "429" not in text:
         return None
+    # If daily quota reached (TPD) or provider asks to wait minutes, fail fast so deterministic fallback answers immediately
+    if (
+        "TPD" in text
+        or "tokens per day" in text.lower()
+        or re.search(r"try again in \d+m", text, re.IGNORECASE)
+    ):
+        return None
     delay = 6.0
     match = re.search(r"try again in ([0-9.]+)s", text, re.IGNORECASE)
     if match:
         delay = max(delay, float(match.group(1)))
+    if delay > 30.0:
+        return None
     return min(delay + 0.5, 15.0)
 
 

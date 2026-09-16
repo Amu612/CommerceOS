@@ -212,23 +212,51 @@ LOOKUP_TOOLS = [shipment_lookup]
 
 
 # ── Doc-grade logistics analytics ───────────────────────────────────────────
+from app.agents.inventory.tools import tool_demand_analytics  # noqa: E402
+
+
 @tool
 def logistics_analytics(metric: str) -> str:
-    """Delivery-duration / delay / seller-performance analytics from real orders.
+    """Delivery duration, shipping delay, seller performance, and supply-chain flow analytics.
 
     metric must be one of:
     - "delivery_by_state"   : average delivery days per customer state; 5 slowest
     - "late_pct"            : % of delivered orders arriving after the estimated date
     - "avg_days_late"       : average days late among delayed orders
     - "seller_late_pct"     : sellers (>=20 delivered orders) by late-delivery percentage
-    - "monthly_delay_gap"   : estimated-vs-actual delivery gap by month; months with the largest delays
+    - "monthly_delay_gap"   : estimated-vs-actual delivery gap by month; months with largest delays
     - "category_delay"      : average delivery delay in days by product category
-    - "state_spread"        : fastest vs slowest state delivery times and the % difference
+    - "state_spread"        : fastest vs slowest state delivery times and % difference
     - "punctuality_split"   : % of orders delivered early / on time / late
     - "volume_vs_late"      : sellers with both high order volume and poor delivery performance
     - "delivery_by_year"    : average purchase-to-delivery days per year; improving or deteriorating
-    - "seller_risk_rank"    : 10 sellers creating the greatest logistics risk (volume x late% x avg delay), calculation shown
+    - "seller_risk_rank"    : 10 sellers creating greatest logistics risk (volume x late% x avg delay)
+    - "volume_concentration": average quantity sold per product and products selling more than twice the dataset average
+    - "top20_share"         : 20 products accounting for largest percentage of all units sold and their combined share
+    - "monthly_velocity"    : monthly sales velocity for each product and 10 products with highest monthly velocity
+    - "category_yoy"        : product categories with largest increase in units sold between 2017 and 2018
+    - "volatility"          : coefficient of variation of monthly sales for top products and volatile demand
+    - "seasonal_concentration": products with high unit demand concentrated in few months
+    - "units_per_order_cat" : average units sold per order by product category and categories with highest values
+    - "seller_contribution" : sellers with highest total quantity sold and % contribution to total units
+    - "velocity_growth"     : products whose sales velocity increased by at least 50% between periods
+    - "restock_priority"    : 10 products that should receive highest restocking priority from sales velocity
     """
+    DEMAND_METRICS = {
+        "volume_concentration",
+        "top20_share",
+        "monthly_velocity",
+        "category_yoy",
+        "volatility",
+        "seasonal_concentration",
+        "units_per_order_cat",
+        "seller_contribution",
+        "velocity_growth",
+        "restock_priority",
+    }
+    if metric in DEMAND_METRICS:
+        return str(tool_demand_analytics.invoke({"metric": metric}))
+
     import statistics as st
     from collections import defaultdict
 
@@ -393,4 +421,18 @@ def logistics_analytics(metric: str) -> str:
         db.close()
 
 
-LOOKUP_TOOLS = [shipment_lookup, logistics_analytics]
+LOOKUP_TOOLS = [shipment_lookup, logistics_analytics, tool_demand_analytics]
+ALL_LOGISTICS_TOOLS = [
+    logistics_overview,
+    carrier_scorecard,
+    lane_scorecard,
+    transit_time_distribution,
+    olist_delivery_sla,
+    detect_late_delivery_risk,
+    detect_slow_carrier,
+    detect_lane_bottleneck,
+    detect_sla_degradation,
+    shipment_lookup,
+    logistics_analytics,
+    tool_demand_analytics,
+]

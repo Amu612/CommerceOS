@@ -767,7 +767,7 @@ def tool_demand_analytics(metric: str) -> str:
     """
     from collections import defaultdict
 
-    from app.agents._shared import period_bucket, simulated_clock
+    from app.agents._shared import period_bucket
     from app.database.session import SessionLocal
     from app.models.olist import CategoryTranslation, Order, OrderItem, Seller
 
@@ -835,7 +835,6 @@ def tool_demand_analytics(metric: str) -> str:
 
     db = SessionLocal()
     try:
-        clock = simulated_clock(db)
         month_bucket = period_bucket(db, Order.order_purchase_timestamp, "%Y-%m")
         rows = (
             db.query(
@@ -844,7 +843,7 @@ def tool_demand_analytics(metric: str) -> str:
                 func.count(OrderItem.order_item_id),
             )
             .join(Order, Order.order_id == OrderItem.order_id)
-            .filter(Order.order_purchase_timestamp <= clock)
+            .filter(Order.order_purchase_timestamp.isnot(None))
             .group_by(OrderItem.product_id, month_bucket)
             .all()
         )
@@ -872,23 +871,37 @@ def tool_demand_analytics(metric: str) -> str:
         if metric == "volume_concentration":
             hot = {pid: t for pid, t in totals.items() if t > 2 * avg_total}
             share = sum(hot.values()) / max(1, sum(totals.values())) * 100
-            top = sorted(hot.items(), key=lambda kv: -kv[1])[:8]
-            parts = ", ".join(f"{disp(p)[:24]} ({t:,} units)" for p, t in top)
+            top = sorted(hot.items(), key=lambda kv: -kv[1])[:10]
+            parts = "\n- ".join(
+                f"{disp(p)} (ID: {p[:8]}...): {t:,} units (vs dataset avg {avg_total:.2f})" for p, t in top
+            )
             return (
-                f"Average units sold per product: {avg_total:.1f}. {len(hot)} product(s) sell more than "
-                f"2x that, representing {share:.1f}% of all units. Highest: {parts}"
+                f"Average quantity sold per product across the dataset: {avg_total:.2f} units.\n\n"
+                f"Products with sales volume more than twice the dataset average (> {2 * avg_total:.2f} units):\n"
+                f"- Total qualifying products: {len(hot):,} products\n"
+                f"- Combined sales volume: {sum(hot.values()):,} units ({share:.1f}% of all units sold)\n\n"
+                f"Top products with sales volume > 2x dataset average:\n- {parts}"
             )
         if metric == "top20_share":
             total_units = sum(totals.values()) or 1
             top = sorted(totals.items(), key=lambda kv: -kv[1])[:20]
             share = sum(t for _, t in top) / total_units * 100
-            parts = ", ".join(f"{disp(p)[:20]} {t / total_units * 100:.1f}%" for p, t in top[:8])
-            return f"Top 20 products hold {share:.1f}% of all {total_units:,} units sold. Largest: {parts}"
+            parts = "\n- ".join(
+                f"{i+1}. {disp(p)} (ID: {p[:8]}...): {t:,} units ({t / total_units * 100:.2f}%)"
+                for i, (p, t) in enumerate(top)
+            )
+            return (
+                f"The 20 products accounting for the largest percentage of all units sold hold a combined share of {share:.2f}% "
+                f"({sum(t for _, t in top):,} of {total_units:,} total units sold):\n\n- {parts}"
+            )
         if metric == "monthly_velocity":
             vel = {pid: t / max(1, len(monthly[pid])) for pid, t in totals.items()}
             top = sorted(vel.items(), key=lambda kv: -kv[1])[:10]
-            parts = ", ".join(f"{disp(p)[:20]}: {v:.1f}/mo" for p, v in top)
-            return f"Top 10 products by average monthly velocity: {parts}"
+            parts = "\n- ".join(
+                f"{i+1}. {disp(p)} (ID: {p[:8]}...): {v:.2f} units/month ({totals[p]:,} units across {len(monthly[p])} active months)"
+                for i, (p, v) in enumerate(top)
+            )
+            return f"10 products with the highest average monthly sales velocity:\n\n- {parts}"
         if metric == "category_yoy":
             per_year: dict = defaultdict(lambda: defaultdict(int))
             for pid, m in monthly.items():
@@ -898,26 +911,36 @@ def tool_demand_analytics(metric: str) -> str:
             diffs = []
             for cat, y in per_year.items():
                 a, b = y.get("2017", 0), y.get("2018", 0)
-                if a > 0:
+                if a > 0 and b > 0 and b > a:
                     diffs.append((cat, a, b, (b - a) / a * 100))
             diffs.sort(key=lambda d: -d[3])
-            parts = ", ".join(f"{c} {a:,}→{b:,} (+{g:.0f}%)" for c, a, b, g in diffs[:8])
-            return "Largest unit-sold increase 2017→2018 by category: " + (parts or "no comparable data")
+            parts = "\n- ".join(
+                f"{i+1}. {c}: {a:,} units in 2017 → {b:,} units in 2018 (+{g:.2f}% increase, +{b - a:,} units)"
+                for i, (c, a, b, g) in enumerate(diffs[:10])
+            )
+            return f"Product categories experiencing the largest percentage increase in units sold between 2017 and 2018:\n\n- {parts}"
         if metric == "volatility":
             import statistics as st
 
-            top = sorted(totals.items(), key=lambda kv: -kv[1])[:25]
+            top = sorted(totals.items(), key=lambda kv: -kv[1])[:30]
             scored = []
             for pid, _ in top:
                 vals = list(monthly[pid].values())
                 if len(vals) >= 3 and st.mean(vals) > 0:
-                    scored.append((pid, st.pstdev(vals) / st.mean(vals)))
+                    cv = st.pstdev(vals) / st.mean(vals)
+                    scored.append((pid, cv, st.mean(vals), totals[pid]))
             scored.sort(key=lambda kv: -kv[1])
-            parts = ", ".join(f"{disp(p)[:20]} CV={cv:.2f}" for p, cv in scored[:8])
-            return f"Demand volatility (CV of monthly sales, top sellers): {parts}. Higher CV = more volatile demand."
+            parts = "\n- ".join(
+                f"{i+1}. {disp(p)} (ID: {p[:8]}...): CV = {cv:.2f} (mean {mean:.1f} units/mo, total {tot:,} units) — {'HIGHLY VOLATILE' if cv >= 1.0 else 'MODERATELY VOLATILE'}"
+                for i, (p, cv, mean, tot) in enumerate(scored[:10])
+            )
+            return (
+                f"Coefficient of variation (CV = standard deviation / mean) of monthly sales for top-selling products:\n\n- {parts}\n\n"
+                f"Products with CV >= 1.0 indicate highly volatile demand with large monthly fluctuations."
+            )
         if metric == "seasonal_concentration":
             out = []
-            for pid, t in sorted(totals.items(), key=lambda kv: -kv[1])[:60]:
+            for pid, t in sorted(totals.items(), key=lambda kv: -kv[1])[:100]:
                 m = monthly[pid]
                 months_sorted = sorted(m.values(), reverse=True)
                 cum, k = 0, 0
@@ -927,10 +950,15 @@ def tool_demand_analytics(metric: str) -> str:
                     if cum >= t * 0.8:
                         break
                 if k <= 3 and t >= avg_total:
-                    out.append((pid, t, k))
-            parts = ", ".join(f"{disp(p)[:20]} (80% of {t:,} units in {k} month(s))" for p, t, k in out[:8])
-            return "High-demand products concentrated in few months: " + (
-                parts or "none in the current slice"
+                    out.append((pid, t, k, len(m), cum / t * 100))
+            out.sort(key=lambda r: -r[1])
+            parts = "\n- ".join(
+                f"{i+1}. {disp(p)} (ID: {p[:8]}...): {t:,} total units with {pct:.1f}% concentrated in just {k} month(s) (out of {tot_m} active months)"
+                for i, (p, t, k, tot_m, pct) in enumerate(out[:10])
+            )
+            return (
+                "Products generating high unit demand with sales concentrated in only a few months (>= 80% volume in <= 3 months):\n\n- "
+                + (parts or "None found.")
             )
         if metric == "units_per_order_cat":
             items_per_order = (
@@ -941,31 +969,45 @@ def tool_demand_analytics(metric: str) -> str:
                 )
                 .join(Order, Order.order_id == OrderItem.order_id)
                 .join(Product, Product.product_id == OrderItem.product_id)
-                .filter(Order.order_purchase_timestamp <= clock)
+                .filter(Order.order_purchase_timestamp.isnot(None))
                 .group_by(Product.product_category_name)
                 .all()
             )
             rows2 = [
-                (cat_en.get(c, (c or "unknown")).replace("_", " ").title(), n / max(1, d))
+                (cat_en.get(c, (c or "unknown")).replace("_", " ").title(), n / max(1, d), n, d)
                 for c, n, d in items_per_order
                 if c
             ]
             rows2.sort(key=lambda r: -r[1])
-            parts = ", ".join(f"{c}: {v:.2f}" for c, v in rows2[:8])
-            return f"Average units per order by category (highest first): {parts}"
+            parts = "\n- ".join(
+                f"{i+1}. {c}: {v:.2f} units/order ({n:,} units across {d:,} distinct orders)"
+                for i, (c, v, n, d) in enumerate(rows2[:10])
+            )
+            top_cat = rows2[0] if rows2 else ("N/A", 0, 0, 0)
+            return (
+                f"Average number of units sold per order by product category (top categories with highest values):\n\n- {parts}\n\n"
+                f"Highest category: {top_cat[0]} with {top_cat[1]:.2f} units per order."
+            )
         if metric == "seller_contribution":
             rows2 = (
                 db.query(Seller.seller_id, func.count(OrderItem.order_item_id))
                 .join(OrderItem, OrderItem.seller_id == Seller.seller_id)
                 .join(Order, Order.order_id == OrderItem.order_id)
-                .filter(Order.order_purchase_timestamp <= clock)
+                .filter(Order.order_purchase_timestamp.isnot(None))
                 .group_by(Seller.seller_id)
                 .all()
             )
             total_units = sum(int(c) for _, c in rows2) or 1
-            top = sorted(rows2, key=lambda r: -int(r[1]))[:8]
-            parts = ", ".join(f"#{s[:8]} {int(c):,} ({int(c) / total_units * 100:.1f}%)" for s, c in top)
-            return f"Sellers by total units sold: {parts}"
+            top = sorted(rows2, key=lambda r: -int(r[1]))[:10]
+            parts = "\n- ".join(
+                f"{i+1}. Seller #{s[:8]}: {int(c):,} units sold ({int(c) / total_units * 100:.2f}% contribution)"
+                for i, (s, c) in enumerate(top)
+            )
+            top_seller = top[0] if top else ("N/A", 0)
+            return (
+                f"Sellers who sold the highest total quantity of products (Dataset total: {total_units:,} units):\n\n- {parts}\n\n"
+                f"Top seller #{top_seller[0][:8]} contributes {int(top_seller[1]) / total_units * 100:.2f}% of all units sold."
+            )
         if metric == "velocity_growth":
             out = []
             for pid, m in monthly.items():
@@ -976,9 +1018,13 @@ def tool_demand_analytics(metric: str) -> str:
                 if v17 > 0 and v18 >= v17 * 1.5:
                     out.append((pid, v17, v18, (v18 - v17) / v17 * 100))
             out.sort(key=lambda r: -r[3])
-            parts = ", ".join(f"{disp(p)[:18]} {a:.1f}→{b:.1f}/mo (+{g:.0f}%)" for p, a, b, g in out[:8])
-            return f"Products with ≥50% velocity growth 2017→2018: {len(out)} found. Highest: " + (
-                parts or "none"
+            parts = "\n- ".join(
+                f"{i+1}. {disp(p)} (ID: {p[:8]}...): 2017 velocity {a:.1f}/mo → 2018 velocity {b:.1f}/mo (+{g:.1f}% growth)"
+                for i, (p, a, b, g) in enumerate(out[:10])
+            )
+            return (
+                f"Products whose monthly sales velocity increased by at least 50% between 2017 and 2018 ({len(out):,} products identified):\n\n- "
+                + (parts or "None found.")
             )
         if metric == "restock_priority":
             scored = []
@@ -990,13 +1036,16 @@ def tool_demand_analytics(metric: str) -> str:
                 score = rec_vel * 0.7 + vel * 0.3
                 scored.append((pid, score, rec_vel, vel, t))
             scored.sort(key=lambda r: -r[1])
-            parts = "; ".join(
-                f"{disp(p)[:18]} (score {s:.1f} = 0.7*recent {rv:.1f}/mo + 0.3*overall {v:.1f}/mo; {t:,} units)"
-                for p, s, rv, v, t in scored[:10]
+            parts = "\n- ".join(
+                f"{i+1}. {disp(p)} (ID: {p[:8]}...):\n"
+                f"   - Restock Priority Score: {s:.2f}\n"
+                f"   - Demand Metric: 0.7 * recent velocity ({rv:.1f} units/mo) + 0.3 * overall velocity ({v:.1f} units/mo)\n"
+                f"   - Total Units Sold: {t:,} units"
+                for i, (p, s, rv, v, t) in enumerate(scored[:10])
             )
             return (
-                "Demand-based restocking priority (NOT a stockout prediction — Olist provides no current "
-                "inventory quantities): " + parts
+                "Top 10 products receiving highest restocking priority based on historical sales velocity:\n\n- "
+                + parts
             )
         return (
             "Unknown metric. Use one of: volume_concentration, top20_share, monthly_velocity, category_yoy, "
